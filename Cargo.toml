@@ -1,0 +1,24 @@
+[workspace]
+members = [
+    "crates/bridge-diagnostics",
+    "crates/bridge-protocol",
+    "crates/bridge-relay",
+    "crates/bridge-client",
+    "crates/bridge-gui",
+    "crates/isaac-injector",
+    "crates/steam-detector",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/mcthesw/Basement-Bridge"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

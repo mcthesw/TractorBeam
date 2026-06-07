@@ -1,0 +1,14 @@
+[package]
+name = "basement-bridge-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "basement-bridge"
+path = "src/main.rs"
+
+[dependencies]
+basement-bridge-client = { path = "../bridge-client" }

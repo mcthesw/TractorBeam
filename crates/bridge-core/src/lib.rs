@@ -8,6 +8,6 @@ pub mod steam;
 pub use client::{
     BridgeClient, ClientError, ConfigError, Counters, DEFAULT_RELAY_PROBE_PAYLOAD_BYTES,
     HookReceiveProbeReport, LogEntry, LogLevel, PRODUCT_NAME, RelayEndpoint, RelayProbeReport,
-    RuntimeState, SessionConfig, SessionMode, SessionStatus, SteamIdentity, diagnostics_directory,
-    runtime_name,
+    RuntimeState, SessionConfig, SessionMode, SessionStatus, SteamIdentity, TransportChoice,
+    diagnostics_directory, runtime_name,
 };

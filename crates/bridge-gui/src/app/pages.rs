@@ -1,4 +1,4 @@
-use basement_bridge_core::{SessionMode, SessionStatus};
+use basement_bridge_core::{SessionMode, SessionStatus, TransportChoice};
 use eframe::egui::{self, ComboBox, TextEdit};
 
 use crate::i18n::{Language, Text, text};
@@ -119,6 +119,15 @@ impl BridgeApp {
         ui.add_space(8.0);
         ui.label(self.t(Text::RelayPort));
         ui.add(egui::DragValue::new(&mut self.relay_port).range(1..=u16::MAX));
+
+        ui.add_space(8.0);
+        let udp = self.t(Text::Udp);
+        let tcp = self.t(Text::Tcp);
+        ui.label(self.t(Text::Transport));
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut self.transport, TransportChoice::Udp, udp);
+            ui.radio_value(&mut self.transport, TransportChoice::Tcp, tcp);
+        });
 
         ui.add_space(8.0);
         ui.label(self.t(Text::Room));

@@ -1,505 +1,624 @@
 use std::{
-    collections::HashMap,
     io,
-    net::UdpSocket,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, Sender},
-    },
+    sync::mpsc::{self, Receiver, SyncSender},
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use bytes::Bytes;
-
-use crate::protocol::{
-    ControlMessage, Envelope, GamePacket, LocalPacket, LocalPacketType, MessageType,
+use tokio::{
+    net::UdpSocket,
+    runtime::Builder,
+    sync::mpsc::{self as tokio_mpsc, Receiver as TokioReceiver, Sender as TokioSender},
+    task::JoinSet,
+    time::{self, MissedTickBehavior},
 };
+use tokio_util::sync::CancellationToken;
+
+use crate::protocol::{ControlMessage, MessageType};
 
 use super::{
-    Counters, LogLevel, SessionConfig,
+    LogLevel, SessionConfig,
     hook_config::{HOOK_IN, HOOK_OUT},
-    state::{RuntimeEvent, error_counter, send_event},
+    packet_flow::{
+        InboundGamePacket, OutboundRelayPacket, PacketObserver, decode_inbound_relay_datagram,
+        encode_inbound_local_packet, encode_outbound_relay_packet, hook_counter, relay_counter,
+        send_error,
+    },
+    relay_transport::{RelayTransport, complete_relay_join, send_control},
+    state::{RuntimeEvent, RuntimeEventSender, error_counter, send_event},
 };
 
-const SOCKET_DRAIN_LIMIT: usize = 64;
+const EVENT_QUEUE_CAPACITY: usize = 512;
+const PACKET_QUEUE_CAPACITY: usize = 256;
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(6);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const INJECTOR_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+const HOOK_BUFFER_SIZE: usize = 65_535;
 
 #[derive(Debug)]
 pub(super) struct SessionHandle {
-    stop: Arc<AtomicBool>,
+    cancellation: CancellationToken,
     pub(super) events: Receiver<RuntimeEvent>,
-    event_tx: Sender<RuntimeEvent>,
-    workers: Vec<JoinHandle<()>>,
+    worker: Option<JoinHandle<()>>,
 }
 
-pub(super) fn spawn_bridge_worker(config: SessionConfig) -> SessionHandle {
-    let stop = Arc::new(AtomicBool::new(false));
+pub(super) fn spawn_bridge_worker(config: SessionConfig) -> io::Result<SessionHandle> {
+    let cancellation = CancellationToken::new();
     let (event_tx, event_rx) = mpsc::channel();
-    let worker_stop = Arc::clone(&stop);
-    let worker_events = event_tx.clone();
+    let (startup_tx, startup_rx) = mpsc::sync_channel(1);
+    let worker_cancellation = cancellation.clone();
+
     let worker = thread::spawn(move || {
-        if let Err(error) = bridge_loop(&config, &worker_stop, &worker_events) {
-            send_event(
-                &worker_events,
-                RuntimeEvent::Log(LogLevel::Error, format!("Bridge worker stopped: {error}")),
-            );
-            send_event(&worker_events, RuntimeEvent::CounterDelta(error_counter()));
-        }
-        send_event(&worker_events, RuntimeEvent::Stopped);
+        let runtime = match Builder::new_multi_thread()
+            .enable_all()
+            .worker_threads(2)
+            .thread_name("basement-bridge-core")
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                send_startup(
+                    &startup_tx,
+                    Err(io::Error::other(format!("runtime startup failed: {error}"))),
+                );
+                return;
+            }
+        };
+
+        runtime.block_on(supervise_session(
+            config,
+            worker_cancellation,
+            event_tx,
+            startup_tx,
+        ));
+        runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
     });
-    SessionHandle {
-        stop,
-        events: event_rx,
-        event_tx,
-        workers: vec![worker],
+
+    match startup_rx.recv_timeout(STARTUP_TIMEOUT) {
+        Ok(Ok(())) => Ok(SessionHandle {
+            cancellation,
+            events: event_rx,
+            worker: Some(worker),
+        }),
+        Ok(Err(error)) => {
+            cancellation.cancel();
+            let _ = worker.join();
+            Err(error)
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            cancellation.cancel();
+            let _ = worker.join();
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "bridge runtime startup timed out",
+            ))
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            cancellation.cancel();
+            let _ = worker.join();
+            Err(io::Error::other("bridge runtime exited during startup"))
+        }
     }
 }
 
 impl SessionHandle {
-    pub(super) fn spawn_injector_worker(&mut self) {
-        let stop = Arc::clone(&self.stop);
-        let events = self.event_tx.clone();
-        self.workers.push(thread::spawn(move || {
-            inject_when_ready(&stop, &events);
-        }));
-    }
-
-    pub(super) fn stop(self) {
-        self.stop.store(true, Ordering::Relaxed);
-        for worker in self.workers {
+    pub(super) fn stop(mut self) {
+        self.cancellation.cancel();
+        if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
     }
 }
 
-fn bridge_loop(
+impl Drop for SessionHandle {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+async fn supervise_session(
+    config: SessionConfig,
+    cancellation: CancellationToken,
+    std_event_tx: mpsc::Sender<RuntimeEvent>,
+    startup_tx: SyncSender<io::Result<()>>,
+) {
+    let (event_tx, event_rx) = tokio_mpsc::channel(EVENT_QUEUE_CAPACITY);
+    let event_forwarder = tokio::spawn(forward_events(event_rx, std_event_tx));
+
+    match start_runtime_tasks(&config, &cancellation, &event_tx).await {
+        Ok(mut tasks) => {
+            send_startup(&startup_tx, Ok(()));
+            send_event(
+                &event_tx,
+                RuntimeEvent::Log(LogLevel::Info, "Local bridge is running".to_owned()),
+            );
+            send_event(
+                &event_tx,
+                RuntimeEvent::Log(
+                    LogLevel::Debug,
+                    format!(
+                        "Bridge sockets ready: hook_in={HOOK_IN} hook_out={HOOK_OUT} relay={} transport={} packet_queue={PACKET_QUEUE_CAPACITY}",
+                        config.relay, config.transport
+                    ),
+                ),
+            );
+
+            let stop_reason = wait_for_essential_task(&cancellation, &mut tasks).await;
+            cancellation.cancel();
+            if let Some(message) = stop_reason {
+                send_event(&event_tx, RuntimeEvent::Log(LogLevel::Warn, message));
+            }
+            shutdown_tasks(tasks, &event_tx).await;
+        }
+        Err(error) => {
+            let kind = error.kind();
+            let message = error.to_string();
+            send_startup(&startup_tx, Err(io::Error::new(kind, message.clone())));
+            send_event(
+                &event_tx,
+                RuntimeEvent::Log(LogLevel::Error, format!("Bridge runtime failed: {message}")),
+            );
+            send_event(&event_tx, RuntimeEvent::CounterDelta(error_counter()));
+        }
+    }
+
+    send_event(&event_tx, RuntimeEvent::Stopped);
+    drop(event_tx);
+    let _ = event_forwarder.await;
+}
+
+async fn start_runtime_tasks(
     config: &SessionConfig,
-    stop: &AtomicBool,
-    event_tx: &Sender<RuntimeEvent>,
-) -> io::Result<()> {
-    let hook_socket = UdpSocket::bind(HOOK_IN)?;
-    let relay_socket = UdpSocket::bind("0.0.0.0:0")?;
-    relay_socket.connect(config.relay.to_string())?;
-    relay_socket.set_read_timeout(Some(Duration::from_millis(20)))?;
-    complete_relay_join(&relay_socket, config, event_tx)?;
-    hook_socket.set_nonblocking(true)?;
-    relay_socket.set_nonblocking(true)?;
-    send_event(
-        event_tx,
-        RuntimeEvent::Log(LogLevel::Info, "Local bridge is running".to_owned()),
-    );
+    cancellation: &CancellationToken,
+    event_tx: &RuntimeEventSender,
+) -> io::Result<JoinSet<io::Result<()>>> {
+    let hook_in_socket = UdpSocket::bind(HOOK_IN).await?;
+    let hook_out_socket = UdpSocket::bind("127.0.0.1:0").await?;
+    let mut relay = RelayTransport::connect(&config.relay, config.transport).await?;
+    let peer_count = complete_relay_join(&mut relay.sender, &mut relay.receiver, config).await?;
     send_event(
         event_tx,
         RuntimeEvent::Log(
-            LogLevel::Debug,
-            format!(
-                "Bridge sockets ready: hook_in={HOOK_IN} hook_out={HOOK_OUT} relay={} drain_limit={SOCKET_DRAIN_LIMIT}",
-                config.relay,
-            ),
+            LogLevel::Info,
+            format!("Joined relay room with {peer_count} peer(s)"),
         ),
     );
 
-    let hook_out = HOOK_OUT;
-    let mut hook_buffer = [0_u8; 65_535];
-    let mut relay_buffer = [0_u8; 65_535];
-    let mut local_sequence = 1_u32;
-    let mut hook_packets = 0_u64;
-    let mut relay_packets = 0_u64;
-    let mut last_hook_packet_at = None;
-    let mut last_relay_packet_at = None;
-    let mut last_remote_sequences = HashMap::new();
-    let mut last_heartbeat = Instant::now();
+    let (outbound_tx, outbound_rx) = tokio_mpsc::channel(PACKET_QUEUE_CAPACITY);
+    let (inbound_tx, inbound_rx) = tokio_mpsc::channel(PACKET_QUEUE_CAPACITY);
+    let mut tasks = JoinSet::new();
 
+    tasks.spawn(hook_in_task(
+        hook_in_socket,
+        config.steam_id64.clone(),
+        outbound_tx,
+        event_tx.clone(),
+        cancellation.clone(),
+    ));
+    tasks.spawn(relay_transport_task(
+        relay,
+        outbound_rx,
+        inbound_tx,
+        event_tx.clone(),
+        cancellation.clone(),
+    ));
+    tasks.spawn(hook_out_task(
+        hook_out_socket,
+        inbound_rx,
+        event_tx.clone(),
+        cancellation.clone(),
+    ));
+
+    tokio::spawn(injector_task(event_tx.clone(), cancellation.clone()));
+
+    Ok(tasks)
+}
+
+async fn hook_in_task(
+    socket: UdpSocket,
+    steam_id64: String,
+    outbound_tx: TokioSender<OutboundRelayPacket>,
+    event_tx: RuntimeEventSender,
+    cancellation: CancellationToken,
+) -> io::Result<()> {
+    let mut buffer = vec![0_u8; HOOK_BUFFER_SIZE];
     loop {
-        if stop.load(Ordering::Relaxed) {
-            return Ok(());
-        }
-        let mut had_activity = false;
-        if last_heartbeat.elapsed() >= Duration::from_secs(1) {
-            send_control(
-                &relay_socket,
-                MessageType::Heartbeat,
-                &ControlMessage::Heartbeat,
-            )?;
-            last_heartbeat = Instant::now();
-            had_activity = true;
-        }
-
-        for _ in 0..SOCKET_DRAIN_LIMIT {
-            match hook_socket.recv_from(&mut hook_buffer) {
-                Ok((size, _)) => {
-                    had_activity = true;
-                    observe_packet_gap(event_tx, "Hook -> Relay", &mut last_hook_packet_at);
-                    match forward_hook_packet(
-                        &relay_socket,
-                        &config.steam_id64,
-                        Bytes::copy_from_slice(&hook_buffer[..size]),
-                        event_tx,
-                    ) {
-                        Ok(summary) => {
-                            hook_packets = hook_packets.saturating_add(1);
-                            if should_sample_packet(hook_packets) {
-                                send_event(
-                                    event_tx,
-                                    RuntimeEvent::Log(
-                                        LogLevel::Debug,
-                                        format!(
-                                            "Hook -> Relay packet #{hook_packets}: to={} sequence={} channel={} send_type={} payload_bytes={} wire_bytes={}",
-                                            summary.peer,
-                                            summary.sequence,
-                                            summary.channel,
-                                            summary.send_type,
-                                            summary.payload_bytes,
-                                            summary.wire_bytes
-                                        ),
-                                    ),
-                                );
-                            }
-                        }
-                        Err(error) => {
-                            send_event(
-                                event_tx,
-                                RuntimeEvent::Log(
-                                    LogLevel::Warn,
-                                    format!("Bad hook packet: {error}"),
-                                ),
-                            );
-                            send_event(event_tx, RuntimeEvent::CounterDelta(error_counter()));
+        tokio::select! {
+            () = cancellation.cancelled() => return Ok(()),
+            received = socket.recv_from(&mut buffer) => {
+                let (size, _) = received?;
+                match encode_outbound_relay_packet(&steam_id64, Bytes::copy_from_slice(&buffer[..size])) {
+                    Ok(packet) => {
+                        if outbound_tx.try_send(packet).is_err() {
+                            send_error(&event_tx, "Relay outbound queue is full; dropping hook packet");
                         }
                     }
+                    Err(error) => send_error(&event_tx, format!("Bad hook packet: {error}")),
                 }
-                Err(error) if would_wait(&error) => break,
-                Err(error) => return Err(error),
             }
-        }
-
-        for _ in 0..SOCKET_DRAIN_LIMIT {
-            match relay_socket.recv(&mut relay_buffer) {
-                Ok(size) => {
-                    had_activity = true;
-                    observe_packet_gap(event_tx, "Relay -> Hook", &mut last_relay_packet_at);
-                    match forward_relay_packet(
-                        &hook_socket,
-                        hook_out,
-                        Bytes::copy_from_slice(&relay_buffer[..size]),
-                        &mut local_sequence,
-                        event_tx,
-                    ) {
-                        Ok(Some(summary)) => {
-                            observe_source_sequence(event_tx, &mut last_remote_sequences, &summary);
-                            relay_packets = relay_packets.saturating_add(1);
-                            if should_sample_packet(relay_packets) {
-                                send_event(
-                                    event_tx,
-                                    RuntimeEvent::Log(
-                                        LogLevel::Debug,
-                                        format!(
-                                            "Relay -> Hook packet #{relay_packets}: from={} source_sequence={} local_sequence={} channel={} send_type={} payload_bytes={} local_bytes={}",
-                                            summary.peer,
-                                            summary.source_sequence,
-                                            summary.sequence,
-                                            summary.channel,
-                                            summary.send_type,
-                                            summary.payload_bytes,
-                                            summary.wire_bytes
-                                        ),
-                                    ),
-                                );
-                            }
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            send_event(
-                                event_tx,
-                                RuntimeEvent::Log(
-                                    LogLevel::Warn,
-                                    format!("Bad relay packet: {error}"),
-                                ),
-                            );
-                            send_event(event_tx, RuntimeEvent::CounterDelta(error_counter()));
-                        }
-                    }
-                }
-                Err(error) if would_wait(&error) => break,
-                Err(error) => return Err(error),
-            }
-        }
-
-        if !had_activity {
-            thread::sleep(Duration::from_millis(1));
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PacketSummary {
-    peer: u64,
-    sequence: u32,
-    source_sequence: u32,
-    channel: i32,
-    send_type: i32,
-    payload_bytes: usize,
-    wire_bytes: usize,
+async fn relay_transport_task(
+    mut relay: RelayTransport,
+    mut outbound_rx: TokioReceiver<OutboundRelayPacket>,
+    inbound_tx: TokioSender<InboundGamePacket>,
+    event_tx: RuntimeEventSender,
+    cancellation: CancellationToken,
+) -> io::Result<()> {
+    let mut observer = PacketObserver::default();
+    let mut heartbeat = time::interval(HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+    loop {
+        tokio::select! {
+            () = cancellation.cancelled() => return Ok(()),
+            Some(packet) = outbound_rx.recv() => {
+                relay.sender.send_datagram(packet.raw).await?;
+                send_event(&event_tx, RuntimeEvent::CounterDelta(hook_counter(packet.sent_bytes)));
+                observer.observe_hook_packet(&event_tx, &packet.summary);
+            }
+            raw = relay.receiver.recv_datagram() => {
+                match decode_inbound_relay_datagram(raw?) {
+                    Ok(Some(packet)) => {
+                        if inbound_tx.try_send(packet).is_err() {
+                            send_error(&event_tx, "Hook inbound queue is full; dropping relay packet");
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => send_error(&event_tx, format!("Bad relay packet: {error}")),
+                }
+            }
+            _ = heartbeat.tick() => {
+                send_control(&mut relay.sender, MessageType::Heartbeat, &ControlMessage::Heartbeat).await?;
+            }
+        }
+    }
 }
 
-fn inject_when_ready(stop: &AtomicBool, event_tx: &Sender<RuntimeEvent>) {
+async fn hook_out_task(
+    socket: UdpSocket,
+    mut inbound_rx: TokioReceiver<InboundGamePacket>,
+    event_tx: RuntimeEventSender,
+    cancellation: CancellationToken,
+) -> io::Result<()> {
+    let mut local_sequence = 1_u32;
+    let mut observer = PacketObserver::default();
+    loop {
+        tokio::select! {
+            () = cancellation.cancelled() => return Ok(()),
+            Some(packet) = inbound_rx.recv() => {
+                match encode_inbound_local_packet(packet, &mut local_sequence) {
+                    Ok((bytes, summary, received_bytes)) => {
+                        socket.send_to(&bytes, HOOK_OUT).await?;
+                        send_event(&event_tx, RuntimeEvent::CounterDelta(relay_counter(received_bytes)));
+                        observer.observe_relay_packet(&event_tx, &summary);
+                    }
+                    Err(error) => send_error(&event_tx, format!("Bad inbound game packet: {error}")),
+                }
+            }
+        }
+    }
+}
+
+async fn injector_task(event_tx: RuntimeEventSender, cancellation: CancellationToken) {
     send_event(
-        event_tx,
+        &event_tx,
         RuntimeEvent::Log(LogLevel::Info, "Waiting for Isaac process".to_owned()),
     );
 
-    while !stop.load(Ordering::Relaxed) {
-        if let Some(process) = basement_isaac_injector::find_isaac_process() {
-            let result = basement_isaac_injector::resolve_native_hook_paths()
-                .and_then(|paths| basement_isaac_injector::run_injector(&paths, process.pid));
+    let Some(process) = wait_for_isaac_process(&cancellation).await else {
+        send_event(
+            &event_tx,
+            RuntimeEvent::Log(LogLevel::Info, "Native Hook injection cancelled".to_owned()),
+        );
+        return;
+    };
+
+    let process_name = process.name.clone();
+    let process_id = process.pid;
+    let injection = tokio::task::spawn_blocking(move || {
+        basement_isaac_injector::resolve_native_hook_paths()
+            .and_then(|paths| basement_isaac_injector::run_injector(&paths, process_id))
+    });
+
+    tokio::select! {
+        () = cancellation.cancelled() => {
+            send_event(&event_tx, RuntimeEvent::Log(LogLevel::Info, "Native Hook injection cancelled".to_owned()));
+        }
+        result = time::timeout(INJECTOR_WAIT_TIMEOUT, injection) => {
             match result {
-                Ok(()) => send_event(
-                    event_tx,
+                Ok(Ok(Ok(()))) => send_event(
+                    &event_tx,
                     RuntimeEvent::Log(
                         LogLevel::Info,
-                        format!(
-                            "Native Hook injected into {} ({})",
-                            process.name, process.pid
-                        ),
+                        format!("Native Hook injected into {process_name} ({process_id})"),
                     ),
                 ),
-                Err(error) => {
+                Ok(Ok(Err(error))) => {
                     send_event(
-                        event_tx,
-                        RuntimeEvent::Log(
-                            LogLevel::Error,
-                            format!("Native Hook injection failed: {error}"),
-                        ),
+                        &event_tx,
+                        RuntimeEvent::Log(LogLevel::Error, format!("Native Hook injection failed: {error}")),
                     );
-                    send_event(event_tx, RuntimeEvent::CounterDelta(error_counter()));
+                    send_event(&event_tx, RuntimeEvent::CounterDelta(error_counter()));
+                }
+                Ok(Err(error)) => {
+                    send_event(
+                        &event_tx,
+                        RuntimeEvent::Log(LogLevel::Error, format!("Native Hook injection task failed: {error}")),
+                    );
+                    send_event(&event_tx, RuntimeEvent::CounterDelta(error_counter()));
+                }
+                Err(_) => {
+                    send_event(
+                        &event_tx,
+                        RuntimeEvent::Log(LogLevel::Error, "Native Hook injection timed out".to_owned()),
+                    );
+                    send_event(&event_tx, RuntimeEvent::CounterDelta(error_counter()));
                 }
             }
-            return;
         }
-        thread::sleep(Duration::from_millis(250));
     }
 }
 
-fn complete_relay_join(
-    socket: &UdpSocket,
-    config: &SessionConfig,
-    event_tx: &Sender<RuntimeEvent>,
-) -> io::Result<()> {
-    send_join(socket, config, None)?;
-    let mut buffer = [0_u8; 4096];
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        match socket.recv(&mut buffer) {
-            Ok(size) => {
-                let envelope = Envelope::decode(Bytes::copy_from_slice(&buffer[..size]))
-                    .map_err(io::Error::other)?;
-                let control =
-                    ControlMessage::decode(&envelope.payload).map_err(io::Error::other)?;
-                match control {
-                    ControlMessage::Challenge { token } => send_join(socket, config, Some(token))?,
-                    ControlMessage::Ready { peer_count } => {
-                        send_event(
-                            event_tx,
-                            RuntimeEvent::Log(
-                                LogLevel::Info,
-                                format!("Joined relay room with {peer_count} peer(s)"),
-                            ),
-                        );
-                        return Ok(());
-                    }
-                    ControlMessage::Error { code, message } => {
-                        send_event(
-                            event_tx,
-                            RuntimeEvent::Log(
-                                LogLevel::Warn,
-                                format!("Relay join rejected: {code}: {message}"),
-                            ),
-                        );
-                        return Err(io::Error::other(format!("{code}: {message}")));
-                    }
-                    _ => {}
-                }
+async fn wait_for_isaac_process(
+    cancellation: &CancellationToken,
+) -> Option<basement_isaac_injector::IsaacProcess> {
+    let wait = async {
+        loop {
+            if let Some(process) = basement_isaac_injector::find_isaac_process() {
+                return Some(process);
             }
-            Err(error) if would_wait(&error) => {}
-            Err(error) => return Err(error),
+            time::sleep(Duration::from_millis(250)).await;
         }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        "relay join timed out",
-    ))
-}
-
-fn send_join(
-    socket: &UdpSocket,
-    config: &SessionConfig,
-    challenge: Option<String>,
-) -> io::Result<()> {
-    let message = ControlMessage::Join {
-        room: config.room.clone(),
-        steam_id64: config.steam_id64.clone(),
-        display_name: Some(config.display_name.clone()),
-        challenge,
     };
-    send_control(socket, MessageType::Join, &message)
-}
 
-fn send_control(
-    socket: &UdpSocket,
-    message_type: MessageType,
-    message: &ControlMessage,
-) -> io::Result<()> {
-    let payload = message.encode().map_err(io::Error::other)?;
-    let bytes = Envelope::new(message_type, payload)
-        .encode()
-        .map_err(io::Error::other)?;
-    socket.send(&bytes)?;
-    Ok(())
-}
-
-fn forward_hook_packet(
-    relay_socket: &UdpSocket,
-    steam_id64: &str,
-    bytes: Bytes,
-    event_tx: &Sender<RuntimeEvent>,
-) -> io::Result<PacketSummary> {
-    let packet = LocalPacket::decode(bytes).map_err(io::Error::other)?;
-    if packet.packet_type != LocalPacketType::Outgoing {
-        return Err(io::Error::other("expected outgoing local packet"));
-    }
-    let summary = PacketSummary {
-        peer: packet.peer,
-        sequence: packet.sequence,
-        source_sequence: packet.sequence,
-        channel: packet.channel,
-        send_type: packet.send_type,
-        payload_bytes: packet.payload.len(),
-        wire_bytes: 0,
-    };
-    let sent_bytes = u64::try_from(packet.payload.len()).unwrap_or(u64::MAX);
-    let game = GamePacket::from_local(steam_id64.to_owned(), packet);
-    let payload = game.encode().map_err(io::Error::other)?;
-    let envelope = Envelope::new(MessageType::Data, payload)
-        .encode()
-        .map_err(io::Error::other)?;
-    let wire_bytes = envelope.len();
-    relay_socket.send(&envelope)?;
-    send_event(
-        event_tx,
-        RuntimeEvent::CounterDelta(Counters {
-            hook_to_relay: 1,
-            sent_bytes,
-            ..Counters::default()
-        }),
-    );
-    Ok(PacketSummary {
-        wire_bytes,
-        ..summary
-    })
-}
-
-fn forward_relay_packet(
-    hook_socket: &UdpSocket,
-    hook_out: &str,
-    bytes: Bytes,
-    local_sequence: &mut u32,
-    event_tx: &Sender<RuntimeEvent>,
-) -> io::Result<Option<PacketSummary>> {
-    let envelope = Envelope::decode(bytes).map_err(io::Error::other)?;
-    if envelope.message_type != MessageType::Data {
-        return Ok(None);
-    }
-    let game = GamePacket::decode(&envelope.payload).map_err(io::Error::other)?;
-    let peer = game.from_steam_id64.parse::<u64>().unwrap_or_default();
-    let received_bytes = u64::try_from(game.payload.len()).unwrap_or(u64::MAX);
-    let summary = PacketSummary {
-        peer,
-        sequence: *local_sequence,
-        source_sequence: game.source_sequence,
-        channel: game.channel,
-        send_type: game.send_type,
-        payload_bytes: game.payload.len(),
-        wire_bytes: 0,
-    };
-    let packet = LocalPacket::incoming(peer, *local_sequence, game);
-    *local_sequence = local_sequence.saturating_add(1);
-    let bytes = packet.encode().map_err(io::Error::other)?;
-    let wire_bytes = bytes.len();
-    hook_socket.send_to(&bytes, hook_out)?;
-    send_event(
-        event_tx,
-        RuntimeEvent::CounterDelta(Counters {
-            relay_to_hook: 1,
-            received_bytes,
-            ..Counters::default()
-        }),
-    );
-    Ok(Some(PacketSummary {
-        wire_bytes,
-        ..summary
-    }))
-}
-
-fn would_wait(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-    )
-}
-
-fn should_sample_packet(count: u64) -> bool {
-    count <= 64 || count.is_multiple_of(1_000)
-}
-
-fn observe_packet_gap(
-    event_tx: &Sender<RuntimeEvent>,
-    direction: &str,
-    last_packet_at: &mut Option<Instant>,
-) {
-    let now = Instant::now();
-    if let Some(previous) = last_packet_at.replace(now) {
-        let gap = now.duration_since(previous);
-        if gap >= Duration::from_millis(200) {
-            send_event(
-                event_tx,
-                RuntimeEvent::Log(
-                    LogLevel::Warn,
-                    format!("{direction} packet gap: {} ms", gap.as_millis()),
-                ),
-            );
-        }
+    tokio::select! {
+        () = cancellation.cancelled() => None,
+        result = time::timeout(INJECTOR_WAIT_TIMEOUT, wait) => result.unwrap_or(None),
     }
 }
 
-fn observe_source_sequence(
-    event_tx: &Sender<RuntimeEvent>,
-    last_remote_sequences: &mut HashMap<u64, u32>,
-    summary: &PacketSummary,
-) {
-    if summary.source_sequence == 0 {
+async fn wait_for_essential_task(
+    cancellation: &CancellationToken,
+    tasks: &mut JoinSet<io::Result<()>>,
+) -> Option<String> {
+    tokio::select! {
+        () = cancellation.cancelled() => None,
+        result = tasks.join_next() => match result {
+            Some(Ok(Ok(()))) => Some("Bridge session task exited".to_owned()),
+            Some(Ok(Err(error))) => Some(format!("Bridge session task failed: {error}")),
+            Some(Err(error)) => Some(format!("Bridge session task panicked: {error}")),
+            None => Some("Bridge session tasks exited".to_owned()),
+        },
+    }
+}
+
+async fn shutdown_tasks(mut tasks: JoinSet<io::Result<()>>, event_tx: &RuntimeEventSender) {
+    if time::timeout(SHUTDOWN_TIMEOUT, drain_tasks(&mut tasks))
+        .await
+        .is_ok()
+    {
         return;
     }
-    let Some(previous) = last_remote_sequences.get_mut(&summary.peer) else {
-        last_remote_sequences.insert(summary.peer, summary.source_sequence);
-        return;
-    };
-    let expected = previous.saturating_add(1);
-    if summary.source_sequence == expected {
-        *previous = summary.source_sequence;
-        return;
-    }
+    tasks.abort_all();
     send_event(
         event_tx,
         RuntimeEvent::Log(
             LogLevel::Warn,
-            format!(
-                "Relay source sequence gap: from={} previous={} expected={} current={}",
-                summary.peer, *previous, expected, summary.source_sequence
-            ),
+            "Bridge session shutdown timed out; aborted remaining tasks".to_owned(),
         ),
     );
-    if summary.source_sequence > *previous {
-        *previous = summary.source_sequence;
+    while tasks.join_next().await.is_some() {}
+}
+
+async fn drain_tasks(tasks: &mut JoinSet<io::Result<()>>) {
+    while tasks.join_next().await.is_some() {}
+}
+
+async fn forward_events(
+    mut event_rx: tokio_mpsc::Receiver<RuntimeEvent>,
+    std_event_tx: mpsc::Sender<RuntimeEvent>,
+) {
+    while let Some(event) = event_rx.recv().await {
+        if std_event_tx.send(event).is_err() {
+            break;
+        }
+    }
+}
+
+fn send_startup(sender: &SyncSender<io::Result<()>>, result: io::Result<()>) {
+    let _ = sender.send(result);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        net::{SocketAddr, UdpSocket as StdUdpSocket},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::{Duration, Instant},
+    };
+
+    use bytes::Bytes;
+
+    use crate::protocol::{Envelope, MessageType};
+
+    use super::*;
+    use crate::protocol::ControlMessage;
+
+    static SESSION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn session_reports_malformed_hook_packet_and_stops() {
+        let _guard = SESSION_TEST_LOCK.lock().unwrap();
+        let relay = TestRelay::spawn();
+        let handle = spawn_bridge_worker(SessionConfig {
+            relay: super::super::RelayEndpoint::new("127.0.0.1", relay.address.port()),
+            transport: super::super::TransportChoice::Udp,
+            room: "test-room".to_owned(),
+            mode: super::super::SessionMode::Pure,
+            steam_id64: "76561198000000001".to_owned(),
+            display_name: "Test".to_owned(),
+        })
+        .unwrap();
+
+        let sender = StdUdpSocket::bind("127.0.0.1:0").unwrap();
+        sender.send_to(b"not-a-local-packet", HOOK_IN).unwrap();
+
+        let event = recv_matching(&handle.events, |event| {
+            matches!(
+                event,
+                RuntimeEvent::Log(LogLevel::Warn, message) if message.contains("Bad hook packet")
+            )
+        });
+        assert!(event.is_some());
+
+        handle.stop();
+        relay.stop();
+    }
+
+    #[test]
+    fn session_start_reports_relay_join_timeout() {
+        let _guard = SESSION_TEST_LOCK.lock().unwrap();
+        let relay = SilentRelay::spawn();
+
+        let error = spawn_bridge_worker(SessionConfig {
+            relay: super::super::RelayEndpoint::new("127.0.0.1", relay.address.port()),
+            transport: super::super::TransportChoice::Udp,
+            room: "test-room".to_owned(),
+            mode: super::super::SessionMode::Pure,
+            steam_id64: "76561198000000001".to_owned(),
+            display_name: "Test".to_owned(),
+        })
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        relay.stop();
+    }
+
+    fn recv_matching(
+        receiver: &Receiver<RuntimeEvent>,
+        predicate: impl Fn(&RuntimeEvent) -> bool,
+    ) -> Option<RuntimeEvent> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if let Ok(event) = receiver.recv_timeout(Duration::from_millis(50))
+                && predicate(&event)
+            {
+                return Some(event);
+            }
+        }
+        None
+    }
+
+    struct TestRelay {
+        address: SocketAddr,
+        stop: Arc<AtomicBool>,
+        worker: thread::JoinHandle<()>,
+    }
+
+    impl TestRelay {
+        fn spawn() -> Self {
+            let socket = StdUdpSocket::bind("127.0.0.1:0").unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_millis(50)))
+                .unwrap();
+            let address = socket.local_addr().unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let worker_stop = Arc::clone(&stop);
+            let worker = thread::spawn(move || run_test_relay(socket, &worker_stop));
+            Self {
+                address,
+                stop,
+                worker,
+            }
+        }
+
+        fn stop(self) {
+            self.stop.store(true, Ordering::Relaxed);
+            let _ = self.worker.join();
+        }
+    }
+
+    struct SilentRelay {
+        address: SocketAddr,
+        stop: Arc<AtomicBool>,
+        worker: thread::JoinHandle<()>,
+    }
+
+    impl SilentRelay {
+        fn spawn() -> Self {
+            let socket = StdUdpSocket::bind("127.0.0.1:0").unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_millis(50)))
+                .unwrap();
+            let address = socket.local_addr().unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let worker_stop = Arc::clone(&stop);
+            let worker = thread::spawn(move || {
+                let mut buffer = [0_u8; 4096];
+                while !worker_stop.load(Ordering::Relaxed) {
+                    let _ = socket.recv_from(&mut buffer);
+                }
+            });
+            Self {
+                address,
+                stop,
+                worker,
+            }
+        }
+
+        fn stop(self) {
+            self.stop.store(true, Ordering::Relaxed);
+            let _ = self.worker.join();
+        }
+    }
+
+    fn run_test_relay(socket: StdUdpSocket, stop: &AtomicBool) {
+        let mut buffer = [0_u8; 4096];
+        while !stop.load(Ordering::Relaxed) {
+            let Ok((size, address)) = socket.recv_from(&mut buffer) else {
+                continue;
+            };
+            let Ok(envelope) = Envelope::decode(Bytes::copy_from_slice(&buffer[..size])) else {
+                continue;
+            };
+            if envelope.message_type != MessageType::Join {
+                continue;
+            }
+            let Ok(control) = ControlMessage::decode(&envelope.payload) else {
+                continue;
+            };
+            let response = match control {
+                ControlMessage::Join {
+                    challenge: None, ..
+                } => (
+                    MessageType::JoinChallenge,
+                    ControlMessage::Challenge {
+                        token: "token".to_owned(),
+                    },
+                ),
+                ControlMessage::Join {
+                    challenge: Some(_), ..
+                } => (
+                    MessageType::JoinReady,
+                    ControlMessage::Ready { peer_count: 1 },
+                ),
+                _ => continue,
+            };
+            let payload = response.1.encode().unwrap();
+            let raw = Envelope::new(response.0, payload).encode().unwrap();
+            socket.send_to(&raw, address).unwrap();
+        }
     }
 }

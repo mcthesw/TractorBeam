@@ -1,28 +1,35 @@
 use std::{
     fmt::{self, Display},
-    fs, io,
+    fs,
+    future::Future,
+    io,
     net::UdpSocket,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use bytes::Bytes;
+use tokio::{runtime::Builder, time};
 
-use crate::protocol::{ControlMessage, Envelope, GamePacket, LocalPacket, MessageType};
+use crate::protocol::{Envelope, GamePacket, LocalPacket, MessageType};
 
-use super::{BridgeClient, LogLevel, RelayEndpoint, hook_config::HOOK_OUT, state::unix_seconds};
+use super::{
+    BridgeClient, LogLevel, RelayEndpoint, SessionConfig, SessionMode, TransportChoice,
+    hook_config::HOOK_OUT,
+    relay_transport::{RelayTransport, complete_relay_join},
+    state::unix_seconds,
+};
 
 const PROBE_A_STEAM: &str = "76561198000000101";
 const PROBE_B_STEAM: &str = "76561198000000102";
 pub const DEFAULT_RELAY_PROBE_PAYLOAD_BYTES: usize = 2_048;
 const MAX_RELAY_PROBE_PAYLOAD_BYTES: usize = 60_000;
-const SOCKET_TIMEOUT: Duration = Duration::from_millis(500);
-const JOIN_TIMEOUT: Duration = Duration::from_secs(3);
 const DATA_TIMEOUT: Duration = Duration::from_secs(3);
 const HOOK_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RelayProbeReport {
     pub relay: String,
+    pub transport: TransportChoice,
     pub room: String,
     pub a_to_b_bytes: usize,
     pub b_to_a_bytes: usize,
@@ -33,8 +40,8 @@ impl RelayProbeReport {
     #[must_use]
     pub fn short_summary(&self) -> String {
         format!(
-            "Relay probe passed: {} byte payload, {} bytes A->B, {} bytes B->A via {}",
-            self.payload_bytes, self.a_to_b_bytes, self.b_to_a_bytes, self.relay
+            "Relay probe passed: {} byte payload, {} bytes A->B, {} bytes B->A via {} ({})",
+            self.payload_bytes, self.a_to_b_bytes, self.b_to_a_bytes, self.relay, self.transport
         )
     }
 }
@@ -86,8 +93,17 @@ impl BridgeClient {
         relay: RelayEndpoint,
         payload_bytes: usize,
     ) -> io::Result<RelayProbeReport> {
+        self.run_relay_probe_with_transport_payload(relay, TransportChoice::Udp, payload_bytes)
+    }
+
+    pub fn run_relay_probe_with_transport_payload(
+        &mut self,
+        relay: RelayEndpoint,
+        transport: TransportChoice,
+        payload_bytes: usize,
+    ) -> io::Result<RelayProbeReport> {
         relay.validate().map_err(io::Error::other)?;
-        let report = run_relay_probe(relay, payload_bytes)?;
+        let report = run_relay_probe(relay, transport, payload_bytes)?;
         self.log(LogLevel::Info, report.to_string());
         Ok(report)
     }
@@ -99,27 +115,44 @@ impl BridgeClient {
     }
 }
 
-fn run_relay_probe(relay: RelayEndpoint, payload_bytes: usize) -> io::Result<RelayProbeReport> {
+fn run_relay_probe(
+    relay: RelayEndpoint,
+    transport: TransportChoice,
+    payload_bytes: usize,
+) -> io::Result<RelayProbeReport> {
     if !(1..=MAX_RELAY_PROBE_PAYLOAD_BYTES).contains(&payload_bytes) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("relay probe payload must be 1..={MAX_RELAY_PROBE_PAYLOAD_BYTES} bytes"),
         ));
     }
+    block_on_probe(run_relay_probe_async(relay, transport, payload_bytes))
+}
+
+async fn run_relay_probe_async(
+    relay: RelayEndpoint,
+    transport: TransportChoice,
+    payload_bytes: usize,
+) -> io::Result<RelayProbeReport> {
     let room = format!("bb-probe-{}-{}", std::process::id(), unix_seconds());
     let relay_display = relay.to_string();
-    let peer_a = ProbePeer::join(&relay_display, &room, PROBE_A_STEAM, "Probe A")?;
-    let peer_b = ProbePeer::join(&relay_display, &room, PROBE_B_STEAM, "Probe B")?;
+    let mut peer_a = ProbePeer::join(&relay, transport, &room, PROBE_A_STEAM, "Probe A").await?;
+    let mut peer_b = ProbePeer::join(&relay, transport, &room, PROBE_B_STEAM, "Probe B").await?;
 
     let payload = probe_payload(payload_bytes);
-    peer_a.send_game(PROBE_B_STEAM, payload.clone())?;
-    peer_b.expect_game(PROBE_A_STEAM, PROBE_B_STEAM, &payload)?;
+    peer_a.send_game(PROBE_B_STEAM, payload.clone()).await?;
+    peer_b
+        .expect_game(PROBE_A_STEAM, PROBE_B_STEAM, &payload)
+        .await?;
 
-    peer_b.send_game(PROBE_A_STEAM, payload.clone())?;
-    peer_a.expect_game(PROBE_B_STEAM, PROBE_A_STEAM, &payload)?;
+    peer_b.send_game(PROBE_A_STEAM, payload.clone()).await?;
+    peer_a
+        .expect_game(PROBE_B_STEAM, PROBE_A_STEAM, &payload)
+        .await?;
 
     Ok(RelayProbeReport {
         relay: relay_display,
+        transport,
         room,
         a_to_b_bytes: payload.len(),
         b_to_a_bytes: payload.len(),
@@ -136,25 +169,40 @@ fn probe_payload(payload_bytes: usize) -> Bytes {
 }
 
 struct ProbePeer {
-    socket: UdpSocket,
+    transport: RelayTransport,
     steam_id64: &'static str,
 }
 
 impl ProbePeer {
-    fn join(
-        relay: &str,
+    async fn join(
+        relay: &RelayEndpoint,
+        transport: TransportChoice,
         room: &str,
         steam_id64: &'static str,
         display_name: &str,
     ) -> io::Result<Self> {
-        let socket = UdpSocket::bind("0.0.0.0:0")?;
-        socket.connect(relay)?;
-        socket.set_read_timeout(Some(SOCKET_TIMEOUT))?;
-        complete_join(&socket, room, steam_id64, display_name)?;
-        Ok(Self { socket, steam_id64 })
+        let config = SessionConfig {
+            relay: relay.clone(),
+            transport,
+            room: room.to_owned(),
+            mode: SessionMode::Pure,
+            steam_id64: steam_id64.to_owned(),
+            display_name: display_name.to_owned(),
+        };
+        let mut relay_transport = RelayTransport::connect(relay, transport).await?;
+        complete_relay_join(
+            &mut relay_transport.sender,
+            &mut relay_transport.receiver,
+            &config,
+        )
+        .await?;
+        Ok(Self {
+            transport: relay_transport,
+            steam_id64,
+        })
     }
 
-    fn send_game(&self, to_steam_id64: &str, payload: Bytes) -> io::Result<()> {
+    async fn send_game(&mut self, to_steam_id64: &str, payload: Bytes) -> io::Result<()> {
         let packet = GamePacket {
             from_steam_id64: self.steam_id64.to_owned(),
             to_steam_id64: to_steam_id64.parse().map_err(io::Error::other)?,
@@ -167,121 +215,59 @@ impl ProbePeer {
         let bytes = Envelope::new(MessageType::Data, payload)
             .encode()
             .map_err(io::Error::other)?;
-        self.socket.send(&bytes)?;
-        Ok(())
+        self.transport.sender.send_datagram(bytes).await
     }
 
-    fn expect_game(
-        &self,
+    async fn expect_game(
+        &mut self,
         from_steam_id64: &str,
         to_steam_id64: &str,
         payload: &Bytes,
     ) -> io::Result<()> {
-        let deadline = Instant::now() + DATA_TIMEOUT;
-        let mut buffer = vec![0_u8; 65_535];
-        while Instant::now() < deadline {
-            match self.socket.recv(&mut buffer) {
-                Ok(size) => {
-                    let envelope = Envelope::decode(Bytes::copy_from_slice(&buffer[..size]))
-                        .map_err(io::Error::other)?;
-                    if envelope.message_type != MessageType::Data {
-                        continue;
-                    }
-                    let packet = GamePacket::decode(&envelope.payload).map_err(io::Error::other)?;
-                    if packet.from_steam_id64 != from_steam_id64 {
-                        return Err(io::Error::other(format!(
-                            "unexpected probe sender {}",
-                            packet.from_steam_id64
-                        )));
-                    }
-                    if packet.to_steam_id64.to_string() != to_steam_id64 {
-                        return Err(io::Error::other(format!(
-                            "unexpected probe target {}",
-                            packet.to_steam_id64
-                        )));
-                    }
-                    if packet.payload != *payload {
-                        return Err(io::Error::other("unexpected probe payload"));
-                    }
-                    return Ok(());
+        let wait_for_data = async {
+            loop {
+                let raw = self.transport.receiver.recv_datagram().await?;
+                let envelope = Envelope::decode(raw).map_err(io::Error::other)?;
+                if envelope.message_type != MessageType::Data {
+                    continue;
                 }
-                Err(error) if would_wait(&error) => {}
-                Err(error) => return Err(error),
+                let packet = GamePacket::decode(&envelope.payload).map_err(io::Error::other)?;
+                if packet.from_steam_id64 != from_steam_id64 {
+                    return Err(io::Error::other(format!(
+                        "unexpected probe sender {}",
+                        packet.from_steam_id64
+                    )));
+                }
+                if packet.to_steam_id64.to_string() != to_steam_id64 {
+                    return Err(io::Error::other(format!(
+                        "unexpected probe target {}",
+                        packet.to_steam_id64
+                    )));
+                }
+                if packet.payload != *payload {
+                    return Err(io::Error::other("unexpected probe payload"));
+                }
+                return Ok(());
             }
-        }
-        Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "relay probe data timed out",
-        ))
+        };
+        time::timeout(DATA_TIMEOUT, wait_for_data)
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "relay probe data timed out"))?
     }
 }
 
-fn complete_join(
-    socket: &UdpSocket,
-    room: &str,
-    steam_id64: &str,
-    display_name: &str,
-) -> io::Result<()> {
-    send_join(socket, room, steam_id64, display_name, None)?;
-    let deadline = Instant::now() + JOIN_TIMEOUT;
-    let mut buffer = [0_u8; 4096];
-    while Instant::now() < deadline {
-        match socket.recv(&mut buffer) {
-            Ok(size) => {
-                let envelope = Envelope::decode(Bytes::copy_from_slice(&buffer[..size]))
-                    .map_err(io::Error::other)?;
-                let control =
-                    ControlMessage::decode(&envelope.payload).map_err(io::Error::other)?;
-                match control {
-                    ControlMessage::Challenge { token } => {
-                        send_join(socket, room, steam_id64, display_name, Some(token))?;
-                    }
-                    ControlMessage::Ready { .. } => return Ok(()),
-                    ControlMessage::Error { code, message } => {
-                        return Err(io::Error::other(format!("{code}: {message}")));
-                    }
-                    _ => {}
-                }
-            }
-            Err(error) if would_wait(&error) => {}
-            Err(error) => return Err(error),
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        "relay probe join timed out",
-    ))
-}
-
-fn send_join(
-    socket: &UdpSocket,
-    room: &str,
-    steam_id64: &str,
-    display_name: &str,
-    challenge: Option<String>,
-) -> io::Result<()> {
-    let message = ControlMessage::Join {
-        room: room.to_owned(),
-        steam_id64: steam_id64.to_owned(),
-        display_name: Some(display_name.to_owned()),
-        challenge,
-    };
-    let payload = message.encode().map_err(io::Error::other)?;
-    let bytes = Envelope::new(MessageType::Join, payload)
-        .encode()
-        .map_err(io::Error::other)?;
-    socket.send(&bytes)?;
-    Ok(())
-}
-
-fn would_wait(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-    )
+fn block_on_probe<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
+    Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(future)
 }
 
 fn run_hook_receive_probe() -> io::Result<HookReceiveProbeReport> {
+    block_on_probe(run_hook_receive_probe_async())
+}
+
+async fn run_hook_receive_probe_async() -> io::Result<HookReceiveProbeReport> {
     let peer = hook_probe_peer();
     let payload = Bytes::from(format!("basement-bridge-hook-probe-{peer}"));
     let game = GamePacket {
@@ -304,15 +290,23 @@ fn run_hook_receive_probe() -> io::Result<HookReceiveProbeReport> {
         available_hit: false,
         read_hit: false,
     };
-    let deadline = Instant::now() + HOOK_PROBE_TIMEOUT;
-    while Instant::now() < deadline {
-        update_hook_probe_report(&mut report);
-        if report.local_in && report.read_hit {
-            break;
+    let probe_result = time::timeout(HOOK_PROBE_TIMEOUT, async {
+        loop {
+            update_hook_probe_report(&mut report);
+            if report.local_in && report.read_hit {
+                return;
+            }
+            time::sleep(Duration::from_millis(100)).await;
         }
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    })
+    .await;
     update_hook_probe_report(&mut report);
+    if probe_result.is_err() {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("hook receive probe timed out: {report}"),
+        ));
+    }
     Ok(report)
 }
 
@@ -342,6 +336,18 @@ fn update_hook_probe_report(report: &mut HookReceiveProbeReport) {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::HashMap,
+        net::{SocketAddr, UdpSocket},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread,
+    };
+
+    use crate::protocol::ControlMessage;
+
     use super::*;
 
     #[test]
@@ -356,6 +362,7 @@ mod tests {
 
         let report = run_relay_probe(
             RelayEndpoint::new(host, port),
+            TransportChoice::Udp,
             DEFAULT_RELAY_PROBE_PAYLOAD_BYTES,
         )
         .unwrap();
@@ -367,9 +374,139 @@ mod tests {
     fn rejects_oversized_relay_probe_payload() {
         let result = run_relay_probe(
             RelayEndpoint::new("127.0.0.1", 1),
+            TransportChoice::Udp,
             MAX_RELAY_PROBE_PAYLOAD_BYTES + 1,
         );
 
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn probes_local_udp_relay() {
+        let relay = TestRelay::spawn();
+
+        let report = run_relay_probe(
+            RelayEndpoint::new("127.0.0.1", relay.address.port()),
+            TransportChoice::Udp,
+            512,
+        )
+        .unwrap();
+
+        assert_eq!(report.a_to_b_bytes, 512);
+        assert_eq!(report.b_to_a_bytes, 512);
+        relay.stop();
+    }
+
+    struct TestRelay {
+        address: SocketAddr,
+        stop: Arc<AtomicBool>,
+        worker: thread::JoinHandle<()>,
+    }
+
+    impl TestRelay {
+        fn spawn() -> Self {
+            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_millis(50)))
+                .unwrap();
+            let address = socket.local_addr().unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let worker_stop = Arc::clone(&stop);
+            let worker = thread::spawn(move || run_test_relay(socket, &worker_stop));
+            Self {
+                address,
+                stop,
+                worker,
+            }
+        }
+
+        fn stop(self) {
+            self.stop.store(true, Ordering::Relaxed);
+            let _ = self.worker.join();
+        }
+    }
+
+    fn run_test_relay(socket: UdpSocket, stop: &AtomicBool) {
+        let mut peers = HashMap::new();
+        let mut buffer = [0_u8; 65_535];
+        while !stop.load(Ordering::Relaxed) {
+            let Ok((size, address)) = socket.recv_from(&mut buffer) else {
+                continue;
+            };
+            let raw = Bytes::copy_from_slice(&buffer[..size]);
+            let Ok(envelope) = Envelope::decode(raw.clone()) else {
+                continue;
+            };
+            match envelope.message_type {
+                MessageType::Join => handle_join(&socket, address, &envelope, &mut peers),
+                MessageType::Data => forward_data(&socket, raw, &envelope, &peers),
+                _ => {}
+            }
+        }
+    }
+
+    fn handle_join(
+        socket: &UdpSocket,
+        address: SocketAddr,
+        envelope: &Envelope,
+        peers: &mut HashMap<String, SocketAddr>,
+    ) {
+        let Ok(control) = ControlMessage::decode(&envelope.payload) else {
+            return;
+        };
+        let response = match control {
+            ControlMessage::Join {
+                steam_id64,
+                challenge: None,
+                ..
+            } => {
+                peers.insert(steam_id64, address);
+                (
+                    MessageType::JoinChallenge,
+                    ControlMessage::Challenge {
+                        token: "token".to_owned(),
+                    },
+                )
+            }
+            ControlMessage::Join {
+                steam_id64,
+                challenge: Some(_),
+                ..
+            } => {
+                peers.insert(steam_id64, address);
+                (
+                    MessageType::JoinReady,
+                    ControlMessage::Ready { peer_count: 1 },
+                )
+            }
+            _ => return,
+        };
+        send_control(socket, address, response.0, &response.1);
+    }
+
+    fn forward_data(
+        socket: &UdpSocket,
+        raw: Bytes,
+        envelope: &Envelope,
+        peers: &HashMap<String, SocketAddr>,
+    ) {
+        let Ok(game) = GamePacket::decode(&envelope.payload) else {
+            return;
+        };
+        let Some(address) = peers.get(&game.to_steam_id64.to_string()) else {
+            return;
+        };
+        socket.send_to(&raw, address).unwrap();
+    }
+
+    fn send_control(
+        socket: &UdpSocket,
+        address: SocketAddr,
+        message_type: MessageType,
+        message: &ControlMessage,
+    ) {
+        let payload = message.encode().unwrap();
+        let raw = Envelope::new(message_type, payload).encode().unwrap();
+        socket.send_to(&raw, address).unwrap();
     }
 }

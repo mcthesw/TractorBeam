@@ -1,4 +1,4 @@
-use basement_bridge_core::{ClientError, ConfigError, SessionMode, SessionStatus};
+use basement_bridge_core::{ClientError, ConfigError, SessionMode, SessionStatus, TransportChoice};
 use eframe::egui;
 
 use crate::i18n::{Language, Text, text};
@@ -51,6 +51,12 @@ impl BridgeApp {
                 mode_label(self.language, self.mode)
             ));
             ui.separator();
+            ui.label(format!(
+                "{}: {}",
+                self.t(Text::Transport),
+                transport_label(self.language, self.transport)
+            ));
+            ui.separator();
             ui.monospace(format!(
                 "{} {}",
                 self.t(Text::HookToRelay),
@@ -86,6 +92,13 @@ pub(super) fn mode_label(language: Language, mode: SessionMode) -> &'static str 
         SessionMode::Official => text(language, Text::Official),
         SessionMode::Fallback => text(language, Text::Fallback),
         SessionMode::Pure => text(language, Text::Pure),
+    }
+}
+
+pub(super) fn transport_label(language: Language, transport: TransportChoice) -> &'static str {
+    match transport {
+        TransportChoice::Udp => text(language, Text::Udp),
+        TransportChoice::Tcp => text(language, Text::Tcp),
     }
 }
 

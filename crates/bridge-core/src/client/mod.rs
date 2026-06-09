@@ -3,13 +3,17 @@
 mod config;
 mod diagnostics;
 mod hook_config;
+mod packet_flow;
 mod probe;
+mod relay_transport;
 mod session;
 mod state;
 
 use std::io;
 
-pub use config::{ConfigError, RelayEndpoint, SessionConfig, SessionMode, SteamIdentity};
+pub use config::{
+    ConfigError, RelayEndpoint, SessionConfig, SessionMode, SteamIdentity, TransportChoice,
+};
 pub use diagnostics::diagnostics_directory;
 pub use probe::{DEFAULT_RELAY_PROBE_PAYLOAD_BYTES, HookReceiveProbeReport, RelayProbeReport};
 pub use state::{Counters, LogEntry, LogLevel, RuntimeState, SessionStatus};
@@ -38,10 +42,12 @@ impl BridgeClient {
         &self.state
     }
 
-    pub fn poll_events(&mut self) {
+    pub fn poll_events(&mut self) -> bool {
+        let mut processed = false;
         let mut should_clear = false;
         if let Some(handle) = &self.session {
             while let Ok(event) = handle.events.try_recv() {
+                processed = true;
                 match event {
                     state::RuntimeEvent::Log(level, message) => {
                         self.state.logs.push(log_entry(level, message));
@@ -57,6 +63,7 @@ impl BridgeClient {
         if should_clear {
             self.session = None;
         }
+        processed
     }
 
     pub fn refresh_steam_accounts(&mut self) {
@@ -72,23 +79,20 @@ impl BridgeClient {
         config.validate()?;
         self.stop_session();
 
-        let mut session = if config.mode != SessionMode::Official {
+        let session = if config.mode != SessionMode::Official {
             hook_config::write_hook_config(config)?;
-            Some(session::spawn_bridge_worker(config.clone()))
+            Some(session::spawn_bridge_worker(config.clone())?)
         } else {
             None
         };
 
         if let Err(error) = crate::steam::launch_isaac() {
-            if let Some(handle) = session.take() {
+            if let Some(handle) = session {
                 handle.stop();
             }
             return Err(error.into());
         }
 
-        if let Some(handle) = &mut session {
-            handle.spawn_injector_worker();
-        }
         self.session = session;
         self.state.status = SessionStatus::Running;
         self.log(
@@ -169,6 +173,7 @@ mod tests {
     fn validates_session_config() {
         let config = SessionConfig {
             relay: RelayEndpoint::new("relay.example.com", 25_910),
+            transport: TransportChoice::Udp,
             room: "room".to_owned(),
             mode: SessionMode::Pure,
             steam_id64: "76561198000000001".to_owned(),

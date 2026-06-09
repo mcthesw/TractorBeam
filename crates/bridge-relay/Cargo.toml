@@ -10,10 +10,12 @@ publish = false
 basement-bridge-core = { path = "../bridge-core" }
 bytes = "1.11.1"
 clap = { version = "4.6.1", features = ["derive"] }
+futures-util = { version = "0.3.31", features = ["sink"] }
 ipnet = { version = "2.12.0", features = ["serde"] }
 rand = "0.10.1"
 serde = { version = "1.0.228", features = ["derive"] }
-tokio = { version = "1.52.3", features = ["macros", "net", "rt-multi-thread", "time"] }
+tokio = { version = "1.52.3", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7.17", features = ["codec"] }
 toml = "1.1.2"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"

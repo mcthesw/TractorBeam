@@ -1,7 +1,7 @@
 # Architecture
 
-Basement Bridge is split into a small native hook, a Rust client runtime, an
-egui desktop GUI, and a Rust relay server.
+Basement Bridge is split into a Rust core library, an egui desktop GUI, a Rust
+relay server, a Rust injector helper, and a small Rust native hook.
 
 ```mermaid
 flowchart LR
@@ -13,10 +13,12 @@ flowchart LR
 
     subgraph Bundle["Client Bundle"]
         Gui["Bridge GUI"]
+        Core["Bridge Core"]
         Client["Bridge Client runtime"]
-        Injector["Injector"]
+        Injector["Injector helper"]
         Config["Hook config"]
-        Gui --> Client
+        Gui --> Core
+        Core --> Client
         Client --> Config
         Client --> Injector
     end
@@ -56,12 +58,19 @@ status, and diagnostics. The Bridge GUI owns presentation and user input.
 
 ## Rust Crate Boundaries
 
-- `bridge-protocol`: no IO; packet structs, encoding, decoding, and versioning.
-- `bridge-relay`: UDP relay runtime and room registry.
-- `bridge-client`: local client runtime without UI ownership.
-- `bridge-gui`: egui desktop presentation for the player-facing app.
-- `bridge-diagnostics`: log discovery, summarization, and diagnostic bundles.
-- `steam-detector`: Steam install, account, and SteamID64 discovery.
-- `isaac-injector`: process discovery and hook injection orchestration.
+- `bridge-core`: Bridge Client runtime, relay/local protocol, diagnostics,
+  Steam account/path detection, and hook configuration helpers. It owns no GUI
+  presentation and no relay process.
+- `bridge-gui`: egui desktop presentation for the player-facing app. It
+  depends on `bridge-core` and does not own transport behavior.
+- `bridge-relay`: deployable UDP Relay Server binary and room registry. It uses
+  `bridge-core::protocol` for wire formats.
+- `isaac-injector`: process discovery plus the injector helper binary used to
+  load the Native Hook into Isaac.
+- `native-hook`: Windows i686 DLL for the SteamNetworking006 packet path.
+
+The Injector remains a separate crate so the Client Bundle can ship an i686
+helper alongside the i686 Native Hook while the Bridge GUI can stay a normal
+desktop binary.
 
 See `configuration.md` for where relay and hook settings live today.

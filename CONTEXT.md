@@ -26,6 +26,10 @@ _Avoid_: sidecar, GUI, app
 The desktop presentation layer used by players to configure and control a Basement Bridge session.
 _Avoid_: client, sidecar
 
+**Bridge Core**:
+The Rust code crate that contains the Bridge Client runtime, protocol, diagnostics, Steam detection, and local configuration helpers.
+_Avoid_: GUI, relay, hook
+
 **Client Bundle**:
 The versioned player-facing package that ships the Bridge GUI, Bridge Client, Native Hook, and Injector together.
 _Avoid_: hook release, GUI release
@@ -65,6 +69,7 @@ _Avoid_: normal relay mode
 ## Relationships
 
 - A **Client Bundle** contains one **Bridge GUI**, one **Bridge Client**, one **Native Hook**, and one **Injector**.
+- **Bridge Core** provides the code used by the **Bridge GUI** to control a **Bridge Client** session.
 - A **Bridge GUI** controls a **Bridge Client**.
 - A **Bridge Client** joins at most one **Room** on one **Relay Server** per active session.
 - A **Relay Server** forwards packets only among **Peers** in the same **Room**.

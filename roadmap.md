@@ -6,22 +6,25 @@ and security scope.
 
 ## Phase 1: Windows Rust Baseline
 
-Goal: replace the current script-driven flow with a Rust baseline while keeping
-the existing Native Hook.
+Goal: replace the current prototype flow with a Rust baseline and a Rust Native
+Hook path.
 
-- [ ] Support Windows + Steam + *The Binding of Isaac: Repentance+* only.
-- [ ] Keep the existing Native Hook and Injector inside the Client Bundle.
-- [ ] Split `bridge-client` runtime from `bridge-gui` presentation.
-- [ ] Build the Rust Relay Server with room join, peer forwarding, counters, timeouts, and basic limits.
-- [ ] Build the Rust Bridge Client with local hook bridge, relay connection, room setup, launch, injection, state, and errors.
-- [ ] Build the egui Bridge GUI with relay address, room, SteamID64, mode, start/stop, status, counters, and diagnostics export.
-- [ ] Implement Official Mode, Fallback Mode, and Pure Mode.
-- [ ] Support manual relay address entry and recent relay history.
-- [ ] Define the first relay protocol envelope, version negotiation, capabilities, and error codes.
-- [ ] Decide the Phase 1 control-message format after a short Cap'n Proto vs Protobuf spike.
-- [ ] Produce a basic Diagnostics Bundle.
-- [ ] Add focused tests for protocol encoding, relay forwarding, local bridge flow, and diagnostics packaging.
-- [ ] Document failure recovery for launch, injection, relay, and hook errors.
+- [x] Support Windows + Steam + *The Binding of Isaac: Repentance+* only.
+- [x] Use the crate layout `bridge-core`, `bridge-gui`, `bridge-relay`, `native-hook`, and `isaac-injector`.
+- [x] Build the Rust Native Hook DLL for the i686 Isaac process.
+- [x] Build the Rust Injector helper.
+- [x] Build the Rust Relay Server with room join, peer forwarding, timeouts, rate limits, and IP/CIDR blocklists.
+- [x] Build the Rust Bridge Client runtime with local hook bridge, relay connection, room setup, Steam launch, injection orchestration, state, and errors.
+- [x] Build the egui Bridge GUI with relay address, room, SteamID64, mode, start/stop, status, counters, and diagnostics export.
+- [x] Implement Official Mode, Fallback Mode, and Pure Mode.
+- [x] Define the first relay protocol envelope, versioning, capabilities, and error codes.
+- [x] Use a simple versioned envelope for Phase 1 control messages.
+- [x] Produce a basic Diagnostics Bundle.
+- [x] Document failure recovery for launch, injection, relay, and hook errors.
+- [ ] Produce a repeatable Client Bundle layout containing the Bridge GUI, Bridge Core runtime, Native Hook, and i686 Injector helper.
+- [ ] Support recent relay history.
+- [ ] Add focused local bridge flow tests beyond protocol, relay state, and diagnostics unit tests.
+- [ ] Add Relay Server runtime counters/metrics.
 
 Deferred from Phase 1:
 
@@ -36,15 +39,17 @@ Deferred from Phase 1:
 
 Goal: make the Windows baseline reliable across real player machines.
 
-- [ ] Prepare closed test instructions and a feedback template.
+- [x] Prepare closed test instructions and a feedback template.
 - [ ] Deploy a public test Relay Server.
-- [ ] Document Relay Server self-deployment.
-- [ ] Improve Windows Steam and Isaac path detection.
-- [ ] Improve launch, injection, failure recovery, and user-facing errors.
-- [ ] Add Relay Server logs, basic abuse limits, and an operational runbook.
-- [ ] Define diagnostics review workflow and log redaction rules.
-- [ ] Collect compatibility notes for common mod-enabled sessions.
-- [ ] Add Relay Server IP/CIDR blocklist support for test operations.
+- [x] Document Relay Server self-deployment.
+- [x] Improve Windows Steam and Isaac path detection.
+- [x] Improve launch, injection, failure recovery, and user-facing errors.
+- [x] Add Relay Server logs, basic abuse limits, and an operational runbook.
+- [x] Define diagnostics review workflow and log redaction rules.
+- [x] Collect compatibility notes for common mod-enabled sessions.
+- [x] Add Relay Server IP/CIDR blocklist support for test operations.
+- [ ] Verify the Rust Native Hook and i686 Injector helper on tester machines without prototype binaries.
+- [ ] Verify the Client Bundle layout can be copied to a clean machine and run from the Bridge GUI.
 
 ## Phase 3: Public Release
 

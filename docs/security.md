@@ -59,13 +59,20 @@ Who Basement Bridge trusts, and how much:
 - Signed Directory Service metadata for trusted Relay Servers.
 - Client and Relay Server protocol compatibility ranges.
 - Directory Service relay revocation for compromised, outdated, or abusive Relay Servers.
-- Relay Server IP/CIDR blocklists for local abuse response.
+- Public Relay Server abuse and privacy policy.
 - Abuse mitigation such as proof-of-work, token buckets, or equivalent gating.
 - Clear user documentation for why injection is needed and how to return to Official Mode.
 
 ## Abuse Controls
 
 - Phase 1 uses protocol magic, packet size limits, room membership checks, timeouts, and basic rate limits.
-- Closed testing may add Relay Server local IP/CIDR blocklists for obvious abuse.
+- Phase 2 adds Relay Server local IP/CIDR blocklists, Room limits, Peer limits, and Room name length limits for obvious abuse during closed testing.
 - Public release should support Directory Service relay revocation, but should avoid a global player IP blacklist unless there is a clear privacy and governance policy.
 - Proof-of-work is a public-release hardening option, not a Phase 1 requirement.
+
+## Diagnostics Redaction
+
+Exported Diagnostics Bundles redact SteamID64-like values, Relay Server
+endpoints, Room fields, and local user profile paths. This is a guardrail, not a
+promise that every possible sensitive string has been removed. Closed-test logs
+should still be shared privately.

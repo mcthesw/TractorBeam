@@ -1,33 +1,14 @@
-//! Hook injection orchestration for Isaac.
+//! Process discovery and Native Hook injection orchestration for Isaac.
 
-/// Process image name used by the current Windows build.
-pub const ISAAC_PROCESS_NAME: &str = "isaac-ng.exe";
+mod error;
+mod paths;
+mod platform;
+mod process;
 
-/// Native hook DLL name produced by the C++ hook build.
-pub const NATIVE_HOOK_DLL: &str = "isaac_eos_probe.dll";
-
-/// Native injector executable name produced by the C++ hook build.
-pub const NATIVE_INJECTOR_EXE: &str = "eos_probe_injector.exe";
-
-/// Minimal command line shape for the current native injector.
-pub fn injector_args(pid: u32, dll_path: &str) -> [String; 4] {
-    [
-        "--pid".to_owned(),
-        pid.to_string(),
-        "--dll".to_owned(),
-        dll_path.to_owned(),
-    ]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn builds_injector_args() {
-        assert_eq!(
-            injector_args(42, "hook.dll"),
-            ["--pid", "42", "--dll", "hook.dll"]
-        );
-    }
-}
+pub use error::InjectorError;
+pub use paths::{
+    LEGACY_NATIVE_HOOK_DLL, LEGACY_NATIVE_INJECTOR_EXE, NATIVE_HOOK_DLL, NATIVE_INJECTOR_EXE,
+    NativeHookPaths, injector_args, resolve_native_hook_paths, run_injector,
+};
+pub use platform::inject;
+pub use process::{ISAAC_PROCESS_NAME, IsaacProcess, find_isaac_process, wait_for_isaac};

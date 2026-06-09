@@ -20,6 +20,22 @@ impl Display for SessionMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TransportChoice {
+    #[default]
+    Udp,
+    Tcp,
+}
+
+impl Display for TransportChoice {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Udp => formatter.write_str("UDP"),
+            Self::Tcp => formatter.write_str("TCP"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RelayEndpoint {
     pub host: String,
@@ -73,6 +89,7 @@ impl From<crate::steam::SteamAccount> for SteamIdentity {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionConfig {
     pub relay: RelayEndpoint,
+    pub transport: TransportChoice,
     pub room: String,
     pub mode: SessionMode,
     pub steam_id64: String,

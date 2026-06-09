@@ -5,6 +5,7 @@ mod widgets;
 
 use basement_bridge_core::{
     BridgeClient, DEFAULT_RELAY_PROBE_PAYLOAD_BYTES, RelayEndpoint, SessionConfig, SessionMode,
+    SessionStatus, TransportChoice,
 };
 use eframe::egui::{self, ScrollArea};
 
@@ -25,6 +26,7 @@ pub struct BridgeApp {
     page: Page,
     relay_host: String,
     relay_port: u16,
+    transport: TransportChoice,
     room: String,
     mode: SessionMode,
     selected_account: Option<usize>,
@@ -56,6 +58,7 @@ impl BridgeApp {
             page: Page::Home,
             relay_host: String::new(),
             relay_port: 25_910,
+            transport: TransportChoice::Udp,
             room: String::new(),
             mode: SessionMode::Pure,
             selected_account,
@@ -92,6 +95,7 @@ impl BridgeApp {
         let (steam_id64, display_name) = self.current_identity();
         SessionConfig {
             relay: RelayEndpoint::new(self.relay_host.trim(), self.relay_port),
+            transport: self.transport,
             room: self.room.trim().to_owned(),
             mode: self.mode,
             steam_id64,
@@ -135,10 +139,11 @@ impl BridgeApp {
 
     fn run_relay_probe(&mut self) {
         let relay = RelayEndpoint::new(self.relay_host.trim(), self.relay_port);
-        match self
-            .client
-            .run_relay_probe_with_payload(relay, self.relay_probe_payload_bytes)
-        {
+        match self.client.run_relay_probe_with_transport_payload(
+            relay,
+            self.transport,
+            self.relay_probe_payload_bytes,
+        ) {
             Ok(report) => {
                 self.last_error = None;
                 self.last_relay_probe = Some(report.to_string());
@@ -168,7 +173,13 @@ impl BridgeApp {
 
 impl eframe::App for BridgeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.client.poll_events();
+        if self.client.poll_events() {
+            ui.ctx().request_repaint();
+        }
+        if self.client.state().status == SessionStatus::Running {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        }
 
         egui::Panel::bottom("status_bar")
             .resizable(false)

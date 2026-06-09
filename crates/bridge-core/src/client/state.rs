@@ -1,8 +1,9 @@
 use std::{
     fmt::{self, Display},
-    sync::mpsc::Sender,
     time::{SystemTime, UNIX_EPOCH},
 };
+
+use tokio::sync::mpsc::Sender;
 
 use super::SteamIdentity;
 
@@ -75,6 +76,8 @@ pub(super) enum RuntimeEvent {
     Stopped,
 }
 
+pub(super) type RuntimeEventSender = Sender<RuntimeEvent>;
+
 pub(super) fn log_entry(level: LogLevel, message: impl Into<String>) -> LogEntry {
     LogEntry {
         timestamp: unix_seconds(),
@@ -83,8 +86,8 @@ pub(super) fn log_entry(level: LogLevel, message: impl Into<String>) -> LogEntry
     }
 }
 
-pub(super) fn send_event(sender: &Sender<RuntimeEvent>, event: RuntimeEvent) {
-    let _ = sender.send(event);
+pub(super) fn send_event(sender: &RuntimeEventSender, event: RuntimeEvent) {
+    let _ = sender.try_send(event);
 }
 
 pub(super) fn error_counter() -> Counters {

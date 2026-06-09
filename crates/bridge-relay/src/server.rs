@@ -1,26 +1,45 @@
 use std::{
+    collections::HashMap,
     io,
     net::SocketAddr,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use basement_bridge_core::protocol::{ControlMessage, Envelope, GamePacket, MessageType};
 use bytes::Bytes;
+use futures_util::{SinkExt, StreamExt};
 use tokio::{
-    net::UdpSocket,
+    net::{TcpListener, TcpStream, UdpSocket},
+    sync::{Mutex, mpsc},
+    task::JoinSet,
     time::{self, MissedTickBehavior},
 };
+use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::{debug, info, warn};
 
 use crate::{
     config::RelayConfig,
-    state::{RelayState, error_message},
+    state::{PeerId, RelayState, error_message},
 };
 
+const TCP_EGRESS_QUEUE: usize = 256;
+
+type SharedState = Arc<Mutex<RelayState>>;
+type SharedEgress = Arc<Mutex<EgressTable>>;
+type SharedMetrics = Arc<Mutex<RelayMetrics>>;
+type SharedPeerRegistry = Arc<Mutex<PeerRegistry>>;
+
 pub(crate) async fn run(config: RelayConfig) -> io::Result<()> {
-    let socket = UdpSocket::bind(&config.bind).await?;
+    let udp_socket = UdpSocket::bind(&config.bind).await?;
+    let tcp_listener = if config.tcp_enabled {
+        Some(TcpListener::bind(&config.tcp_bind).await?)
+    } else {
+        None
+    };
     info!(
-        bind = %config.bind,
+        udp_bind = %config.bind,
+        tcp_bind = if config.tcp_enabled { config.tcp_bind.as_str() } else { "disabled" },
         max_packet_size = config.max_packet_size,
         rate_limit_per_second = config.rate_limit_per_second,
         max_rooms = config.max_rooms,
@@ -29,48 +48,242 @@ pub(crate) async fn run(config: RelayConfig) -> io::Result<()> {
         "relay listening"
     );
 
-    run_socket(socket, config).await
+    run_with_listeners(udp_socket, tcp_listener, config).await
 }
 
-async fn run_socket(socket: UdpSocket, config: RelayConfig) -> io::Result<()> {
-    let mut state = RelayState::new(config.clone());
+async fn run_with_listeners(
+    udp_socket: UdpSocket,
+    tcp_listener: Option<TcpListener>,
+    config: RelayConfig,
+) -> io::Result<()> {
+    let udp_socket = Arc::new(udp_socket);
+    let state = Arc::new(Mutex::new(RelayState::new(config.clone())));
+    let egress = Arc::new(Mutex::new(EgressTable::default()));
+    let metrics = Arc::new(Mutex::new(RelayMetrics::default()));
+    let peer_registry = Arc::new(Mutex::new(PeerRegistry::default()));
+    let mut tasks = JoinSet::new();
+
+    tasks.spawn(run_udp_listener(
+        Arc::clone(&udp_socket),
+        Arc::clone(&state),
+        Arc::clone(&egress),
+        Arc::clone(&metrics),
+        Arc::clone(&peer_registry),
+        config.clone(),
+    ));
+
+    if let Some(listener) = tcp_listener {
+        tasks.spawn(run_tcp_listener(
+            listener,
+            Arc::clone(&udp_socket),
+            Arc::clone(&state),
+            Arc::clone(&egress),
+            Arc::clone(&metrics),
+            Arc::clone(&peer_registry),
+            config.clone(),
+        ));
+    }
+
+    tasks.spawn(run_stats_loop(Arc::clone(&state), Arc::clone(&metrics)));
+
+    match tasks.join_next().await {
+        Some(Ok(result)) => result,
+        Some(Err(error)) => Err(io::Error::other(error)),
+        None => Ok(()),
+    }
+}
+
+async fn run_udp_listener(
+    socket: Arc<UdpSocket>,
+    state: SharedState,
+    egress: SharedEgress,
+    metrics: SharedMetrics,
+    peer_registry: SharedPeerRegistry,
+    config: RelayConfig,
+) -> io::Result<()> {
     let mut buffer = vec![0_u8; config.max_packet_size];
-    let mut metrics = RelayMetrics::default();
-    let mut stats_interval = time::interval(Duration::from_secs(5));
-    stats_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        let (size, address) = socket.recv_from(&mut buffer).await?;
+        let peer_id = peer_registry.lock().await.udp_peer(address);
+        egress
+            .lock()
+            .await
+            .insert(peer_id, PeerEgress::Udp(address));
+        handle_datagram(
+            Arc::clone(&socket),
+            Arc::clone(&state),
+            Arc::clone(&egress),
+            Arc::clone(&metrics),
+            DatagramSource { peer_id, address },
+            Bytes::copy_from_slice(&buffer[..size]),
+        )
+        .await?;
+    }
+}
+
+async fn run_tcp_listener(
+    listener: TcpListener,
+    udp_socket: Arc<UdpSocket>,
+    state: SharedState,
+    egress: SharedEgress,
+    metrics: SharedMetrics,
+    peer_registry: SharedPeerRegistry,
+    config: RelayConfig,
+) -> io::Result<()> {
+    loop {
+        let (stream, address) = listener.accept().await?;
+        stream.set_nodelay(true)?;
+        let peer_id = peer_registry.lock().await.allocate();
+        let (tx, rx) = mpsc::channel(TCP_EGRESS_QUEUE);
+        egress.lock().await.insert(peer_id, PeerEgress::Tcp(tx));
+        let runtime = TcpConnectionRuntime {
+            udp_socket: Arc::clone(&udp_socket),
+            state: Arc::clone(&state),
+            egress: Arc::clone(&egress),
+            metrics: Arc::clone(&metrics),
+            max_packet_size: config.max_packet_size,
+        };
+        tokio::spawn(tcp_connection_task(
+            stream,
+            DatagramSource { peer_id, address },
+            rx,
+            runtime,
+        ));
+    }
+}
+
+async fn tcp_connection_task(
+    stream: TcpStream,
+    source: DatagramSource,
+    mut outbound_rx: mpsc::Receiver<Bytes>,
+    runtime: TcpConnectionRuntime,
+) {
+    let codec = LengthDelimitedCodec::builder()
+        .max_frame_length(runtime.max_packet_size)
+        .new_codec();
+    let framed = Framed::new(stream, codec);
+    let (mut sink, mut stream) = framed.split();
 
     loop {
         tokio::select! {
-            received = socket.recv_from(&mut buffer) => {
-                let (size, address) = received?;
-                let now = Instant::now();
-                metrics.packets_in = metrics.packets_in.saturating_add(1);
-                if state.is_blocked(address) {
-                    metrics.blocked = metrics.blocked.saturating_add(1);
-                    debug!(%address, "packet rejected by blocklist");
-                    continue;
-                }
-                if !state.allow_packet(address, now) {
-                    metrics.rate_limited = metrics.rate_limited.saturating_add(1);
-                    debug!(%address, "rate limit exceeded");
-                    continue;
-                }
-                let raw = Bytes::copy_from_slice(&buffer[..size]);
-                match handle_packet(&socket, &mut state, address, raw, now).await {
-                    Ok(outcome) => metrics.add(outcome),
+            frame = stream.next() => {
+                let Some(frame) = frame else {
+                    break;
+                };
+                match frame {
+                    Ok(bytes) => {
+                        if let Err(error) = handle_datagram(
+                            Arc::clone(&runtime.udp_socket),
+                            Arc::clone(&runtime.state),
+                            Arc::clone(&runtime.egress),
+                            Arc::clone(&runtime.metrics),
+                            source,
+                            bytes.freeze(),
+                        ).await {
+                            warn!(peer_id = %source.peer_id, address = %source.address, %error, "TCP frame handling failed");
+                            break;
+                        }
+                    }
                     Err(error) => {
-                        metrics.errors = metrics.errors.saturating_add(1);
-                        warn!(%address, %error, "packet handling failed");
+                        warn!(peer_id = %source.peer_id, address = %source.address, %error, "TCP frame rejected");
+                        break;
                     }
                 }
-                state.cleanup(now);
             }
-            _ = stats_interval.tick() => {
-                let now = Instant::now();
-                state.cleanup(now);
-                metrics.log_and_reset(&state);
+            Some(raw) = outbound_rx.recv() => {
+                if let Err(error) = sink.send(raw).await {
+                    warn!(peer_id = %source.peer_id, address = %source.address, %error, "TCP frame send failed");
+                    break;
+                }
             }
         }
+    }
+
+    runtime.state.lock().await.remove_peer(source.peer_id);
+    runtime.egress.lock().await.remove(source.peer_id);
+}
+
+async fn run_stats_loop(state: SharedState, metrics: SharedMetrics) -> io::Result<()> {
+    let mut stats_interval = time::interval(Duration::from_secs(5));
+    stats_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        stats_interval.tick().await;
+        let now = Instant::now();
+        let mut state = state.lock().await;
+        state.cleanup(now);
+        metrics.lock().await.log_and_reset(&state);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DatagramSource {
+    peer_id: PeerId,
+    address: SocketAddr,
+}
+
+#[derive(Clone)]
+struct TcpConnectionRuntime {
+    udp_socket: Arc<UdpSocket>,
+    state: SharedState,
+    egress: SharedEgress,
+    metrics: SharedMetrics,
+    max_packet_size: usize,
+}
+
+#[derive(Clone, Debug)]
+enum PeerEgress {
+    Udp(SocketAddr),
+    Tcp(mpsc::Sender<Bytes>),
+}
+
+#[derive(Debug, Default)]
+struct EgressTable {
+    peers: HashMap<PeerId, PeerEgress>,
+}
+
+impl EgressTable {
+    fn insert(&mut self, peer_id: PeerId, egress: PeerEgress) {
+        self.peers.insert(peer_id, egress);
+    }
+
+    fn get(&self, peer_id: PeerId) -> Option<PeerEgress> {
+        self.peers.get(&peer_id).cloned()
+    }
+
+    fn remove(&mut self, peer_id: PeerId) {
+        self.peers.remove(&peer_id);
+    }
+}
+
+#[derive(Debug)]
+struct PeerRegistry {
+    next_id: u64,
+    udp_peers: HashMap<SocketAddr, PeerId>,
+}
+
+impl Default for PeerRegistry {
+    fn default() -> Self {
+        Self {
+            next_id: 1,
+            udp_peers: HashMap::new(),
+        }
+    }
+}
+
+impl PeerRegistry {
+    fn allocate(&mut self) -> PeerId {
+        let peer_id = PeerId::new(self.next_id);
+        self.next_id = self.next_id.saturating_add(1);
+        peer_id
+    }
+
+    fn udp_peer(&mut self, address: SocketAddr) -> PeerId {
+        if let Some(peer_id) = self.udp_peers.get(&address) {
+            return *peer_id;
+        }
+        let peer_id = self.allocate();
+        self.udp_peers.insert(address, peer_id);
+        peer_id
     }
 }
 
@@ -130,10 +343,61 @@ struct PacketOutcome {
     missing_target: u64,
 }
 
+async fn handle_datagram(
+    udp_socket: Arc<UdpSocket>,
+    state: SharedState,
+    egress: SharedEgress,
+    metrics: SharedMetrics,
+    source: DatagramSource,
+    raw: Bytes,
+) -> io::Result<()> {
+    let now = Instant::now();
+    {
+        let mut metrics = metrics.lock().await;
+        metrics.packets_in = metrics.packets_in.saturating_add(1);
+    }
+    {
+        let mut state = state.lock().await;
+        if state.is_blocked(source.address) {
+            let mut metrics = metrics.lock().await;
+            metrics.blocked = metrics.blocked.saturating_add(1);
+            debug!(address = %source.address, "packet rejected by blocklist");
+            return Ok(());
+        }
+        if !state.allow_packet(source.peer_id, now) {
+            let mut metrics = metrics.lock().await;
+            metrics.rate_limited = metrics.rate_limited.saturating_add(1);
+            debug!(peer_id = %source.peer_id, address = %source.address, "rate limit exceeded");
+            return Ok(());
+        }
+    }
+
+    match handle_packet(
+        Arc::clone(&udp_socket),
+        Arc::clone(&state),
+        Arc::clone(&egress),
+        source,
+        raw,
+        now,
+    )
+    .await
+    {
+        Ok(outcome) => metrics.lock().await.add(outcome),
+        Err(error) => {
+            let mut metrics = metrics.lock().await;
+            metrics.errors = metrics.errors.saturating_add(1);
+            warn!(peer_id = %source.peer_id, address = %source.address, %error, "packet handling failed");
+        }
+    }
+    state.lock().await.cleanup(now);
+    Ok(())
+}
+
 async fn handle_packet(
-    socket: &UdpSocket,
-    state: &mut RelayState,
-    address: SocketAddr,
+    udp_socket: Arc<UdpSocket>,
+    state: SharedState,
+    egress: SharedEgress,
+    source: DatagramSource,
     raw: Bytes,
     now: Instant,
 ) -> io::Result<PacketOutcome> {
@@ -141,8 +405,9 @@ async fn handle_packet(
         Ok(envelope) => envelope,
         Err(error) => {
             send_control(
-                socket,
-                address,
+                udp_socket,
+                egress,
+                source.peer_id,
                 MessageType::Error,
                 &error_message("decode_error", error.to_string()),
             )
@@ -155,13 +420,10 @@ async fn handle_packet(
     };
 
     match envelope.message_type {
-        MessageType::Join => {
-            handle_join(socket, state, address, &envelope, now).await?;
-            Ok(PacketOutcome::default())
-        }
-        MessageType::Data => forward_data(socket, state, address, &raw, now).await,
+        MessageType::Join => handle_join(udp_socket, state, egress, source, &envelope, now).await,
+        MessageType::Data => forward_data(udp_socket, state, egress, source, &raw, now).await,
         MessageType::Heartbeat => {
-            state.touch_peer(address, now);
+            state.lock().await.touch_peer(source.peer_id, now);
             Ok(PacketOutcome::default())
         }
         _ => Ok(PacketOutcome::default()),
@@ -169,28 +431,32 @@ async fn handle_packet(
 }
 
 async fn handle_join(
-    socket: &UdpSocket,
-    state: &mut RelayState,
-    address: SocketAddr,
+    udp_socket: Arc<UdpSocket>,
+    state: SharedState,
+    egress: SharedEgress,
+    source: DatagramSource,
     envelope: &Envelope,
     now: Instant,
-) -> io::Result<()> {
+) -> io::Result<PacketOutcome> {
     let message = ControlMessage::decode(&envelope.payload)
         .unwrap_or_else(|error| error_message("bad_join", error.to_string()));
-    let response = match message {
-        ControlMessage::Join {
-            room,
-            steam_id64,
-            display_name: _,
-            challenge: Some(challenge),
-        } => state.complete_join(address, room, steam_id64, challenge, now),
-        ControlMessage::Join {
-            room,
-            steam_id64,
-            display_name,
-            challenge: None,
-        } => state.challenge_join(address, room, steam_id64, display_name, now),
-        _ => error_message("bad_join", "expected join message"),
+    let response = {
+        let mut state = state.lock().await;
+        match message {
+            ControlMessage::Join {
+                room,
+                steam_id64,
+                display_name: _,
+                challenge: Some(challenge),
+            } => state.complete_join(source.peer_id, room, steam_id64, challenge, now),
+            ControlMessage::Join {
+                room,
+                steam_id64,
+                display_name,
+                challenge: None,
+            } => state.challenge_join(source.peer_id, room, steam_id64, display_name, now),
+            _ => error_message("bad_join", "expected join message"),
+        }
     };
     let response_type = match response {
         ControlMessage::Challenge { .. } => MessageType::JoinChallenge,
@@ -198,20 +464,23 @@ async fn handle_join(
         ControlMessage::Error { .. } => MessageType::Error,
         _ => MessageType::Error,
     };
-    send_control(socket, address, response_type, &response).await
+    send_control(udp_socket, egress, source.peer_id, response_type, &response).await?;
+    Ok(PacketOutcome::default())
 }
 
 async fn forward_data(
-    socket: &UdpSocket,
-    state: &mut RelayState,
-    address: SocketAddr,
+    udp_socket: Arc<UdpSocket>,
+    state: SharedState,
+    egress: SharedEgress,
+    source: DatagramSource,
     raw: &Bytes,
     now: Instant,
 ) -> io::Result<PacketOutcome> {
-    let Some(room_name) = state.touch_peer(address, now) else {
+    let Some(room_name) = state.lock().await.touch_peer(source.peer_id, now) else {
         send_control(
-            socket,
-            address,
+            udp_socket,
+            egress,
+            source.peer_id,
             MessageType::Error,
             &error_message("not_joined", "join a room before sending data"),
         )
@@ -229,7 +498,7 @@ async fn forward_data(
     let data_envelope = match Envelope::decode(raw.clone()) {
         Ok(envelope) => envelope,
         Err(error) => {
-            warn!(%address, %error, "bad data envelope");
+            warn!(peer_id = %source.peer_id, address = %source.address, %error, "bad data envelope");
             outcome.decode_errors = outcome.decode_errors.saturating_add(1);
             return Ok(outcome);
         }
@@ -237,16 +506,21 @@ async fn forward_data(
     let game = match GamePacket::decode(&data_envelope.payload) {
         Ok(packet) => packet,
         Err(error) => {
-            warn!(%address, %error, "bad data packet");
+            warn!(peer_id = %source.peer_id, address = %source.address, %error, "bad data packet");
             outcome.decode_errors = outcome.decode_errors.saturating_add(1);
             return Ok(outcome);
         }
     };
 
-    let Some(peer_address) = state.target_address(&room_name, game.to_steam_id64) else {
+    let Some(target_peer) = state
+        .lock()
+        .await
+        .target_peer(&room_name, game.to_steam_id64)
+    else {
         outcome.missing_target = outcome.missing_target.saturating_add(1);
         debug!(
-            %address,
+            peer_id = %source.peer_id,
+            address = %source.address,
             room = %room_name,
             to_steam_id64 = game.to_steam_id64,
             "data target is not joined"
@@ -254,8 +528,8 @@ async fn forward_data(
         return Ok(outcome);
     };
 
-    if peer_address != address {
-        socket.send_to(raw, peer_address).await?;
+    if target_peer != source.peer_id {
+        send_to_peer(udp_socket, egress, target_peer, raw.clone()).await?;
         outcome.forwarded_packets = outcome.forwarded_packets.saturating_add(1);
         outcome.forwarded_bytes = outcome
             .forwarded_bytes
@@ -266,8 +540,9 @@ async fn forward_data(
 }
 
 async fn send_control(
-    socket: &UdpSocket,
-    address: SocketAddr,
+    udp_socket: Arc<UdpSocket>,
+    egress: SharedEgress,
+    peer_id: PeerId,
     message_type: MessageType,
     message: &ControlMessage,
 ) -> io::Result<()> {
@@ -275,131 +550,35 @@ async fn send_control(
     let raw = Envelope::new(message_type, payload)
         .encode()
         .map_err(io::Error::other)?;
-    socket.send_to(&raw, address).await?;
-    Ok(())
+    send_to_peer(udp_socket, egress, peer_id, raw).await
+}
+
+async fn send_to_peer(
+    udp_socket: Arc<UdpSocket>,
+    egress: SharedEgress,
+    peer_id: PeerId,
+    raw: Bytes,
+) -> io::Result<()> {
+    let Some(target) = egress.lock().await.get(peer_id) else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            format!("missing egress for {peer_id}"),
+        ));
+    };
+    match target {
+        PeerEgress::Udp(address) => {
+            udp_socket.send_to(&raw, address).await?;
+            Ok(())
+        }
+        PeerEgress::Tcp(sender) => sender.try_send(raw).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("TCP egress queue is full for {peer_id}"),
+            )
+        }),
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use basement_bridge_core::protocol::{ControlMessage, Envelope, GamePacket, MessageType};
-    use bytes::Bytes;
-    use tokio::time::timeout;
-
-    use super::*;
-
-    #[tokio::test]
-    async fn forwards_data_to_target_peer_only() {
-        let server_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let relay_address = server_socket.local_addr().unwrap();
-        let config = RelayConfig {
-            bind: relay_address.to_string(),
-            ..RelayConfig::default()
-        };
-        let server = tokio::spawn(async move {
-            let _ = run_socket(server_socket, config).await;
-        });
-
-        let peer_a = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let peer_b = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let peer_c = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        join_peer(&peer_a, relay_address, "room", "76561198000000101").await;
-        join_peer(&peer_b, relay_address, "room", "76561198000000102").await;
-        join_peer(&peer_c, relay_address, "room", "76561198000000103").await;
-
-        let payload = Bytes::from(vec![7; 2_048]);
-        send_game(
-            &peer_a,
-            relay_address,
-            "76561198000000101",
-            76_561_198_000_000_102,
-            payload.clone(),
-        )
-        .await;
-
-        let game = recv_game(&peer_b).await;
-        assert_eq!(game.from_steam_id64, "76561198000000101");
-        assert_eq!(game.to_steam_id64, 76_561_198_000_000_102);
-        assert_eq!(game.payload, payload);
-        assert!(
-            timeout(Duration::from_millis(150), recv_game(&peer_c))
-                .await
-                .is_err()
-        );
-
-        server.abort();
-    }
-
-    async fn join_peer(
-        socket: &UdpSocket,
-        relay_address: SocketAddr,
-        room: &str,
-        steam_id64: &str,
-    ) {
-        send_join(socket, relay_address, room, steam_id64, None).await;
-        let challenge = match recv_control(socket).await {
-            ControlMessage::Challenge { token } => token,
-            other => panic!("expected challenge, got {other:?}"),
-        };
-        send_join(socket, relay_address, room, steam_id64, Some(challenge)).await;
-        assert!(matches!(
-            recv_control(socket).await,
-            ControlMessage::Ready { .. }
-        ));
-    }
-
-    async fn send_join(
-        socket: &UdpSocket,
-        relay_address: SocketAddr,
-        room: &str,
-        steam_id64: &str,
-        challenge: Option<String>,
-    ) {
-        let message = ControlMessage::Join {
-            room: room.to_owned(),
-            steam_id64: steam_id64.to_owned(),
-            display_name: None,
-            challenge,
-        };
-        let payload = message.encode().unwrap();
-        let bytes = Envelope::new(MessageType::Join, payload).encode().unwrap();
-        socket.send_to(&bytes, relay_address).await.unwrap();
-    }
-
-    async fn recv_control(socket: &UdpSocket) -> ControlMessage {
-        let mut buffer = [0_u8; 4096];
-        let (size, _) = timeout(Duration::from_secs(1), socket.recv_from(&mut buffer))
-            .await
-            .unwrap()
-            .unwrap();
-        let envelope = Envelope::decode(Bytes::copy_from_slice(&buffer[..size])).unwrap();
-        ControlMessage::decode(&envelope.payload).unwrap()
-    }
-
-    async fn send_game(
-        socket: &UdpSocket,
-        relay_address: SocketAddr,
-        from_steam_id64: &str,
-        to_steam_id64: u64,
-        payload: Bytes,
-    ) {
-        let game = GamePacket {
-            from_steam_id64: from_steam_id64.to_owned(),
-            to_steam_id64,
-            source_sequence: 1,
-            channel: 0,
-            send_type: 0,
-            payload,
-        };
-        let payload = game.encode().unwrap();
-        let bytes = Envelope::new(MessageType::Data, payload).encode().unwrap();
-        socket.send_to(&bytes, relay_address).await.unwrap();
-    }
-
-    async fn recv_game(socket: &UdpSocket) -> GamePacket {
-        let mut buffer = [0_u8; 4096];
-        let (size, _) = socket.recv_from(&mut buffer).await.unwrap();
-        let envelope = Envelope::decode(Bytes::copy_from_slice(&buffer[..size])).unwrap();
-        assert_eq!(envelope.message_type, MessageType::Data);
-        GamePacket::decode(&envelope.payload).unwrap()
-    }
-}
+#[path = "server_tests.rs"]
+mod tests;

@@ -13,11 +13,19 @@ pub(crate) struct Args {
     config: Option<PathBuf>,
     #[arg(long)]
     bind: Option<String>,
+    #[arg(long)]
+    tcp_bind: Option<String>,
+    #[arg(long)]
+    disable_tcp: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct RelayConfig {
     pub(crate) bind: String,
+    #[serde(default = "default_tcp_enabled")]
+    pub(crate) tcp_enabled: bool,
+    #[serde(default = "default_tcp_bind")]
+    pub(crate) tcp_bind: String,
     pub(crate) max_packet_size: usize,
     pub(crate) peer_idle_seconds: u64,
     pub(crate) room_idle_seconds: u64,
@@ -32,6 +40,8 @@ impl Default for RelayConfig {
     fn default() -> Self {
         Self {
             bind: "0.0.0.0:25910".to_owned(),
+            tcp_enabled: true,
+            tcp_bind: default_tcp_bind(),
             max_packet_size: MAX_UDP_PACKET_SIZE,
             peer_idle_seconds: 30,
             room_idle_seconds: 120,
@@ -60,11 +70,24 @@ impl RelayConfig {
         if let Some(bind) = &args.bind {
             config.bind.clone_from(bind);
         }
+        if let Some(tcp_bind) = &args.tcp_bind {
+            config.tcp_bind.clone_from(tcp_bind);
+            config.tcp_enabled = true;
+        }
+        if args.disable_tcp {
+            config.tcp_enabled = false;
+        }
         config.validate()?;
         Ok(config)
     }
 
     fn validate(&self) -> io::Result<()> {
+        if self.bind.trim().is_empty() {
+            return invalid_config("bind must not be empty");
+        }
+        if self.tcp_enabled && self.tcp_bind.trim().is_empty() {
+            return invalid_config("tcp_bind must not be empty when TCP is enabled");
+        }
         if self.max_packet_size == 0 {
             return invalid_config("max_packet_size must be greater than 0");
         }
@@ -97,4 +120,12 @@ impl RelayConfig {
 
 fn invalid_config<T>(message: impl Into<String>) -> io::Result<T> {
     Err(io::Error::new(io::ErrorKind::InvalidInput, message.into()))
+}
+
+fn default_tcp_enabled() -> bool {
+    true
+}
+
+fn default_tcp_bind() -> String {
+    "0.0.0.0:25910".to_owned()
 }

@@ -30,6 +30,18 @@ _Avoid_: client, sidecar
 The Rust code crate that contains the Bridge Client runtime, protocol, diagnostics, Steam detection, and local configuration helpers.
 _Avoid_: GUI, relay, hook
 
+**Protocol**:
+The versioned message language and packet formats shared by the Bridge Client, Native Hook, and Relay Server. It describes what is sent, not how it is carried.
+_Avoid_: transport, runtime, socket loop
+
+**Relay Transport**:
+The network carriage selected to move Protocol envelopes between a Bridge Client and a Relay Server.
+_Avoid_: protocol, Relay Server, session mode
+
+**Transport Choice**:
+The single Relay Transport selected by one Bridge Client session.
+_Avoid_: session mode, automatic fallback
+
 **Client Bundle**:
 The versioned player-facing package that ships the Bridge GUI, Bridge Client, Native Hook, and Injector together.
 _Avoid_: hook release, GUI release
@@ -72,6 +84,7 @@ _Avoid_: normal relay mode
 - **Bridge Core** provides the code used by the **Bridge GUI** to control a **Bridge Client** session.
 - A **Bridge GUI** controls a **Bridge Client**.
 - A **Bridge Client** joins at most one **Room** on one **Relay Server** per active session.
+- A **Bridge Client** uses one **Transport Choice** to exchange **Protocol** envelopes with a **Relay Server** during an active session.
 - A **Relay Server** forwards packets only among **Peers** in the same **Room**.
 - A **Directory Service** publishes metadata about one or more **Relay Servers**.
 - A **Diagnostics Bundle** describes one local **Bridge Client** run.
@@ -86,3 +99,5 @@ _Avoid_: normal relay mode
 - "client" was used to mean both the user-facing application and the local bridge runtime. Resolved: use **Bridge GUI** for presentation, **Bridge Client** for runtime, and **Client Bundle** for the versioned package.
 - "sidecar" was used for the early local bridge process. Resolved: use **Bridge Client** for the product term.
 - "server" was used for both relay forwarding and future trusted server discovery. Resolved: use **Relay Server** for forwarding and **Directory Service** for trusted metadata.
+- "protocol" and "transport" were used interchangeably. Resolved: use **Protocol** for message formats and **Relay Transport** for network carriage.
+- "mode" was used for both session behavior and network carriage. Resolved: use **Official Mode**, **Fallback Mode**, and **Pure Mode** for session behavior; use **Transport Choice** for UDP or TCP carriage.

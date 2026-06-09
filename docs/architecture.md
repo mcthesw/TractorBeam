@@ -25,14 +25,17 @@ flowchart LR
 
     subgraph Relay["Relay Server"]
         Udp["Public UDP endpoint"]
+        Tcp["Public TCP endpoint"]
         Rooms["Room registry"]
         Forwarder["Packet forwarder"]
         Udp --> Rooms
+        Tcp --> Rooms
         Rooms --> Forwarder
     end
 
     Hook <--> Client
     Client <--> Udp
+    Client <--> Tcp
     Injector --> Hook
 ```
 
@@ -53,8 +56,9 @@ The Native Hook is intentionally narrow:
 - forwards opaque packet payloads.
 - reads bridge settings from the Isaac online log directory.
 
-The Rust Bridge Client owns configuration, process launch, relay selection,
-status, and diagnostics. The Bridge GUI owns presentation and user input.
+The Rust Bridge Client owns configuration, process launch, Relay Transport
+selection, status, and diagnostics. The Bridge GUI owns presentation and user
+input.
 
 ## Rust Crate Boundaries
 
@@ -63,8 +67,9 @@ status, and diagnostics. The Bridge GUI owns presentation and user input.
   presentation and no relay process.
 - `bridge-gui`: egui desktop presentation for the player-facing app. It
   depends on `bridge-core` and does not own transport behavior.
-- `bridge-relay`: deployable UDP Relay Server binary and room registry. It uses
-  `bridge-core::protocol` for wire formats.
+- `bridge-relay`: deployable UDP/TCP Relay Server binary and room registry. It
+  uses `bridge-core::protocol` for wire formats and keeps transport-specific
+  egress details outside room routing.
 - `isaac-injector`: process discovery plus the injector helper binary used to
   load the Native Hook into Isaac.
 - `native-hook`: Windows i686 DLL for the SteamNetworking006 packet path.
@@ -73,4 +78,4 @@ The Injector remains a separate crate so the Client Bundle can ship an i686
 helper alongside the i686 Native Hook while the Bridge GUI can stay a normal
 desktop binary.
 
-See `configuration.md` for where relay and hook settings live today.
+See `relay.md` for Relay Server settings and deployment.

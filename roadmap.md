@@ -13,9 +13,9 @@ Hook path.
 - [x] Use the crate layout `bridge-core`, `bridge-gui`, `bridge-relay`, `native-hook`, and `isaac-injector`.
 - [x] Build the Rust Native Hook DLL for the i686 Isaac process.
 - [x] Build the Rust Injector helper.
-- [x] Build the Rust Relay Server with room join, peer forwarding, timeouts, rate limits, and IP/CIDR blocklists.
-- [x] Build the Rust Bridge Client runtime with local hook bridge, relay connection, room setup, Steam launch, injection orchestration, state, and errors.
-- [x] Build the egui Bridge GUI with relay address, room, SteamID64, mode, start/stop, status, counters, and diagnostics export.
+- [x] Build the Rust Relay Server with room join, peer forwarding, UDP/TCP listeners, timeouts, rate limits, and IP/CIDR blocklists.
+- [x] Build the Rust Bridge Client runtime with async local hook bridge, selectable Relay Transport, room setup, Steam launch, injection orchestration, state, and errors.
+- [x] Build the egui Bridge GUI with relay address, transport choice, room, SteamID64, mode, start/stop, status, counters, and diagnostics export.
 - [x] Implement Official Mode, Fallback Mode, and Pure Mode.
 - [x] Define the first relay protocol envelope, versioning, capabilities, and error codes.
 - [x] Use a simple versioned envelope for Phase 1 control messages.
@@ -23,8 +23,8 @@ Hook path.
 - [x] Document failure recovery for launch, injection, relay, and hook errors.
 - [ ] Produce a repeatable Client Bundle layout containing the Bridge GUI, Bridge Core runtime, Native Hook, and i686 Injector helper.
 - [ ] Support recent relay history.
-- [ ] Add focused local bridge flow tests beyond protocol, relay state, and diagnostics unit tests.
-- [ ] Add Relay Server runtime counters/metrics.
+- [x] Add focused local bridge flow tests beyond protocol, relay state, and diagnostics unit tests.
+- [x] Add Relay Server runtime counters/metrics.
 
 Deferred from Phase 1:
 

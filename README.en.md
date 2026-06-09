@@ -22,9 +22,7 @@ cargo test --workspace
 ## Docs
 
 - [docs/architecture.md](docs/architecture.md): component boundaries and data flow.
-- [docs/closed-testing.md](docs/closed-testing.md): closed test flow and feedback template.
 - [docs/relay.md](docs/relay.md): Relay Server deployment.
-- [docs/diagnostics.md](docs/diagnostics.md): diagnostics export and redaction rules.
 - [docs/security.md](docs/security.md): threat model and security boundary.
 - [roadmap.md](roadmap.md): staged roadmap.
 

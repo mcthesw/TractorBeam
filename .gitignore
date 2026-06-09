@@ -3,6 +3,7 @@
 /prototype/native-hook/build*/
 /.vscode/
 /.local/
+/openspec/
 
 *.pdb
 *.ilk

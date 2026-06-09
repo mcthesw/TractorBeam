@@ -18,9 +18,7 @@ cargo test --workspace
 ## 文档
 
 - [docs/architecture.md](docs/architecture.md)：组件边界和数据流。
-- [docs/closed-testing.md](docs/closed-testing.md)：内测流程和反馈模板。
 - [docs/relay.md](docs/relay.md)：Relay Server 部署。
-- [docs/diagnostics.md](docs/diagnostics.md)：诊断导出和脱敏规则。
 - [docs/security.md](docs/security.md)：威胁模型和安全边界。
 - [roadmap.md](roadmap.md)：阶段规划。
 

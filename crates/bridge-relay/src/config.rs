@@ -1,0 +1,100 @@
+use std::{fs, io, path::PathBuf};
+
+use clap::Parser;
+use ipnet::IpNet;
+use serde::Deserialize;
+
+const MAX_UDP_PACKET_SIZE: usize = 65_535;
+
+#[derive(Debug, Parser)]
+#[command(author, version, about)]
+pub(crate) struct Args {
+    #[arg(long)]
+    config: Option<PathBuf>,
+    #[arg(long)]
+    bind: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct RelayConfig {
+    pub(crate) bind: String,
+    pub(crate) max_packet_size: usize,
+    pub(crate) peer_idle_seconds: u64,
+    pub(crate) room_idle_seconds: u64,
+    pub(crate) rate_limit_per_second: u32,
+    pub(crate) max_rooms: usize,
+    pub(crate) max_peers_per_room: usize,
+    pub(crate) max_room_name_len: usize,
+    pub(crate) blocked_cidrs: Vec<IpNet>,
+}
+
+impl Default for RelayConfig {
+    fn default() -> Self {
+        Self {
+            bind: "0.0.0.0:25910".to_owned(),
+            max_packet_size: MAX_UDP_PACKET_SIZE,
+            peer_idle_seconds: 30,
+            room_idle_seconds: 120,
+            rate_limit_per_second: 2_000,
+            max_rooms: 1024,
+            max_peers_per_room: 4,
+            max_room_name_len: 64,
+            blocked_cidrs: Vec::new(),
+        }
+    }
+}
+
+impl RelayConfig {
+    pub(crate) fn load(args: &Args) -> io::Result<Self> {
+        let mut config = if let Some(path) = &args.config {
+            let contents = fs::read_to_string(path)?;
+            toml::from_str(&contents).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("invalid config: {error}"),
+                )
+            })?
+        } else {
+            Self::default()
+        };
+        if let Some(bind) = &args.bind {
+            config.bind.clone_from(bind);
+        }
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> io::Result<()> {
+        if self.max_packet_size == 0 {
+            return invalid_config("max_packet_size must be greater than 0");
+        }
+        if self.max_packet_size > MAX_UDP_PACKET_SIZE {
+            return invalid_config(format!(
+                "max_packet_size must not exceed {MAX_UDP_PACKET_SIZE}"
+            ));
+        }
+        if self.peer_idle_seconds == 0 {
+            return invalid_config("peer_idle_seconds must be greater than 0");
+        }
+        if self.room_idle_seconds == 0 {
+            return invalid_config("room_idle_seconds must be greater than 0");
+        }
+        if self.rate_limit_per_second == 0 {
+            return invalid_config("rate_limit_per_second must be greater than 0");
+        }
+        if self.max_rooms == 0 {
+            return invalid_config("max_rooms must be greater than 0");
+        }
+        if self.max_peers_per_room == 0 {
+            return invalid_config("max_peers_per_room must be greater than 0");
+        }
+        if self.max_room_name_len == 0 {
+            return invalid_config("max_room_name_len must be greater than 0");
+        }
+        Ok(())
+    }
+}
+
+fn invalid_config<T>(message: impl Into<String>) -> io::Result<T> {
+    Err(io::Error::new(io::ErrorKind::InvalidInput, message.into()))
+}

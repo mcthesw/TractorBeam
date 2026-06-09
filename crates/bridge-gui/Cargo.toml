@@ -11,4 +11,9 @@ name = "basement-bridge"
 path = "src/main.rs"
 
 [dependencies]
-basement-bridge-client = { path = "../bridge-client" }
+basement-bridge-core = { path = "../bridge-core" }
+eframe = { version = "0.34.3", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "glow",
+] }

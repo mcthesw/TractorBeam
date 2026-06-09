@@ -1,12 +1,10 @@
 [workspace]
 members = [
-    "crates/bridge-diagnostics",
-    "crates/bridge-protocol",
+    "crates/bridge-core",
     "crates/bridge-relay",
-    "crates/bridge-client",
     "crates/bridge-gui",
     "crates/isaac-injector",
-    "crates/steam-detector",
+    "crates/native-hook",
 ]
 resolver = "3"
 

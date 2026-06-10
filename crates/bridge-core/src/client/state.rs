@@ -5,7 +5,12 @@ use std::{
 
 use tokio::sync::mpsc::Sender;
 
-use super::SteamIdentity;
+use super::{
+    SteamIdentity,
+    probe::{HookReceiveProbeReport, ReadinessProbeReport},
+};
+
+pub(super) const MAX_IN_MEMORY_LOGS: usize = 2_000;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Counters {
@@ -67,22 +72,39 @@ pub struct RuntimeState {
     pub counters: Counters,
     pub detected_accounts: Vec<SteamIdentity>,
     pub logs: Vec<LogEntry>,
+    pub readiness_probe_running: bool,
+    pub hook_probe_running: bool,
+    pub latest_readiness_probe: Option<ReadinessProbeReport>,
+    pub latest_hook_receive_probe: Option<HookReceiveProbeReport>,
 }
 
 #[derive(Debug)]
 pub(super) enum RuntimeEvent {
     Log(LogLevel, String),
     CounterDelta(Counters),
+    ReadinessProbeFinished(Result<Box<ReadinessProbeReport>, String>),
+    HookReceiveProbeFinished(Result<HookReceiveProbeReport, String>),
     Stopped,
 }
 
 pub(super) type RuntimeEventSender = Sender<RuntimeEvent>;
+
+pub(super) fn log_event(level: LogLevel, message: impl Into<String>) -> RuntimeEvent {
+    RuntimeEvent::Log(level, message.into())
+}
 
 pub(super) fn log_entry(level: LogLevel, message: impl Into<String>) -> LogEntry {
     LogEntry {
         timestamp: unix_seconds(),
         level,
         message: message.into(),
+    }
+}
+
+pub(super) fn trim_logs(logs: &mut Vec<LogEntry>) {
+    let overflow = logs.len().saturating_sub(MAX_IN_MEMORY_LOGS);
+    if overflow > 0 {
+        logs.drain(..overflow);
     }
 }
 

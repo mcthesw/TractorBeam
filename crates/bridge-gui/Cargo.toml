@@ -12,8 +12,12 @@ path = "src/main.rs"
 
 [dependencies]
 basement-bridge-core = { path = "../bridge-core" }
+directories = "6.0.0"
 eframe = { version = "0.34.3", default-features = false, features = [
     "accesskit",
     "default_fonts",
     "glow",
 ] }
+tracing = "0.1.44"
+tracing-appender = "0.2.4"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

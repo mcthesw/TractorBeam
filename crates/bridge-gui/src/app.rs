@@ -4,8 +4,8 @@ mod status;
 mod widgets;
 
 use basement_bridge_core::{
-    BridgeClient, DEFAULT_RELAY_PROBE_PAYLOAD_BYTES, RelayEndpoint, SessionConfig, SessionMode,
-    SessionStatus, TransportChoice,
+    BridgeClient, ClientLogSink, DEFAULT_RELAY_PROBE_PAYLOAD_BYTES, RelayEndpoint, SessionConfig,
+    SessionMode, SessionStatus, TransportChoice, load_client_config,
 };
 use eframe::egui::{self, ScrollArea};
 
@@ -41,10 +41,13 @@ pub struct BridgeApp {
 }
 
 impl BridgeApp {
-    pub fn new(creation_context: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(
+        creation_context: &eframe::CreationContext<'_>,
+        log_sink: Box<dyn ClientLogSink>,
+    ) -> Self {
         fonts::configure_fonts(&creation_context.egui_ctx);
 
-        let client = BridgeClient::new();
+        let client = BridgeClient::with_config_and_log_sink(load_client_config(), log_sink);
         let selected_account = client
             .state()
             .detected_accounts

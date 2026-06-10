@@ -1,9 +1,13 @@
+mod readiness;
+
 use std::{
     fmt::{self, Display},
     fs,
     future::Future,
     io,
     net::UdpSocket,
+    sync::mpsc::{self, Receiver},
+    thread::{self, JoinHandle},
     time::Duration,
 };
 
@@ -16,13 +20,17 @@ use super::{
     BridgeClient, LogLevel, RelayEndpoint, SessionConfig, SessionMode, TransportChoice,
     hook_config::HOOK_OUT,
     relay_transport::{RelayTransport, complete_relay_join},
-    state::unix_seconds,
+    state::{RuntimeEvent, log_event, unix_seconds},
 };
 
-const PROBE_A_STEAM: &str = "76561198000000101";
-const PROBE_B_STEAM: &str = "76561198000000102";
+pub use readiness::{
+    DEFAULT_READINESS_PROBE_DURATION, ReadinessProbeOutcome, ReadinessProbeReport,
+};
+
+pub(super) const PROBE_A_STEAM: &str = "76561198000000101";
+pub(super) const PROBE_B_STEAM: &str = "76561198000000102";
 pub const DEFAULT_RELAY_PROBE_PAYLOAD_BYTES: usize = 2_048;
-const MAX_RELAY_PROBE_PAYLOAD_BYTES: usize = 60_000;
+pub(super) const MAX_RELAY_PROBE_PAYLOAD_BYTES: usize = 60_000;
 const DATA_TIMEOUT: Duration = Duration::from_secs(3);
 const HOOK_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -83,6 +91,28 @@ impl Display for HookReceiveProbeReport {
     }
 }
 
+#[derive(Debug)]
+pub(super) struct ProbeHandle {
+    pub(super) events: Receiver<RuntimeEvent>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl ProbeHandle {
+    pub(super) fn finish(mut self) {
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for ProbeHandle {
+    fn drop(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 impl BridgeClient {
     pub fn run_relay_probe(&mut self, relay: RelayEndpoint) -> io::Result<RelayProbeReport> {
         self.run_relay_probe_with_payload(relay, DEFAULT_RELAY_PROBE_PAYLOAD_BYTES)
@@ -115,18 +145,51 @@ impl BridgeClient {
     }
 }
 
+pub(super) fn spawn_readiness_probe(
+    relay: RelayEndpoint,
+    transport: TransportChoice,
+    payload_bytes: usize,
+) -> io::Result<ProbeHandle> {
+    readiness::spawn_readiness_probe(relay, transport, payload_bytes)
+}
+
+pub(super) fn spawn_hook_receive_probe() -> ProbeHandle {
+    let (event_tx, events) = mpsc::channel();
+    let worker = thread::spawn(move || match run_hook_receive_probe() {
+        Ok(report) => {
+            let _ = event_tx.send(log_event(LogLevel::Info, report.to_string()));
+            let _ = event_tx.send(RuntimeEvent::HookReceiveProbeFinished(Ok(report)));
+        }
+        Err(error) => {
+            let message = format!("Hook receive probe failed: {error}");
+            let _ = event_tx.send(log_event(LogLevel::Error, message.clone()));
+            let _ = event_tx.send(RuntimeEvent::HookReceiveProbeFinished(Err(message)));
+        }
+    });
+    ProbeHandle {
+        events,
+        worker: Some(worker),
+    }
+}
+
 fn run_relay_probe(
     relay: RelayEndpoint,
     transport: TransportChoice,
     payload_bytes: usize,
 ) -> io::Result<RelayProbeReport> {
-    if !(1..=MAX_RELAY_PROBE_PAYLOAD_BYTES).contains(&payload_bytes) {
-        return Err(io::Error::new(
+    validate_probe_payload(payload_bytes)?;
+    block_on_probe(run_relay_probe_async(relay, transport, payload_bytes))
+}
+
+pub(super) fn validate_probe_payload(payload_bytes: usize) -> io::Result<()> {
+    if (1..=MAX_RELAY_PROBE_PAYLOAD_BYTES).contains(&payload_bytes) {
+        Ok(())
+    } else {
+        Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("relay probe payload must be 1..={MAX_RELAY_PROBE_PAYLOAD_BYTES} bytes"),
-        ));
+        ))
     }
-    block_on_probe(run_relay_probe_async(relay, transport, payload_bytes))
 }
 
 async fn run_relay_probe_async(
@@ -160,7 +223,7 @@ async fn run_relay_probe_async(
     })
 }
 
-fn probe_payload(payload_bytes: usize) -> Bytes {
+pub(super) fn probe_payload(payload_bytes: usize) -> Bytes {
     Bytes::from(
         (0..payload_bytes)
             .map(|index| (index.wrapping_mul(31).wrapping_add(17) & 0xff) as u8)
@@ -168,13 +231,13 @@ fn probe_payload(payload_bytes: usize) -> Bytes {
     )
 }
 
-struct ProbePeer {
+pub(super) struct ProbePeer {
     transport: RelayTransport,
     steam_id64: &'static str,
 }
 
 impl ProbePeer {
-    async fn join(
+    pub(super) async fn join(
         relay: &RelayEndpoint,
         transport: TransportChoice,
         room: &str,
@@ -183,6 +246,7 @@ impl ProbePeer {
     ) -> io::Result<Self> {
         let config = SessionConfig {
             relay: relay.clone(),
+            relay_name: None,
             transport,
             room: room.to_owned(),
             mode: SessionMode::Pure,
@@ -203,10 +267,20 @@ impl ProbePeer {
     }
 
     async fn send_game(&mut self, to_steam_id64: &str, payload: Bytes) -> io::Result<()> {
+        self.send_game_with_sequence(to_steam_id64, payload, 1)
+            .await
+    }
+
+    pub(super) async fn send_game_with_sequence(
+        &mut self,
+        to_steam_id64: &str,
+        payload: Bytes,
+        source_sequence: u32,
+    ) -> io::Result<()> {
         let packet = GamePacket {
             from_steam_id64: self.steam_id64.to_owned(),
             to_steam_id64: to_steam_id64.parse().map_err(io::Error::other)?,
-            source_sequence: 1,
+            source_sequence,
             channel: 0,
             send_type: 0,
             payload,
@@ -253,6 +327,36 @@ impl ProbePeer {
         time::timeout(DATA_TIMEOUT, wait_for_data)
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "relay probe data timed out"))?
+    }
+
+    pub(super) async fn expect_game_with_timeout(
+        &mut self,
+        from_steam_id64: &str,
+        to_steam_id64: &str,
+        source_sequence: u32,
+        payload: &Bytes,
+        timeout: Duration,
+    ) -> io::Result<()> {
+        let wait_for_data = async {
+            loop {
+                let raw = self.transport.receiver.recv_datagram().await?;
+                let envelope = Envelope::decode(raw).map_err(io::Error::other)?;
+                if envelope.message_type != MessageType::Data {
+                    continue;
+                }
+                let packet = GamePacket::decode(&envelope.payload).map_err(io::Error::other)?;
+                if packet.from_steam_id64 == from_steam_id64
+                    && packet.to_steam_id64.to_string() == to_steam_id64
+                    && packet.source_sequence == source_sequence
+                    && packet.payload == *payload
+                {
+                    return Ok(());
+                }
+            }
+        };
+        time::timeout(timeout, wait_for_data)
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "readiness sample timed out"))?
     }
 }
 

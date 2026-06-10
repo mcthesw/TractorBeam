@@ -10,7 +10,7 @@ use crate::protocol::{Envelope, GamePacket, LocalPacket, LocalPacketType, Messag
 
 use super::{
     Counters, LogLevel,
-    state::{RuntimeEvent, RuntimeEventSender, error_counter, send_event},
+    state::{RuntimeEvent, RuntimeEventSender, error_counter, log_event, send_event},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,13 +56,13 @@ impl PacketObserver {
         if self.hook_packets == 1 {
             send_event(
                 event_tx,
-                RuntimeEvent::Log(LogLevel::Info, "First hook packet received".to_owned()),
+                log_event(LogLevel::Info, "First hook packet received"),
             );
         }
         if should_sample_packet(self.hook_packets) {
             send_event(
                 event_tx,
-                RuntimeEvent::Log(
+                log_event(
                     LogLevel::Debug,
                     format!(
                         "Hook -> Relay packet #{}: to={} sequence={} channel={} send_type={} payload_bytes={} wire_bytes={}",
@@ -90,13 +90,13 @@ impl PacketObserver {
         if self.relay_packets == 1 {
             send_event(
                 event_tx,
-                RuntimeEvent::Log(LogLevel::Info, "First relay packet received".to_owned()),
+                log_event(LogLevel::Info, "First relay packet received"),
             );
         }
         if should_sample_packet(self.relay_packets) {
             send_event(
                 event_tx,
-                RuntimeEvent::Log(
+                log_event(
                     LogLevel::Debug,
                     format!(
                         "Relay -> Hook packet #{}: from={} source_sequence={} local_sequence={} channel={} send_type={} payload_bytes={} local_bytes={}",
@@ -188,7 +188,7 @@ pub(super) fn encode_inbound_local_packet(
 }
 
 pub(super) fn send_error(event_tx: &RuntimeEventSender, message: impl Into<String>) {
-    send_event(event_tx, RuntimeEvent::Log(LogLevel::Warn, message.into()));
+    send_event(event_tx, log_event(LogLevel::Warn, message.into()));
     send_event(event_tx, RuntimeEvent::CounterDelta(error_counter()));
 }
 
@@ -223,7 +223,7 @@ fn observe_packet_gap(
         if gap >= Duration::from_millis(200) {
             send_event(
                 event_tx,
-                RuntimeEvent::Log(
+                log_event(
                     LogLevel::Warn,
                     format!("{direction} packet gap: {} ms", gap.as_millis()),
                 ),
@@ -251,7 +251,7 @@ fn observe_source_sequence(
     }
     send_event(
         event_tx,
-        RuntimeEvent::Log(
+        log_event(
             LogLevel::Warn,
             format!(
                 "Relay source sequence gap: from={} previous={} expected={} current={}",

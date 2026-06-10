@@ -26,7 +26,7 @@ use super::{
         send_error,
     },
     relay_transport::{RelayTransport, complete_relay_join, send_control},
-    state::{RuntimeEvent, RuntimeEventSender, error_counter, send_event},
+    state::{RuntimeEvent, RuntimeEventSender, error_counter, log_event, send_event},
 };
 
 const EVENT_QUEUE_CAPACITY: usize = 512;
@@ -136,11 +136,11 @@ async fn supervise_session(
             send_startup(&startup_tx, Ok(()));
             send_event(
                 &event_tx,
-                RuntimeEvent::Log(LogLevel::Info, "Local bridge is running".to_owned()),
+                log_event(LogLevel::Info, "Local bridge is running"),
             );
             send_event(
                 &event_tx,
-                RuntimeEvent::Log(
+                log_event(
                     LogLevel::Debug,
                     format!(
                         "Bridge sockets ready: hook_in={HOOK_IN} hook_out={HOOK_OUT} relay={} transport={} packet_queue={PACKET_QUEUE_CAPACITY}",
@@ -152,7 +152,7 @@ async fn supervise_session(
             let stop_reason = wait_for_essential_task(&cancellation, &mut tasks).await;
             cancellation.cancel();
             if let Some(message) = stop_reason {
-                send_event(&event_tx, RuntimeEvent::Log(LogLevel::Warn, message));
+                send_event(&event_tx, log_event(LogLevel::Warn, message));
             }
             shutdown_tasks(tasks, &event_tx).await;
         }
@@ -162,7 +162,7 @@ async fn supervise_session(
             send_startup(&startup_tx, Err(io::Error::new(kind, message.clone())));
             send_event(
                 &event_tx,
-                RuntimeEvent::Log(LogLevel::Error, format!("Bridge runtime failed: {message}")),
+                log_event(LogLevel::Error, format!("Bridge runtime failed: {message}")),
             );
             send_event(&event_tx, RuntimeEvent::CounterDelta(error_counter()));
         }
@@ -184,7 +184,7 @@ async fn start_runtime_tasks(
     let peer_count = complete_relay_join(&mut relay.sender, &mut relay.receiver, config).await?;
     send_event(
         event_tx,
-        RuntimeEvent::Log(
+        log_event(
             LogLevel::Info,
             format!("Joined relay room with {peer_count} peer(s)"),
         ),
@@ -311,13 +311,13 @@ async fn hook_out_task(
 async fn injector_task(event_tx: RuntimeEventSender, cancellation: CancellationToken) {
     send_event(
         &event_tx,
-        RuntimeEvent::Log(LogLevel::Info, "Waiting for Isaac process".to_owned()),
+        log_event(LogLevel::Info, "Waiting for Isaac process"),
     );
 
     let Some(process) = wait_for_isaac_process(&cancellation).await else {
         send_event(
             &event_tx,
-            RuntimeEvent::Log(LogLevel::Info, "Native Hook injection cancelled".to_owned()),
+            log_event(LogLevel::Info, "Native Hook injection cancelled"),
         );
         return;
     };
@@ -331,13 +331,13 @@ async fn injector_task(event_tx: RuntimeEventSender, cancellation: CancellationT
 
     tokio::select! {
         () = cancellation.cancelled() => {
-            send_event(&event_tx, RuntimeEvent::Log(LogLevel::Info, "Native Hook injection cancelled".to_owned()));
+            send_event(&event_tx, log_event(LogLevel::Info, "Native Hook injection cancelled"));
         }
         result = time::timeout(INJECTOR_WAIT_TIMEOUT, injection) => {
             match result {
                 Ok(Ok(Ok(()))) => send_event(
                     &event_tx,
-                    RuntimeEvent::Log(
+                    log_event(
                         LogLevel::Info,
                         format!("Native Hook injected into {process_name} ({process_id})"),
                     ),
@@ -345,21 +345,30 @@ async fn injector_task(event_tx: RuntimeEventSender, cancellation: CancellationT
                 Ok(Ok(Err(error))) => {
                     send_event(
                         &event_tx,
-                        RuntimeEvent::Log(LogLevel::Error, format!("Native Hook injection failed: {error}")),
+                        log_event(
+                            LogLevel::Error,
+                            format!("Native Hook injection failed: {}", injection_support_message(&error)),
+                        ),
                     );
                     send_event(&event_tx, RuntimeEvent::CounterDelta(error_counter()));
                 }
                 Ok(Err(error)) => {
                     send_event(
                         &event_tx,
-                        RuntimeEvent::Log(LogLevel::Error, format!("Native Hook injection task failed: {error}")),
+                        log_event(
+                            LogLevel::Error,
+                            format!("Native Hook injection task failed: {error}"),
+                        ),
                     );
                     send_event(&event_tx, RuntimeEvent::CounterDelta(error_counter()));
                 }
                 Err(_) => {
                     send_event(
                         &event_tx,
-                        RuntimeEvent::Log(LogLevel::Error, "Native Hook injection timed out".to_owned()),
+                        log_event(
+                            LogLevel::Error,
+                            "Native Hook injection timed out",
+                        ),
                     );
                     send_event(&event_tx, RuntimeEvent::CounterDelta(error_counter()));
                 }
@@ -384,6 +393,24 @@ async fn wait_for_isaac_process(
         () = cancellation.cancelled() => None,
         result = time::timeout(INJECTOR_WAIT_TIMEOUT, wait) => result.unwrap_or(None),
     }
+}
+
+fn injection_support_message(error: &basement_isaac_injector::InjectorError) -> String {
+    let message = error.to_string();
+    if is_access_denied(&message) {
+        format!(
+            "{message}; access denied usually means Bridge GUI, Steam, and Isaac need matching privilege levels or security software allowed the helper"
+        )
+    } else {
+        message
+    }
+}
+
+fn is_access_denied(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("access is denied")
+        || lower.contains("access denied")
+        || lower.contains("os error 5")
 }
 
 async fn wait_for_essential_task(
@@ -411,7 +438,7 @@ async fn shutdown_tasks(mut tasks: JoinSet<io::Result<()>>, event_tx: &RuntimeEv
     tasks.abort_all();
     send_event(
         event_tx,
-        RuntimeEvent::Log(
+        log_event(
             LogLevel::Warn,
             "Bridge session shutdown timed out; aborted remaining tasks".to_owned(),
         ),
@@ -464,6 +491,7 @@ mod tests {
         let relay = TestRelay::spawn();
         let handle = spawn_bridge_worker(SessionConfig {
             relay: super::super::RelayEndpoint::new("127.0.0.1", relay.address.port()),
+            relay_name: None,
             transport: super::super::TransportChoice::Udp,
             room: "test-room".to_owned(),
             mode: super::super::SessionMode::Pure,
@@ -478,7 +506,7 @@ mod tests {
         let event = recv_matching(&handle.events, |event| {
             matches!(
                 event,
-                RuntimeEvent::Log(LogLevel::Warn, message) if message.contains("Bad hook packet")
+                RuntimeEvent::Log(level, message) if *level == LogLevel::Warn && message.contains("Bad hook packet")
             )
         });
         assert!(event.is_some());
@@ -494,6 +522,7 @@ mod tests {
 
         let error = spawn_bridge_worker(SessionConfig {
             relay: super::super::RelayEndpoint::new("127.0.0.1", relay.address.port()),
+            relay_name: None,
             transport: super::super::TransportChoice::Udp,
             room: "test-room".to_owned(),
             mode: super::super::SessionMode::Pure,

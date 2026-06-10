@@ -3,27 +3,6 @@ use eframe::egui;
 
 use crate::i18n::{Language, Text, text};
 
-pub(super) fn summary_counters(ui: &mut egui::Ui, language: Language, state: &RuntimeState) {
-    ui.heading(text(language, Text::Counters));
-    ui.add_space(6.0);
-    counter_grid(
-        ui,
-        "summary_counters",
-        &[
-            (
-                text(language, Text::HookToRelay),
-                state.counters.hook_to_relay,
-            ),
-            (
-                text(language, Text::RelayToHook),
-                state.counters.relay_to_hook,
-            ),
-            (text(language, Text::SentBytes), state.counters.sent_bytes),
-            (text(language, Text::Errors), state.counters.errors),
-        ],
-    );
-}
-
 pub(super) fn detail_counters(ui: &mut egui::Ui, language: Language, state: &RuntimeState) {
     ui.heading(text(language, Text::Counters));
     ui.add_space(6.0);

@@ -1,11 +1,11 @@
-use basement_bridge_core::{SessionMode, SessionStatus, TransportChoice};
+use basement_bridge_core::{LogLevel, SessionMode, SessionStatus, TransportChoice};
 use eframe::egui::{self, ComboBox, TextEdit};
 
 use crate::i18n::{Language, Text, text};
 
 use super::{
     BridgeApp, Page,
-    widgets::{account_label, detail_counters, selected_account_label, summary_counters},
+    widgets::{account_label, detail_counters, selected_account_label},
 };
 
 impl BridgeApp {
@@ -49,19 +49,17 @@ impl BridgeApp {
         self.steam_identity_ui(ui);
         ui.add_space(12.0);
         self.action_row(ui);
-        ui.add_space(16.0);
-        summary_counters(ui, self.language, self.client.state());
     }
 
     pub(super) fn diagnostics_page(&mut self, ui: &mut egui::Ui) {
         ui.heading(self.t(Text::Diagnostics));
         ui.add_space(8.0);
-        if ui.button(self.t(Text::ExportDiagnostics)).clicked() {
-            self.export_diagnostics();
+        if ui.button(self.t(Text::OpenLogDirectory)).clicked() {
+            self.open_log_directory();
         }
-        if let Some(path) = &self.last_export {
+        if let Some(path) = &self.last_log_directory {
             ui.add_space(4.0);
-            ui.label(self.t(Text::LastExport));
+            ui.label(self.t(Text::LogDirectory));
             ui.monospace(path);
         }
         ui.add_space(12.0);
@@ -69,43 +67,40 @@ impl BridgeApp {
         ui.add_space(12.0);
         ui.heading(self.t(Text::Logs));
         ui.add_space(4.0);
-        for entry in &self.client.state().logs {
-            ui.monospace(format!(
-                "[{}] {} {}",
-                entry.timestamp, entry.level, entry.message
-            ));
-        }
+        let logs = &self.client.state().logs;
+        egui::ScrollArea::vertical()
+            .id_salt("diagnostics_logs")
+            .max_height(420.0)
+            .auto_shrink([false, false])
+            .show_rows(ui, 20.0, logs.len(), |ui, range| {
+                for entry in &logs[range] {
+                    ui.horizontal(|ui| {
+                        ui.monospace(format!("[{}]", entry.timestamp));
+                        ui.colored_label(log_level_color(ui, entry.level), entry.level.to_string());
+                        ui.label(&entry.message);
+                    });
+                }
+            });
     }
 
     pub(super) fn debug_page(&mut self, ui: &mut egui::Ui) {
         ui.heading(self.t(Text::Debug));
         ui.add_space(8.0);
 
+        self.readiness_probe_ui(ui);
+        ui.add_space(12.0);
+
         if ui.button(self.t(Text::RunHookReceiveProbe)).clicked() {
             self.run_hook_receive_probe();
         }
-        if let Some(result) = &self.last_hook_probe {
+        if self.client.state().hook_probe_running {
+            ui.add_space(4.0);
+            ui.label(self.t(Text::ProbeRunning));
+        }
+        if let Some(result) = &self.client.state().latest_hook_receive_probe {
             ui.add_space(4.0);
             ui.label(self.t(Text::LastHookReceiveProbe));
-            ui.monospace(result);
-        }
-
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            ui.label(self.t(Text::RelayProbePayloadBytes));
-            ui.add(
-                egui::DragValue::new(&mut self.relay_probe_payload_bytes)
-                    .range(1..=60_000)
-                    .speed(256),
-            );
-        });
-        if ui.button(self.t(Text::RunRelayProbe)).clicked() {
-            self.run_relay_probe();
-        }
-        if let Some(result) = &self.last_relay_probe {
-            ui.add_space(4.0);
-            ui.label(self.t(Text::LastRelayProbe));
-            ui.monospace(result);
+            ui.monospace(result.to_string());
         }
     }
 
@@ -113,21 +108,52 @@ impl BridgeApp {
         ui.heading(self.t(Text::Home));
         ui.add_space(8.0);
 
+        ui.label(self.t(Text::RelayServer));
+        let mut selected_relay = self.selected_relay;
+        ComboBox::from_id_salt("relay_preset")
+            .selected_text(self.relay_selection_label())
+            .width(360.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut selected_relay, None, self.t(Text::ManualRelay));
+                for (index, relay) in self.relay_presets.iter().enumerate() {
+                    ui.selectable_value(&mut selected_relay, Some(index), relay.label());
+                }
+            });
+        if selected_relay != self.selected_relay {
+            self.selected_relay = selected_relay;
+            self.apply_selected_relay_defaults();
+        }
+
+        let manual_relay = self.selected_relay.is_none();
+        ui.add_space(8.0);
         ui.label(self.t(Text::RelayHost));
-        ui.add(TextEdit::singleline(&mut self.relay_host).desired_width(f32::INFINITY));
+        ui.add_enabled(
+            manual_relay,
+            TextEdit::singleline(&mut self.relay_host).desired_width(f32::INFINITY),
+        );
 
         ui.add_space(8.0);
         ui.label(self.t(Text::RelayPort));
-        ui.add(egui::DragValue::new(&mut self.relay_port).range(1..=u16::MAX));
+        ui.add_enabled(
+            manual_relay,
+            egui::DragValue::new(&mut self.relay_port).range(1..=u16::MAX),
+        );
 
         ui.add_space(8.0);
         let udp = self.t(Text::Udp);
         let tcp = self.t(Text::Tcp);
         ui.label(self.t(Text::Transport));
         ui.horizontal(|ui| {
-            ui.radio_value(&mut self.transport, TransportChoice::Udp, udp);
-            ui.radio_value(&mut self.transport, TransportChoice::Tcp, tcp);
+            ui.add_enabled_ui(self.preset_supports_transport(TransportChoice::Udp), |ui| {
+                ui.radio_value(&mut self.transport, TransportChoice::Udp, udp);
+            });
+            ui.add_enabled_ui(self.preset_supports_transport(TransportChoice::Tcp), |ui| {
+                ui.radio_value(&mut self.transport, TransportChoice::Tcp, tcp);
+            });
         });
+        if !self.preset_supports_transport(self.transport) {
+            self.apply_selected_relay_defaults();
+        }
 
         ui.add_space(8.0);
         ui.label(self.t(Text::Room));
@@ -207,5 +233,42 @@ impl BridgeApp {
                 self.client.stop_session();
             }
         });
+    }
+
+    fn readiness_probe_ui(&mut self, ui: &mut egui::Ui) {
+        let running = self.client.state().readiness_probe_running;
+        if ui
+            .add_enabled(!running, egui::Button::new(self.t(Text::RunReadinessProbe)))
+            .clicked()
+        {
+            self.start_readiness_probe();
+        }
+        if running {
+            ui.add_space(4.0);
+            ui.label(self.t(Text::ProbeRunning));
+        }
+        if let Some(report) = &self.client.state().latest_readiness_probe {
+            ui.add_space(4.0);
+            let color = match report.outcome {
+                basement_bridge_core::ReadinessProbeOutcome::Pass => {
+                    ui.visuals().strong_text_color()
+                }
+                basement_bridge_core::ReadinessProbeOutcome::Warn => {
+                    egui::Color32::from_rgb(185, 124, 0)
+                }
+                basement_bridge_core::ReadinessProbeOutcome::Fail => ui.visuals().error_fg_color,
+            };
+            ui.colored_label(color, report.short_summary());
+        }
+    }
+}
+
+fn log_level_color(ui: &egui::Ui, level: LogLevel) -> egui::Color32 {
+    match level {
+        LogLevel::Trace => ui.visuals().weak_text_color(),
+        LogLevel::Debug => egui::Color32::from_rgb(95, 125, 155),
+        LogLevel::Info => ui.visuals().text_color(),
+        LogLevel::Warn => egui::Color32::from_rgb(185, 124, 0),
+        LogLevel::Error => ui.visuals().error_fg_color,
     }
 }

@@ -1,0 +1,24 @@
+# Package this file as config.toml in the Client Bundle root.
+default_room_template = "bb-{date:%Y%m%d}"
+default_transport = "tcp"
+default_mode = "pure"
+selected_relay = "current"
+
+[[relays]]
+id = "current"
+name = "Current test relay"
+host = "117.72.209.46"
+port = 25910
+udp = true
+tcp = true
+default_transport = "tcp"
+
+# Add this preset once the southern Relay Server endpoint is known.
+# [[relays]]
+# id = "southern"
+# name = "Southern test relay"
+# host = "example.test"
+# port = 25910
+# udp = true
+# tcp = true
+# default_transport = "tcp"

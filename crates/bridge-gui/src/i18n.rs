@@ -19,6 +19,8 @@ pub enum Text {
     Diagnostics,
     Debug,
     RelayHost,
+    RelayServer,
+    ManualRelay,
     RelayPort,
     Transport,
     Udp,
@@ -44,11 +46,10 @@ pub enum Text {
     ReceivedBytes,
     Errors,
     Logs,
-    ExportDiagnostics,
-    LastExport,
-    RunRelayProbe,
-    RelayProbePayloadBytes,
-    LastRelayProbe,
+    OpenLogDirectory,
+    LogDirectory,
+    RunReadinessProbe,
+    ProbeRunning,
     RunHookReceiveProbe,
     LastHookReceiveProbe,
     NoSteamAccounts,
@@ -56,6 +57,7 @@ pub enum Text {
     Fallback,
     Pure,
     ConfigError,
+    ConfigWarning,
 }
 
 pub fn text(language: Language, key: Text) -> &'static str {
@@ -71,6 +73,8 @@ fn zh(key: Text) -> &'static str {
         Text::Diagnostics => "日志",
         Text::Debug => "调试",
         Text::RelayHost => "Relay 地址",
+        Text::RelayServer => "Relay 服务器",
+        Text::ManualRelay => "手动填写",
         Text::RelayPort => "端口",
         Text::Transport => "传输",
         Text::Udp => "UDP",
@@ -96,11 +100,10 @@ fn zh(key: Text) -> &'static str {
         Text::ReceivedBytes => "接收字节",
         Text::Errors => "错误",
         Text::Logs => "日志",
-        Text::ExportDiagnostics => "导出诊断",
-        Text::LastExport => "最近导出",
-        Text::RunRelayProbe => "运行 Relay 探针",
-        Text::RelayProbePayloadBytes => "Relay 探针字节",
-        Text::LastRelayProbe => "最近 Relay 探针",
+        Text::OpenLogDirectory => "打开日志文件夹",
+        Text::LogDirectory => "日志文件夹",
+        Text::RunReadinessProbe => "测试连接",
+        Text::ProbeRunning => "测试中…",
         Text::RunHookReceiveProbe => "运行 Hook 收包探针",
         Text::LastHookReceiveProbe => "最近 Hook 探针",
         Text::NoSteamAccounts => "未自动识别到 Steam 账号，可以手动填写。",
@@ -108,6 +111,7 @@ fn zh(key: Text) -> &'static str {
         Text::Fallback => "Fallback",
         Text::Pure => "Pure",
         Text::ConfigError => "配置错误",
+        Text::ConfigWarning => "配置文件有误，已使用可手动修改的默认值。",
     }
 }
 
@@ -117,6 +121,8 @@ fn en(key: Text) -> &'static str {
         Text::Diagnostics => "Diagnostics",
         Text::Debug => "Debug",
         Text::RelayHost => "Relay host",
+        Text::RelayServer => "Relay server",
+        Text::ManualRelay => "Manual relay",
         Text::RelayPort => "Port",
         Text::Transport => "Transport",
         Text::Udp => "UDP",
@@ -142,11 +148,10 @@ fn en(key: Text) -> &'static str {
         Text::ReceivedBytes => "Received bytes",
         Text::Errors => "Errors",
         Text::Logs => "Logs",
-        Text::ExportDiagnostics => "Export diagnostics",
-        Text::LastExport => "Last export",
-        Text::RunRelayProbe => "Run relay probe",
-        Text::RelayProbePayloadBytes => "Relay probe bytes",
-        Text::LastRelayProbe => "Last relay probe",
+        Text::OpenLogDirectory => "Open log folder",
+        Text::LogDirectory => "Log folder",
+        Text::RunReadinessProbe => "Test connection",
+        Text::ProbeRunning => "Testing...",
         Text::RunHookReceiveProbe => "Run hook receive probe",
         Text::LastHookReceiveProbe => "Last hook probe",
         Text::NoSteamAccounts => "No Steam account was detected. You can enter it manually.",
@@ -154,5 +159,8 @@ fn en(key: Text) -> &'static str {
         Text::Fallback => "Fallback",
         Text::Pure => "Pure",
         Text::ConfigError => "Configuration error",
+        Text::ConfigWarning => {
+            "Config could not be applied; editable defaults are still available."
+        }
     }
 }

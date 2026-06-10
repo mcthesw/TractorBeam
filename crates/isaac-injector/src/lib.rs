@@ -5,7 +5,7 @@ mod paths;
 mod platform;
 mod process;
 
-pub use error::InjectorError;
+pub use error::{InjectionStep, InjectorError};
 pub use paths::{
     LEGACY_NATIVE_HOOK_DLL, LEGACY_NATIVE_INJECTOR_EXE, NATIVE_HOOK_DLL, NATIVE_INJECTOR_EXE,
     NativeHookPaths, injector_args, resolve_native_hook_paths, run_injector,

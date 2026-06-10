@@ -5,7 +5,7 @@ use std::{
     process::{Command, ExitStatus},
 };
 
-use crate::InjectorError;
+use crate::{InjectionStep, InjectorError};
 
 /// Rust Native Hook DLL name expected in the Client Bundle.
 pub const NATIVE_HOOK_DLL: &str = "basement_native_hook.dll";
@@ -54,10 +54,10 @@ pub fn run_injector(paths: &NativeHookPaths, pid: u32) -> Result<(), InjectorErr
     if output.status.success() {
         Ok(())
     } else {
-        Err(InjectorError::Injection(injector_failure_message(
-            output.status,
-            &output.stderr,
-        )))
+        Err(InjectorError::injection(
+            InjectionStep::HelperProcess,
+            injector_failure_message(output.status, &output.stderr),
+        ))
     }
 }
 

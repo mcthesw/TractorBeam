@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::InjectorError;
+use crate::{InjectionStep, InjectorError};
 
 pub fn inject(pid: u32, hook: &Path) -> Result<(), InjectorError> {
     inject_platform(pid, hook)
@@ -43,7 +43,10 @@ fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
             pid,
         );
         if process.is_null() {
-            return Err(io::Error::last_os_error().into());
+            return Err(InjectorError::step_io(
+                InjectionStep::OpenProcess,
+                io::Error::last_os_error(),
+            ));
         }
 
         let remote_path = VirtualAllocEx(
@@ -56,7 +59,10 @@ fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
         if remote_path.is_null() {
             let error = io::Error::last_os_error();
             CloseHandle(process);
-            return Err(error.into());
+            return Err(InjectorError::step_io(
+                InjectionStep::AllocateRemoteMemory,
+                error,
+            ));
         }
 
         let wrote = WriteProcessMemory(
@@ -70,7 +76,7 @@ fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
             let error = io::Error::last_os_error();
             VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
             CloseHandle(process);
-            return Err(error.into());
+            return Err(InjectorError::step_io(InjectionStep::WriteDllPath, error));
         }
 
         let kernel32 = GetModuleHandleW(wide_null(OsStr::new("kernel32.dll")).as_ptr());
@@ -78,14 +84,18 @@ fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
             let error = io::Error::last_os_error();
             VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
             CloseHandle(process);
-            return Err(error.into());
+            return Err(InjectorError::step_io(
+                InjectionStep::ResolveLoadLibrary,
+                error,
+            ));
         }
 
         let Some(load_library) = GetProcAddress(kernel32, c"LoadLibraryW".as_ptr().cast()) else {
             VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
             CloseHandle(process);
-            return Err(InjectorError::Injection(
-                "GetProcAddress(LoadLibraryW) failed".to_owned(),
+            return Err(InjectorError::injection(
+                InjectionStep::ResolveLoadLibrary,
+                "GetProcAddress(LoadLibraryW) failed",
             ));
         };
 
@@ -105,15 +115,19 @@ fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
             let error = io::Error::last_os_error();
             VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
             CloseHandle(process);
-            return Err(error.into());
+            return Err(InjectorError::step_io(
+                InjectionStep::CreateRemoteThread,
+                error,
+            ));
         }
 
         if WaitForSingleObject(thread, 10_000) != WAIT_OBJECT_0 {
             CloseHandle(thread);
             VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
             CloseHandle(process);
-            return Err(InjectorError::Injection(
-                "timed out waiting for remote LoadLibraryW".to_owned(),
+            return Err(InjectorError::injection(
+                InjectionStep::WaitForRemoteThread,
+                "timed out waiting for remote LoadLibraryW",
             ));
         }
 
@@ -123,7 +137,10 @@ fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
             CloseHandle(thread);
             VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
             CloseHandle(process);
-            return Err(error.into());
+            return Err(InjectorError::step_io(
+                InjectionStep::ReadRemoteThreadExit,
+                error,
+            ));
         }
 
         CloseHandle(thread);
@@ -131,8 +148,9 @@ fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
         CloseHandle(process);
 
         if exit_code == 0 {
-            return Err(InjectorError::Injection(
-                "LoadLibraryW returned null in the Isaac process".to_owned(),
+            return Err(InjectorError::injection(
+                InjectionStep::ReadRemoteThreadExit,
+                "LoadLibraryW returned null in the Isaac process",
             ));
         }
     }

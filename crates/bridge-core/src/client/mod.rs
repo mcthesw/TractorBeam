@@ -21,8 +21,9 @@ pub use logging::{
     ClientLogSink, ClientSessionLog, ClientSessionLogContext, emit_client_log_event,
 };
 pub use probe::{
-    DEFAULT_READINESS_PROBE_DURATION, DEFAULT_RELAY_PROBE_PAYLOAD_BYTES, HookReceiveProbeReport,
-    ReadinessProbeOutcome, ReadinessProbeReport, RelayProbeReport,
+    DEFAULT_RELAY_PROBE_PAYLOAD_BYTES, HookReceiveProbeReport, READINESS_PROBE_PAYLOAD_BYTES,
+    READINESS_PROBE_SAMPLES_PER_CASE, ReadinessProbeCaseReport, ReadinessProbeReport,
+    RelayProbeReport,
 };
 pub use runtime::{BridgeClient, ClientError, runtime_name};
 pub use session_config::{

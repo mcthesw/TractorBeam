@@ -4,8 +4,8 @@ mod status;
 mod widgets;
 
 use basement_bridge_core::{
-    BridgeClient, ClientLogSink, DEFAULT_RELAY_PROBE_PAYLOAD_BYTES, RelayEndpoint, RelayPreset,
-    SessionConfig, SessionMode, SessionStatus, TransportChoice, load_client_config,
+    BridgeClient, ClientLogSink, RelayEndpoint, RelayPreset, SessionConfig, SessionMode,
+    SessionStatus, TransportChoice, load_client_config,
 };
 use eframe::egui::{self, ScrollArea};
 
@@ -145,11 +145,7 @@ impl BridgeApp {
 
     fn start_readiness_probe(&mut self) {
         let relay = RelayEndpoint::new(self.relay_host.trim(), self.relay_port);
-        match self.client.start_readiness_probe(
-            relay,
-            self.transport,
-            DEFAULT_RELAY_PROBE_PAYLOAD_BYTES,
-        ) {
+        match self.client.start_readiness_probe(relay) {
             Ok(()) => {
                 self.last_error = None;
             }

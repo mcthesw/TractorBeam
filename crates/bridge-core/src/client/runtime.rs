@@ -1,8 +1,7 @@
 use std::io;
 
 use super::{
-    ConfigError, LoadedClientConfig, RelayEndpoint, SessionConfig, SessionMode, TransportChoice,
-    hook_config,
+    ConfigError, LoadedClientConfig, RelayEndpoint, SessionConfig, SessionMode, hook_config,
     logging::{ClientLogSink, ClientSessionLog, ClientSessionLogContext, TracingClientLogSink},
     probe, session,
     state::{self, log_entry, trim_logs},
@@ -120,8 +119,13 @@ impl BridgeClient {
                     match result {
                         Ok(report) => {
                             self.state.latest_hook_receive_probe = Some(report);
+                            self.state.latest_hook_receive_probe_error = None;
                         }
-                        Err(message) => self.log(LogLevel::Error, message),
+                        Err(message) => {
+                            self.state.latest_hook_receive_probe = None;
+                            self.state.latest_hook_receive_probe_error = Some(message.clone());
+                            self.log(LogLevel::Error, message);
+                        }
                     }
                 }
                 state::RuntimeEvent::Stopped => {
@@ -214,12 +218,7 @@ impl BridgeClient {
         self.log(LogLevel::Info, "Session stopped");
     }
 
-    pub fn start_readiness_probe(
-        &mut self,
-        relay: RelayEndpoint,
-        transport: TransportChoice,
-        payload_bytes: usize,
-    ) -> Result<(), ClientError> {
+    pub fn start_readiness_probe(&mut self, relay: RelayEndpoint) -> Result<(), ClientError> {
         if self.state.readiness_probe_running {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -227,13 +226,15 @@ impl BridgeClient {
             )
             .into());
         }
-        let handle = probe::spawn_readiness_probe(relay.clone(), transport, payload_bytes)?;
+        let handle = probe::spawn_readiness_probe(relay.clone())?;
         self.readiness_probe = Some(handle);
         self.state.readiness_probe_running = true;
         self.log(
             LogLevel::Info,
             format!(
-                "Readiness probe started: relay={relay} transport={transport} payload_bytes={payload_bytes}"
+                "Readiness probe started: relay={relay} samples_per_case={} payload_bytes={:?} transports=[TCP, UDP]",
+                probe::READINESS_PROBE_SAMPLES_PER_CASE,
+                probe::READINESS_PROBE_PAYLOAD_BYTES
             ),
         );
         Ok(())
@@ -249,6 +250,7 @@ impl BridgeClient {
         }
         self.hook_receive_probe = Some(probe::spawn_hook_receive_probe());
         self.state.hook_probe_running = true;
+        self.state.latest_hook_receive_probe_error = None;
         self.log(LogLevel::Info, "Hook receive probe started");
         Ok(())
     }
@@ -306,6 +308,8 @@ pub enum ClientError {
 
 #[cfg(test)]
 mod tests {
+    use crate::client::TransportChoice;
+
     use super::*;
 
     #[test]

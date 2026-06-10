@@ -4,7 +4,7 @@ mod logging;
 
 use eframe::egui;
 
-const DEFAULT_WINDOW_SIZE: [f32; 2] = [400.0, 560.0];
+const DEFAULT_WINDOW_SIZE: [f32; 2] = [480.0, 620.0];
 const MIN_WINDOW_SIZE: [f32; 2] = [360.0, 420.0];
 
 fn main() -> eframe::Result<()> {

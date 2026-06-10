@@ -76,6 +76,7 @@ pub struct RuntimeState {
     pub hook_probe_running: bool,
     pub latest_readiness_probe: Option<ReadinessProbeReport>,
     pub latest_hook_receive_probe: Option<HookReceiveProbeReport>,
+    pub latest_hook_receive_probe_error: Option<String>,
 }
 
 #[derive(Debug)]

@@ -24,7 +24,8 @@ use super::{
 };
 
 pub use readiness::{
-    DEFAULT_READINESS_PROBE_DURATION, ReadinessProbeOutcome, ReadinessProbeReport,
+    READINESS_PROBE_PAYLOAD_BYTES, READINESS_PROBE_SAMPLES_PER_CASE, ReadinessProbeCaseReport,
+    ReadinessProbeReport,
 };
 
 pub(super) const PROBE_A_STEAM: &str = "76561198000000101";
@@ -145,12 +146,8 @@ impl BridgeClient {
     }
 }
 
-pub(super) fn spawn_readiness_probe(
-    relay: RelayEndpoint,
-    transport: TransportChoice,
-    payload_bytes: usize,
-) -> io::Result<ProbeHandle> {
-    readiness::spawn_readiness_probe(relay, transport, payload_bytes)
+pub(super) fn spawn_readiness_probe(relay: RelayEndpoint) -> io::Result<ProbeHandle> {
+    readiness::spawn_readiness_probe(relay)
 }
 
 pub(super) fn spawn_hook_receive_probe() -> ProbeHandle {

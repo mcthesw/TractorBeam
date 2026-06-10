@@ -1,4 +1,7 @@
-use basement_bridge_core::{LogLevel, SessionMode, SessionStatus, TransportChoice};
+use basement_bridge_core::{
+    HookReceiveProbeReport, LogLevel, ReadinessProbeCaseReport, ReadinessProbeReport, SessionMode,
+    SessionStatus, TransportChoice,
+};
 use eframe::egui::{self, ComboBox, TextEdit};
 
 use crate::i18n::{Language, Text, text};
@@ -72,13 +75,14 @@ impl BridgeApp {
             .id_salt("diagnostics_logs")
             .max_height(420.0)
             .auto_shrink([false, false])
-            .show_rows(ui, 20.0, logs.len(), |ui, range| {
-                for entry in &logs[range] {
-                    ui.horizontal(|ui| {
+            .show(ui, |ui| {
+                for entry in logs {
+                    ui.horizontal_top(|ui| {
                         ui.monospace(format!("[{}]", entry.timestamp));
                         ui.colored_label(log_level_color(ui, entry.level), entry.level.to_string());
-                        ui.label(&entry.message);
+                        ui.add(egui::Label::new(entry.message.as_str()).wrap());
                     });
+                    ui.add_space(2.0);
                 }
             });
     }
@@ -87,9 +91,16 @@ impl BridgeApp {
         ui.heading(self.t(Text::Debug));
         ui.add_space(8.0);
 
+        ui.heading(self.t(Text::RelayReadiness));
+        ui.add_space(6.0);
         self.readiness_probe_ui(ui);
+
+        ui.add_space(12.0);
+        ui.separator();
         ui.add_space(12.0);
 
+        ui.heading(self.t(Text::HookReceive));
+        ui.add_space(6.0);
         if ui.button(self.t(Text::RunHookReceiveProbe)).clicked() {
             self.run_hook_receive_probe();
         }
@@ -99,8 +110,12 @@ impl BridgeApp {
         }
         if let Some(result) = &self.client.state().latest_hook_receive_probe {
             ui.add_space(4.0);
-            ui.label(self.t(Text::LastHookReceiveProbe));
-            ui.monospace(result.to_string());
+            hook_probe_table(ui, self.language, result);
+        }
+        if let Some(message) = &self.client.state().latest_hook_receive_probe_error {
+            ui.add_space(4.0);
+            ui.label(self.t(Text::Details));
+            wrapped_colored_label(ui, ui.visuals().error_fg_color, message);
         }
     }
 
@@ -249,18 +264,121 @@ impl BridgeApp {
         }
         if let Some(report) = &self.client.state().latest_readiness_probe {
             ui.add_space(4.0);
-            let color = match report.outcome {
-                basement_bridge_core::ReadinessProbeOutcome::Pass => {
-                    ui.visuals().strong_text_color()
-                }
-                basement_bridge_core::ReadinessProbeOutcome::Warn => {
-                    egui::Color32::from_rgb(185, 124, 0)
-                }
-                basement_bridge_core::ReadinessProbeOutcome::Fail => ui.visuals().error_fg_color,
-            };
-            ui.colored_label(color, report.short_summary());
+            readiness_probe_table(ui, self.language, report);
         }
     }
+}
+
+fn readiness_probe_table(ui: &mut egui::Ui, language: Language, report: &ReadinessProbeReport) {
+    egui::Grid::new("readiness_probe_table")
+        .num_columns(4)
+        .striped(true)
+        .spacing([12.0, 4.0])
+        .show(ui, |ui| {
+            table_header(ui, text(language, Text::Transport));
+            table_header(ui, text(language, Text::Size));
+            table_header(ui, text(language, Text::Lost));
+            table_header(ui, text(language, Text::Latency));
+            ui.end_row();
+
+            for case in &report.cases {
+                ui.label(case.transport.to_string());
+                ui.label(format!("{} B", case.payload_bytes));
+                ui.label(lost_summary(case));
+                ui.add(egui::Label::new(latency_summary(case)).wrap());
+                ui.end_row();
+            }
+        });
+    let failed_cases = report
+        .cases
+        .iter()
+        .filter_map(|case| case.failure_reason.as_ref().map(|reason| (case, reason)));
+    for (index, (case, reason)) in failed_cases.enumerate() {
+        if index == 0 {
+            ui.add_space(4.0);
+            ui.label(text(language, Text::Details));
+        }
+        wrapped_colored_label(
+            ui,
+            ui.visuals().error_fg_color,
+            &format!("{} {} B: {reason}", case.transport, case.payload_bytes),
+        );
+    }
+    if report.cases.is_empty() {
+        ui.add_space(4.0);
+        ui.label(text(language, Text::NoProbeData));
+    }
+}
+
+fn hook_probe_table(ui: &mut egui::Ui, language: Language, report: &HookReceiveProbeReport) {
+    egui::Grid::new("hook_probe_table")
+        .num_columns(4)
+        .striped(true)
+        .spacing([12.0, 4.0])
+        .show(ui, |ui| {
+            table_header(ui, text(language, Text::Bytes));
+            table_header(ui, text(language, Text::HookInput));
+            table_header(ui, text(language, Text::HookAvailable));
+            table_header(ui, text(language, Text::HookRead));
+            ui.end_row();
+
+            ui.label(format!("{} B", report.sent_bytes));
+            probe_bool_cell(ui, language, report.local_in);
+            probe_bool_cell(ui, language, report.available_hit);
+            probe_bool_cell(ui, language, report.read_hit);
+            ui.end_row();
+        });
+}
+
+fn table_header(ui: &mut egui::Ui, value: &str) {
+    ui.label(egui::RichText::new(value).strong());
+}
+
+fn wrapped_colored_label(ui: &mut egui::Ui, color: egui::Color32, value: &str) {
+    ui.add(egui::Label::new(egui::RichText::new(value).color(color)).wrap());
+}
+
+fn probe_bool_cell(ui: &mut egui::Ui, language: Language, value: bool) {
+    let color = if value {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().error_fg_color
+    };
+    let label = if value {
+        text(language, Text::Yes)
+    } else {
+        text(language, Text::No)
+    };
+    ui.colored_label(color, label);
+}
+
+fn latency_summary(report: &ReadinessProbeCaseReport) -> String {
+    format!(
+        "median={} ms p95={} ms",
+        display_latency(report.median_latency_ms),
+        display_latency(report.p95_latency_ms)
+    )
+}
+
+fn lost_summary(report: &ReadinessProbeCaseReport) -> String {
+    if report.packets_sent == 0 {
+        "-".to_owned()
+    } else {
+        format!("{}/{}", report.missing_packets, report.packets_sent)
+    }
+}
+
+fn display_latency(value: Option<u128>) -> String {
+    value.map_or_else(
+        || "-".to_owned(),
+        |value| {
+            if value == 0 {
+                "<1".to_owned()
+            } else {
+                value.to_string()
+            }
+        },
+    )
 }
 
 fn log_level_color(ui: &egui::Ui, level: LogLevel) -> egui::Color32 {

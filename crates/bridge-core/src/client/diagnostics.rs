@@ -89,6 +89,9 @@ impl BridgeClient {
         } else {
             output.push_str("hook_receive: none\n");
         }
+        if let Some(error) = &self.state.latest_hook_receive_probe_error {
+            output.push_str(&format!("hook_receive_error: {error}\n"));
+        }
         output.push('\n');
         output.push_str("primary files:\n");
         for file in crate::diagnostics::primary_diagnostic_files() {

@@ -6,9 +6,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bytes::Bytes;
-use tokio::time;
-
 use super::{
     PROBE_A_STEAM, PROBE_B_STEAM, ProbeHandle, ProbePeer, block_on_probe, probe_payload,
     validate_probe_payload,
@@ -17,32 +14,15 @@ use crate::client::{
     LogLevel, RelayEndpoint, TransportChoice,
     state::{RuntimeEvent, log_event, unix_seconds},
 };
+use bytes::Bytes;
 
-pub const DEFAULT_READINESS_PROBE_DURATION: Duration = Duration::from_secs(5);
+pub const READINESS_PROBE_SAMPLES_PER_CASE: u64 = 50;
+pub const READINESS_PROBE_PAYLOAD_BYTES: [usize; 3] = [512, 1024, 2048];
 const READINESS_SAMPLE_TIMEOUT: Duration = Duration::from_millis(750);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReadinessProbeOutcome {
-    Pass,
-    Warn,
-    Fail,
-}
-
-impl Display for ReadinessProbeOutcome {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Pass => formatter.write_str("pass"),
-            Self::Warn => formatter.write_str("warn"),
-            Self::Fail => formatter.write_str("fail"),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReadinessProbeReport {
-    pub relay: String,
+pub struct ReadinessProbeCaseReport {
     pub transport: TransportChoice,
-    pub room: String,
     pub payload_bytes: usize,
     pub duration_ms: u128,
     pub packets_sent: u64,
@@ -52,49 +32,20 @@ pub struct ReadinessProbeReport {
     pub median_latency_ms: Option<u128>,
     pub p95_latency_ms: Option<u128>,
     pub max_latency_ms: Option<u128>,
-    pub outcome: ReadinessProbeOutcome,
     pub failure_reason: Option<String>,
 }
 
-impl ReadinessProbeReport {
+impl ReadinessProbeCaseReport {
     #[must_use]
-    pub fn short_summary(&self) -> String {
-        match self.outcome {
-            ReadinessProbeOutcome::Pass => format!(
-                "Readiness passed via {} ({}): median={} ms p95={} ms lost={}/{}",
-                self.relay,
-                self.transport,
-                display_latency(self.median_latency_ms),
-                display_latency(self.p95_latency_ms),
-                self.missing_packets,
-                self.packets_sent
-            ),
-            ReadinessProbeOutcome::Warn => format!(
-                "Readiness warning via {} ({}): median={} ms p95={} ms lost={}/{}",
-                self.relay,
-                self.transport,
-                display_latency(self.median_latency_ms),
-                display_latency(self.p95_latency_ms),
-                self.missing_packets,
-                self.packets_sent
-            ),
-            ReadinessProbeOutcome::Fail => format!(
-                "Readiness failed via {} ({}): {}",
-                self.relay,
-                self.transport,
-                self.failure_reason
-                    .as_deref()
-                    .unwrap_or("probe did not complete")
-            ),
-        }
+    pub fn has_issue(&self) -> bool {
+        self.failure_reason.is_some() || self.missing_packets > 0
     }
 
     #[must_use]
     pub fn detailed_log(&self) -> String {
-        format!(
-            "{}; room={}; payload_bytes={}; duration_ms={}; sent={}; received={}; missing={}; min_ms={}; median_ms={}; p95_ms={}; max_ms={}",
-            self.short_summary(),
-            self.room,
+        let mut message = format!(
+            "transport={}; payload_bytes={}; duration_ms={}; sent={}; received={}; missing={}; min_ms={}; median_ms={}; p95_ms={}; max_ms={}",
+            self.transport,
             self.payload_bytes,
             self.duration_ms,
             self.packets_sent,
@@ -104,6 +55,41 @@ impl ReadinessProbeReport {
             display_latency(self.median_latency_ms),
             display_latency(self.p95_latency_ms),
             display_latency(self.max_latency_ms)
+        );
+        if let Some(reason) = &self.failure_reason {
+            message.push_str("; error=");
+            message.push_str(reason);
+        }
+        message
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadinessProbeReport {
+    pub relay: String,
+    pub room: String,
+    pub duration_ms: u128,
+    pub samples_per_case: u64,
+    pub cases: Vec<ReadinessProbeCaseReport>,
+}
+
+impl ReadinessProbeReport {
+    #[must_use]
+    pub fn has_issue(&self) -> bool {
+        self.cases.iter().any(ReadinessProbeCaseReport::has_issue)
+    }
+
+    #[must_use]
+    pub fn detailed_log(&self) -> String {
+        let cases = self
+            .cases
+            .iter()
+            .map(ReadinessProbeCaseReport::detailed_log)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        format!(
+            "Readiness matrix via {}; room={}; duration_ms={}; samples_per_case={}; cases=[{}]",
+            self.relay, self.room, self.duration_ms, self.samples_per_case, cases
         )
     }
 }
@@ -114,20 +100,18 @@ impl Display for ReadinessProbeReport {
     }
 }
 
-pub(super) fn spawn_readiness_probe(
-    relay: RelayEndpoint,
-    transport: TransportChoice,
-    payload_bytes: usize,
-) -> io::Result<ProbeHandle> {
+pub(super) fn spawn_readiness_probe(relay: RelayEndpoint) -> io::Result<ProbeHandle> {
     relay.validate().map_err(io::Error::other)?;
-    validate_probe_payload(payload_bytes)?;
+    for payload_bytes in READINESS_PROBE_PAYLOAD_BYTES {
+        validate_probe_payload(payload_bytes)?;
+    }
     let (event_tx, events) = mpsc::channel();
     let worker = thread::spawn(move || {
-        let report = run_readiness_probe(relay, transport, payload_bytes);
-        let level = match report.outcome {
-            ReadinessProbeOutcome::Pass => LogLevel::Info,
-            ReadinessProbeOutcome::Warn => LogLevel::Warn,
-            ReadinessProbeOutcome::Fail => LogLevel::Error,
+        let report = run_readiness_probe(relay);
+        let level = if report.has_issue() {
+            LogLevel::Warn
+        } else {
+            LogLevel::Info
         };
         let _ = event_tx.send(log_event(level, report.detailed_log()));
         let _ = event_tx.send(RuntimeEvent::ReadinessProbeFinished(Ok(Box::new(report))));
@@ -138,86 +122,105 @@ pub(super) fn spawn_readiness_probe(
     })
 }
 
-fn run_readiness_probe(
-    relay: RelayEndpoint,
-    transport: TransportChoice,
-    payload_bytes: usize,
-) -> ReadinessProbeReport {
+fn run_readiness_probe(relay: RelayEndpoint) -> ReadinessProbeReport {
     let relay_display = relay.to_string();
     let room = format!("bb-probe-{}-{}", std::process::id(), unix_seconds());
     let started = Instant::now();
-    match block_on_probe(run_readiness_probe_async(
-        relay,
-        transport,
-        room.clone(),
-        payload_bytes,
-    )) {
-        Ok(mut report) => {
-            report.duration_ms = started.elapsed().as_millis();
-            report
-        }
-        Err(error) => failed_readiness_report(
-            relay_display,
-            transport,
-            room,
-            payload_bytes,
-            started.elapsed(),
-            error.to_string(),
-        ),
+    let cases = block_on_probe(async { Ok(run_readiness_probe_matrix_async(relay, &room).await) })
+        .unwrap_or_else(|error| {
+            vec![failed_readiness_case_report(
+                TransportChoice::Tcp,
+                READINESS_PROBE_PAYLOAD_BYTES[0],
+                started.elapsed(),
+                error.to_string(),
+            )]
+        });
+    ReadinessProbeReport {
+        relay: relay_display,
+        room,
+        duration_ms: started.elapsed().as_millis(),
+        samples_per_case: READINESS_PROBE_SAMPLES_PER_CASE,
+        cases,
     }
 }
 
-async fn run_readiness_probe_async(
+async fn run_readiness_probe_matrix_async(
     relay: RelayEndpoint,
+    room: &str,
+) -> Vec<ReadinessProbeCaseReport> {
+    let mut cases = Vec::new();
+    for transport in [TransportChoice::Tcp, TransportChoice::Udp] {
+        for payload_bytes in READINESS_PROBE_PAYLOAD_BYTES {
+            let started = Instant::now();
+            let case = match run_readiness_probe_case_async(&relay, transport, room, payload_bytes)
+                .await
+            {
+                Ok(mut report) => {
+                    report.duration_ms = started.elapsed().as_millis();
+                    report
+                }
+                Err(error) => failed_readiness_case_report(
+                    transport,
+                    payload_bytes,
+                    started.elapsed(),
+                    error.to_string(),
+                ),
+            };
+            cases.push(case);
+        }
+    }
+    cases
+}
+
+async fn run_readiness_probe_case_async(
+    relay: &RelayEndpoint,
     transport: TransportChoice,
-    room: String,
+    room: &str,
     payload_bytes: usize,
-) -> io::Result<ReadinessProbeReport> {
-    let relay_display = relay.to_string();
-    let mut peer_a = ProbePeer::join(&relay, transport, &room, PROBE_A_STEAM, "Probe A").await?;
-    let mut peer_b = ProbePeer::join(&relay, transport, &room, PROBE_B_STEAM, "Probe B").await?;
+) -> io::Result<ReadinessProbeCaseReport> {
+    let mut peer_a = ProbePeer::join(relay, transport, room, PROBE_A_STEAM, "Probe A").await?;
+    let mut peer_b = ProbePeer::join(relay, transport, room, PROBE_B_STEAM, "Probe B").await?;
     let payload = probe_payload(payload_bytes);
     let started = Instant::now();
-    let deadline = started + DEFAULT_READINESS_PROBE_DURATION;
     let mut sequence = 1_u32;
     let mut sent = 0_u64;
     let mut received = 0_u64;
     let mut latencies = Vec::new();
 
-    while Instant::now() < deadline {
-        sample_direction(
-            &mut peer_a,
-            &mut peer_b,
-            PROBE_B_STEAM,
-            PROBE_A_STEAM,
-            PROBE_B_STEAM,
-            payload.clone(),
-            &mut sequence,
-            &mut sent,
-            &mut received,
-            &mut latencies,
-        )
-        .await;
-        sample_direction(
-            &mut peer_b,
-            &mut peer_a,
-            PROBE_A_STEAM,
-            PROBE_B_STEAM,
-            PROBE_A_STEAM,
-            payload.clone(),
-            &mut sequence,
-            &mut sent,
-            &mut received,
-            &mut latencies,
-        )
-        .await;
-        time::sleep(Duration::from_millis(100)).await;
+    for index in 0..READINESS_PROBE_SAMPLES_PER_CASE {
+        if index % 2 == 0 {
+            sample_direction(
+                &mut peer_a,
+                &mut peer_b,
+                PROBE_B_STEAM,
+                PROBE_A_STEAM,
+                PROBE_B_STEAM,
+                payload.clone(),
+                &mut sequence,
+                &mut sent,
+                &mut received,
+                &mut latencies,
+            )
+            .await;
+        } else {
+            sample_direction(
+                &mut peer_b,
+                &mut peer_a,
+                PROBE_A_STEAM,
+                PROBE_B_STEAM,
+                PROBE_A_STEAM,
+                payload.clone(),
+                &mut sequence,
+                &mut sent,
+                &mut received,
+                &mut latencies,
+            )
+            .await;
+        }
     }
 
-    Ok(readiness_report(ReadinessStats {
-        relay_display,
+    Ok(readiness_case_report(ReadinessStats {
         transport,
-        room,
         payload_bytes,
         duration: started.elapsed(),
         packets_sent: sent,
@@ -272,9 +275,7 @@ async fn sample_direction(
 
 #[derive(Debug)]
 struct ReadinessStats {
-    relay_display: String,
     transport: TransportChoice,
-    room: String,
     payload_bytes: usize,
     duration: Duration,
     packets_sent: u64,
@@ -283,7 +284,7 @@ struct ReadinessStats {
     failure_reason: Option<String>,
 }
 
-fn readiness_report(stats: ReadinessStats) -> ReadinessProbeReport {
+fn readiness_case_report(stats: ReadinessStats) -> ReadinessProbeCaseReport {
     let mut latencies = stats.latencies;
     latencies.sort_unstable();
     let missing_packets = stats.packets_sent.saturating_sub(stats.packets_received);
@@ -291,17 +292,8 @@ fn readiness_report(stats: ReadinessStats) -> ReadinessProbeReport {
     let median_latency_ms = percentile(&latencies, 50);
     let p95_latency_ms = percentile(&latencies, 95);
     let max_latency_ms = latencies.last().copied();
-    let outcome = if stats.failure_reason.is_some() || stats.packets_received == 0 {
-        ReadinessProbeOutcome::Fail
-    } else if missing_packets > 0 || p95_latency_ms.is_some_and(|latency| latency >= 250) {
-        ReadinessProbeOutcome::Warn
-    } else {
-        ReadinessProbeOutcome::Pass
-    };
-    ReadinessProbeReport {
-        relay: stats.relay_display,
+    ReadinessProbeCaseReport {
         transport: stats.transport,
-        room: stats.room,
         payload_bytes: stats.payload_bytes,
         duration_ms: stats.duration.as_millis(),
         packets_sent: stats.packets_sent,
@@ -311,23 +303,18 @@ fn readiness_report(stats: ReadinessStats) -> ReadinessProbeReport {
         median_latency_ms,
         p95_latency_ms,
         max_latency_ms,
-        outcome,
         failure_reason: stats.failure_reason,
     }
 }
 
-fn failed_readiness_report(
-    relay: String,
+fn failed_readiness_case_report(
     transport: TransportChoice,
-    room: String,
     payload_bytes: usize,
     duration: Duration,
     failure_reason: String,
-) -> ReadinessProbeReport {
-    readiness_report(ReadinessStats {
-        relay_display: relay,
+) -> ReadinessProbeCaseReport {
+    readiness_case_report(ReadinessStats {
         transport,
-        room,
         payload_bytes,
         duration,
         packets_sent: 0,

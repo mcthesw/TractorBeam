@@ -57,6 +57,30 @@ async fn forwards_between_udp_and_tcp_peers() {
     server.abort();
 }
 
+#[test]
+fn tcp_egress_channel_uses_configured_capacity() {
+    let (sender, _receiver) = tcp_egress_channel(1);
+
+    assert!(sender.try_send(Bytes::from_static(b"one")).is_ok());
+    assert!(sender.try_send(Bytes::from_static(b"two")).is_err());
+}
+
+#[test]
+fn queue_full_metrics_are_separate_from_packet_errors() {
+    let mut metrics = RelayMetrics::new(512);
+
+    metrics.add(PacketOutcome {
+        tcp_egress_queue_full: 1,
+        tcp_egress_dropped_packets: 1,
+        ..PacketOutcome::default()
+    });
+
+    assert_eq!(metrics.tcp_egress_queue_capacity, 512);
+    assert_eq!(metrics.tcp_egress_queue_full, 1);
+    assert_eq!(metrics.tcp_egress_dropped_packets, 1);
+    assert_eq!(metrics.packet_handling_errors, 0);
+}
+
 async fn spawn_test_relay(
     tcp_enabled: bool,
 ) -> (

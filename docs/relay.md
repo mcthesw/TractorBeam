@@ -42,6 +42,7 @@ is enabled, also open the configured TCP port, normally `25910/tcp`.
 bind = "0.0.0.0:25910"
 tcp_enabled = true
 tcp_bind = "0.0.0.0:25910"
+tcp_egress_queue_capacity = 512
 max_packet_size = 1500
 peer_idle_seconds = 30
 room_idle_seconds = 120
@@ -55,6 +56,9 @@ blocked_cidrs = []
 - `bind`: UDP listener address.
 - `tcp_enabled`: whether the TCP fallback listener starts.
 - `tcp_bind`: TCP listener address when TCP is enabled.
+- `tcp_egress_queue_capacity`: per TCP Peer outbound queue capacity. Queue-full
+  drops are reported separately in periodic stats so closed tests can identify
+  TCP backpressure without mixing it into generic packet errors.
 - `max_packet_size`: maximum UDP datagram or TCP frame payload accepted by the
   Relay Server.
 - `peer_idle_seconds`: inactive Peer expiry.
@@ -76,6 +80,9 @@ Restart the Relay Server after config changes.
 - If a Room fills unexpectedly, check `max_peers_per_room` and stale Peers.
 - For obvious abuse, add the source IP or CIDR to `blocked_cidrs`, restart, and
   keep raw IPs out of public notes.
+- If TCP sessions feel delayed, compare `tcp_egress_queue_full` and
+  `tcp_egress_dropped_packets` in the periodic `relay stats` lines before
+  raising `tcp_egress_queue_capacity` again.
 - If CPU or traffic spikes, lower `rate_limit_per_second` and collect the Relay
   Server logs privately.
 - The Relay Server keeps only in-memory Room state, so a restart drops all active

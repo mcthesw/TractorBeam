@@ -26,6 +26,8 @@ pub(crate) struct RelayConfig {
     pub(crate) tcp_enabled: bool,
     #[serde(default = "default_tcp_bind")]
     pub(crate) tcp_bind: String,
+    #[serde(default = "default_tcp_egress_queue_capacity")]
+    pub(crate) tcp_egress_queue_capacity: usize,
     pub(crate) max_packet_size: usize,
     pub(crate) peer_idle_seconds: u64,
     pub(crate) room_idle_seconds: u64,
@@ -42,6 +44,7 @@ impl Default for RelayConfig {
             bind: "0.0.0.0:25910".to_owned(),
             tcp_enabled: true,
             tcp_bind: default_tcp_bind(),
+            tcp_egress_queue_capacity: default_tcp_egress_queue_capacity(),
             max_packet_size: MAX_UDP_PACKET_SIZE,
             peer_idle_seconds: 30,
             room_idle_seconds: 120,
@@ -88,6 +91,9 @@ impl RelayConfig {
         if self.tcp_enabled && self.tcp_bind.trim().is_empty() {
             return invalid_config("tcp_bind must not be empty when TCP is enabled");
         }
+        if self.tcp_egress_queue_capacity == 0 {
+            return invalid_config("tcp_egress_queue_capacity must be greater than 0");
+        }
         if self.max_packet_size == 0 {
             return invalid_config("max_packet_size must be greater than 0");
         }
@@ -128,4 +134,8 @@ fn default_tcp_enabled() -> bool {
 
 fn default_tcp_bind() -> String {
     "0.0.0.0:25910".to_owned()
+}
+
+fn default_tcp_egress_queue_capacity() -> usize {
+    512
 }

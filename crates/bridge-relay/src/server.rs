@@ -23,8 +23,6 @@ use crate::{
     state::{PeerId, RelayState, error_message},
 };
 
-const TCP_EGRESS_QUEUE: usize = 256;
-
 type SharedState = Arc<Mutex<RelayState>>;
 type SharedEgress = Arc<Mutex<EgressTable>>;
 type SharedMetrics = Arc<Mutex<RelayMetrics>>;
@@ -40,6 +38,7 @@ pub(crate) async fn run(config: RelayConfig) -> io::Result<()> {
     info!(
         udp_bind = %config.bind,
         tcp_bind = if config.tcp_enabled { config.tcp_bind.as_str() } else { "disabled" },
+        tcp_egress_queue_capacity = config.tcp_egress_queue_capacity,
         max_packet_size = config.max_packet_size,
         rate_limit_per_second = config.rate_limit_per_second,
         max_rooms = config.max_rooms,
@@ -59,7 +58,9 @@ async fn run_with_listeners(
     let udp_socket = Arc::new(udp_socket);
     let state = Arc::new(Mutex::new(RelayState::new(config.clone())));
     let egress = Arc::new(Mutex::new(EgressTable::default()));
-    let metrics = Arc::new(Mutex::new(RelayMetrics::default()));
+    let metrics = Arc::new(Mutex::new(RelayMetrics::new(
+        config.tcp_egress_queue_capacity,
+    )));
     let peer_registry = Arc::new(Mutex::new(PeerRegistry::default()));
     let mut tasks = JoinSet::new();
 
@@ -134,7 +135,7 @@ async fn run_tcp_listener(
         let (stream, address) = listener.accept().await?;
         stream.set_nodelay(true)?;
         let peer_id = peer_registry.lock().await.allocate();
-        let (tx, rx) = mpsc::channel(TCP_EGRESS_QUEUE);
+        let (tx, rx) = tcp_egress_channel(config.tcp_egress_queue_capacity);
         egress.lock().await.insert(peer_id, PeerEgress::Tcp(tx));
         let runtime = TcpConnectionRuntime {
             udp_socket: Arc::clone(&udp_socket),
@@ -289,25 +290,41 @@ impl PeerRegistry {
 
 #[derive(Debug, Default)]
 struct RelayMetrics {
+    tcp_egress_queue_capacity: usize,
     packets_in: u64,
     data_in: u64,
     forwarded_packets: u64,
     forwarded_bytes: u64,
+    tcp_egress_queue_full: u64,
+    tcp_egress_dropped_packets: u64,
     decode_errors: u64,
     unjoined_data: u64,
     missing_target: u64,
     blocked: u64,
     rate_limited: u64,
-    errors: u64,
+    packet_handling_errors: u64,
 }
 
 impl RelayMetrics {
+    fn new(tcp_egress_queue_capacity: usize) -> Self {
+        Self {
+            tcp_egress_queue_capacity,
+            ..Self::default()
+        }
+    }
+
     fn add(&mut self, outcome: PacketOutcome) {
         self.data_in = self.data_in.saturating_add(outcome.data_in);
         self.forwarded_packets = self
             .forwarded_packets
             .saturating_add(outcome.forwarded_packets);
         self.forwarded_bytes = self.forwarded_bytes.saturating_add(outcome.forwarded_bytes);
+        self.tcp_egress_queue_full = self
+            .tcp_egress_queue_full
+            .saturating_add(outcome.tcp_egress_queue_full);
+        self.tcp_egress_dropped_packets = self
+            .tcp_egress_dropped_packets
+            .saturating_add(outcome.tcp_egress_dropped_packets);
         self.decode_errors = self.decode_errors.saturating_add(outcome.decode_errors);
         self.unjoined_data = self.unjoined_data.saturating_add(outcome.unjoined_data);
         self.missing_target = self.missing_target.saturating_add(outcome.missing_target);
@@ -321,15 +338,18 @@ impl RelayMetrics {
             data_in = self.data_in,
             forwarded_packets = self.forwarded_packets,
             forwarded_bytes = self.forwarded_bytes,
+            tcp_egress_queue_capacity = self.tcp_egress_queue_capacity,
+            tcp_egress_queue_full = self.tcp_egress_queue_full,
+            tcp_egress_dropped_packets = self.tcp_egress_dropped_packets,
             decode_errors = self.decode_errors,
             unjoined_data = self.unjoined_data,
             missing_target = self.missing_target,
             blocked = self.blocked,
             rate_limited = self.rate_limited,
-            errors = self.errors,
+            packet_handling_errors = self.packet_handling_errors,
             "relay stats"
         );
-        *self = Self::default();
+        *self = Self::new(self.tcp_egress_queue_capacity);
     }
 }
 
@@ -338,6 +358,8 @@ struct PacketOutcome {
     data_in: u64,
     forwarded_packets: u64,
     forwarded_bytes: u64,
+    tcp_egress_queue_full: u64,
+    tcp_egress_dropped_packets: u64,
     decode_errors: u64,
     unjoined_data: u64,
     missing_target: u64,
@@ -385,7 +407,7 @@ async fn handle_datagram(
         Ok(outcome) => metrics.lock().await.add(outcome),
         Err(error) => {
             let mut metrics = metrics.lock().await;
-            metrics.errors = metrics.errors.saturating_add(1);
+            metrics.packet_handling_errors = metrics.packet_handling_errors.saturating_add(1);
             warn!(peer_id = %source.peer_id, address = %source.address, %error, "packet handling failed");
         }
     }
@@ -529,14 +551,28 @@ async fn forward_data(
     };
 
     if target_peer != source.peer_id {
-        send_to_peer(udp_socket, egress, target_peer, raw.clone()).await?;
-        outcome.forwarded_packets = outcome.forwarded_packets.saturating_add(1);
-        outcome.forwarded_bytes = outcome
-            .forwarded_bytes
-            .saturating_add(u64::try_from(raw.len()).unwrap_or(u64::MAX));
+        match send_to_peer(udp_socket, egress, target_peer, raw.clone()).await {
+            Ok(()) => {
+                outcome.forwarded_packets = outcome.forwarded_packets.saturating_add(1);
+                outcome.forwarded_bytes = outcome
+                    .forwarded_bytes
+                    .saturating_add(u64::try_from(raw.len()).unwrap_or(u64::MAX));
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                outcome.tcp_egress_queue_full = outcome.tcp_egress_queue_full.saturating_add(1);
+                outcome.tcp_egress_dropped_packets =
+                    outcome.tcp_egress_dropped_packets.saturating_add(1);
+                debug!(peer_id = %target_peer, "TCP egress queue is full; dropping relay datagram");
+            }
+            Err(error) => return Err(error),
+        }
     }
 
     Ok(outcome)
+}
+
+fn tcp_egress_channel(capacity: usize) -> (mpsc::Sender<Bytes>, mpsc::Receiver<Bytes>) {
+    mpsc::channel(capacity)
 }
 
 async fn send_control(

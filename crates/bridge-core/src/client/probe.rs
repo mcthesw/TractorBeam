@@ -249,6 +249,7 @@ impl ProbePeer {
             mode: SessionMode::Pure,
             steam_id64: steam_id64.to_owned(),
             display_name: display_name.to_owned(),
+            session_health: super::session_config::SessionHealthConfig::default(),
         };
         let mut relay_transport = RelayTransport::connect(relay, transport).await?;
         complete_relay_join(

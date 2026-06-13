@@ -106,6 +106,7 @@ impl BridgeApp {
             mode: self.mode,
             steam_id64,
             display_name,
+            session_health: self.client.loaded_config().config.session_health,
         }
     }
 

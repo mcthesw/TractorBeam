@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use super::{
     PRODUCT_NAME,
-    session_config::{RelayEndpoint, SessionMode, TransportChoice},
+    session_config::{RelayEndpoint, SessionHealthConfig, SessionMode, TransportChoice},
 };
 
 pub const CLIENT_CONFIG_FILE: &str = "config.toml";
@@ -31,6 +31,7 @@ pub struct ClientConfig {
     pub default_mode: SessionMode,
     pub selected_relay: Option<String>,
     pub relays: Vec<RelayPreset>,
+    pub session_health: SessionHealthConfig,
 }
 
 impl Default for ClientConfig {
@@ -42,6 +43,7 @@ impl Default for ClientConfig {
             default_mode: SessionMode::Pure,
             selected_relay: None,
             relays: Vec::new(),
+            session_health: SessionHealthConfig::default(),
         }
     }
 }
@@ -73,6 +75,9 @@ impl ClientConfig {
             return Err(ClientConfigError::UnknownSelectedRelay(selected.to_owned()));
         }
         self.resolved_room_for_startup()?;
+        self.session_health
+            .validate()
+            .map_err(|message| ClientConfigError::InvalidSessionHealth(message.to_owned()))?;
         Ok(())
     }
 }
@@ -186,6 +191,8 @@ pub enum ClientConfigError {
     UnknownSelectedRelay(String),
     #[error("unsupported room template token: {0}")]
     UnsupportedRoomTemplate(String),
+    #[error("invalid session health config: {0}")]
+    InvalidSessionHealth(String),
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,8 +202,18 @@ struct RawClientConfig {
     default_transport: Option<String>,
     default_mode: Option<String>,
     selected_relay: Option<String>,
+    session_health: Option<RawSessionHealthConfig>,
     #[serde(default)]
     relays: Vec<RawRelayPreset>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawSessionHealthConfig {
+    enabled: Option<bool>,
+    runtime_rtt_enabled: Option<bool>,
+    snapshot_interval_seconds: Option<u64>,
+    runtime_rtt_interval_seconds: Option<u64>,
+    runtime_rtt_timeout_seconds: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -228,9 +245,31 @@ impl TryFrom<RawClientConfig> for ClientConfig {
                 .into_iter()
                 .map(TryInto::try_into)
                 .collect::<Result<Vec<_>, _>>()?,
+            session_health: value.session_health.unwrap_or_default().into(),
         };
         config.validate()?;
         Ok(config)
+    }
+}
+
+impl From<RawSessionHealthConfig> for SessionHealthConfig {
+    fn from(value: RawSessionHealthConfig) -> Self {
+        let defaults = Self::default();
+        Self {
+            enabled: value.enabled.unwrap_or(defaults.enabled),
+            runtime_rtt_enabled: value
+                .runtime_rtt_enabled
+                .unwrap_or(defaults.runtime_rtt_enabled),
+            snapshot_interval_seconds: value
+                .snapshot_interval_seconds
+                .unwrap_or(defaults.snapshot_interval_seconds),
+            runtime_rtt_interval_seconds: value
+                .runtime_rtt_interval_seconds
+                .unwrap_or(defaults.runtime_rtt_interval_seconds),
+            runtime_rtt_timeout_seconds: value
+                .runtime_rtt_timeout_seconds
+                .unwrap_or(defaults.runtime_rtt_timeout_seconds),
+        }
     }
 }
 
@@ -427,6 +466,11 @@ default_transport = "tcp"
 default_mode = "pure"
 selected_relay = "current"
 
+[session_health]
+enabled = true
+runtime_rtt_enabled = false
+snapshot_interval_seconds = 10
+
 [[relays]]
 id = "current"
 name = "Current test relay"
@@ -444,10 +488,27 @@ default_transport = "tcp"
 
         assert_eq!(config.default_transport, TransportChoice::Tcp);
         assert_eq!(config.default_mode, SessionMode::Pure);
+        assert!(config.session_health.enabled);
+        assert!(!config.session_health.runtime_rtt_enabled);
+        assert_eq!(config.session_health.snapshot_interval_seconds, 10);
         assert_eq!(config.selected_relay_index(), Some(0));
         assert_eq!(
             config.relays[0].preferred_transport(TransportChoice::Udp),
             TransportChoice::Tcp
         );
+    }
+
+    #[test]
+    fn rejects_invalid_session_health_interval() {
+        let raw = r#"
+[session_health]
+enabled = true
+snapshot_interval_seconds = 0
+"#;
+
+        let error =
+            ClientConfig::try_from(toml::from_str::<RawClientConfig>(raw).unwrap()).unwrap_err();
+
+        assert!(matches!(error, ClientConfigError::InvalidSessionHealth(_)));
     }
 }

@@ -93,6 +93,26 @@ impl BridgeClient {
             output.push_str(&format!("hook_receive_error: {error}\n"));
         }
         output.push('\n');
+        output.push_str("session health:\n");
+        if let Some(snapshot) = self
+            .state
+            .latest_session_health_summary
+            .as_ref()
+            .or(self.state.latest_session_health.as_ref())
+        {
+            output.push_str(&snapshot.compact_log_line("summary"));
+            output.push('\n');
+            match serde_json::to_string_pretty(snapshot) {
+                Ok(json) => {
+                    output.push_str(&json);
+                    output.push('\n');
+                }
+                Err(error) => output.push_str(&format!("json_unavailable: {error}\n")),
+            }
+        } else {
+            output.push_str("none\n");
+        }
+        output.push('\n');
         output.push_str("primary files:\n");
         for file in crate::diagnostics::primary_diagnostic_files() {
             output.push_str("- ");

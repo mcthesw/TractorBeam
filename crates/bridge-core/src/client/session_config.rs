@@ -36,6 +36,42 @@ impl Display for TransportChoice {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SessionHealthConfig {
+    pub enabled: bool,
+    pub runtime_rtt_enabled: bool,
+    pub snapshot_interval_seconds: u64,
+    pub runtime_rtt_interval_seconds: u64,
+    pub runtime_rtt_timeout_seconds: u64,
+}
+
+impl SessionHealthConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.snapshot_interval_seconds == 0 {
+            return Err("snapshot_interval_seconds must be greater than 0");
+        }
+        if self.runtime_rtt_interval_seconds == 0 {
+            return Err("runtime_rtt_interval_seconds must be greater than 0");
+        }
+        if self.runtime_rtt_timeout_seconds == 0 {
+            return Err("runtime_rtt_timeout_seconds must be greater than 0");
+        }
+        Ok(())
+    }
+}
+
+impl Default for SessionHealthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            runtime_rtt_enabled: true,
+            snapshot_interval_seconds: 5,
+            runtime_rtt_interval_seconds: 1,
+            runtime_rtt_timeout_seconds: 3,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RelayEndpoint {
     pub host: String,
@@ -95,6 +131,7 @@ pub struct SessionConfig {
     pub mode: SessionMode,
     pub steam_id64: String,
     pub display_name: String,
+    pub session_health: SessionHealthConfig,
 }
 
 impl SessionConfig {
@@ -111,6 +148,9 @@ impl SessionConfig {
         if !self.steam_id64.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(ConfigError::InvalidSteamId);
         }
+        self.session_health
+            .validate()
+            .map_err(|_| ConfigError::InvalidSessionHealth)?;
         Ok(())
     }
 }
@@ -122,6 +162,7 @@ pub enum ConfigError {
     MissingRoom,
     MissingSteamId,
     InvalidSteamId,
+    InvalidSessionHealth,
 }
 
 impl Display for ConfigError {
@@ -132,6 +173,7 @@ impl Display for ConfigError {
             Self::MissingRoom => "room is required",
             Self::MissingSteamId => "SteamID64 is required",
             Self::InvalidSteamId => "SteamID64 must contain digits only",
+            Self::InvalidSessionHealth => "session health config is invalid",
         };
         formatter.write_str(message)
     }

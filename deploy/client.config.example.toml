@@ -4,6 +4,13 @@ default_transport = "tcp"
 default_mode = "pure"
 selected_relay = "beijing"
 
+[session_health]
+enabled = true
+runtime_rtt_enabled = true
+snapshot_interval_seconds = 5
+runtime_rtt_interval_seconds = 1
+runtime_rtt_timeout_seconds = 3
+
 [[relays]]
 id = "beijing"
 name = "Beijing test relay"

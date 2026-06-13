@@ -128,6 +128,14 @@ impl BridgeClient {
                         }
                     }
                 }
+                state::RuntimeEvent::SessionHealthSnapshot(snapshot) => {
+                    self.state.latest_session_health = Some(*snapshot);
+                }
+                state::RuntimeEvent::SessionHealthSummary(snapshot) => {
+                    let snapshot = *snapshot;
+                    self.state.latest_session_health = Some(snapshot.clone());
+                    self.state.latest_session_health_summary = Some(snapshot);
+                }
                 state::RuntimeEvent::Stopped => {
                     self.state.status = state::SessionStatus::Idle;
                     self.active_session_log = None;
@@ -308,7 +316,9 @@ pub enum ClientError {
 
 #[cfg(test)]
 mod tests {
-    use crate::client::TransportChoice;
+    use crate::client::{
+        SessionHealthConfig, SessionHealthSnapshot, SessionQuality, TransportChoice,
+    };
 
     use super::*;
 
@@ -340,6 +350,7 @@ mod tests {
             mode: SessionMode::Pure,
             steam_id64: "76561198000000001".to_owned(),
             display_name: "Alice".to_owned(),
+            session_health: SessionHealthConfig::default(),
         };
 
         assert!(config.validate().is_ok());
@@ -357,5 +368,20 @@ mod tests {
         assert!(!text.contains("203.0.113.10"));
         assert!(!text.contains("76561198000000001"));
         assert!(!text.contains("room 123"));
+    }
+
+    #[test]
+    fn diagnostics_include_session_health_evidence() {
+        let mut client = BridgeClient::new();
+        client.state.latest_session_health = Some(SessionHealthSnapshot {
+            quality: SessionQuality::Good,
+            ..SessionHealthSnapshot::default()
+        });
+
+        let text = client.diagnostics_text();
+
+        assert!(text.contains("session health:"));
+        assert!(text.contains("quality=good"));
+        assert!(text.contains("\"quality\": \"good\""));
     }
 }

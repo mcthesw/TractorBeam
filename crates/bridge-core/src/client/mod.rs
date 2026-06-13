@@ -10,6 +10,7 @@ mod relay_transport;
 mod runtime;
 mod session;
 mod session_config;
+mod session_health;
 mod state;
 
 pub use config::{
@@ -27,8 +28,10 @@ pub use probe::{
 };
 pub use runtime::{BridgeClient, ClientError, runtime_name};
 pub use session_config::{
-    ConfigError, RelayEndpoint, SessionConfig, SessionMode, SteamIdentity, TransportChoice,
+    ConfigError, RelayEndpoint, SessionConfig, SessionHealthConfig, SessionMode, SteamIdentity,
+    TransportChoice,
 };
+pub use session_health::{SessionHealthSnapshot, SessionHealthSummary, SessionQuality};
 pub use state::{Counters, LogEntry, LogLevel, RuntimeState, SessionStatus};
 
 pub const PRODUCT_NAME: &str = "Basement Bridge";

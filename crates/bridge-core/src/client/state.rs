@@ -6,7 +6,7 @@ use std::{
 use tokio::sync::mpsc::Sender;
 
 use super::{
-    SteamIdentity,
+    SessionHealthSnapshot, SteamIdentity,
     probe::{HookReceiveProbeReport, ReadinessProbeReport},
 };
 
@@ -77,6 +77,8 @@ pub struct RuntimeState {
     pub latest_readiness_probe: Option<ReadinessProbeReport>,
     pub latest_hook_receive_probe: Option<HookReceiveProbeReport>,
     pub latest_hook_receive_probe_error: Option<String>,
+    pub latest_session_health: Option<SessionHealthSnapshot>,
+    pub latest_session_health_summary: Option<SessionHealthSnapshot>,
 }
 
 #[derive(Debug)]
@@ -85,6 +87,8 @@ pub(super) enum RuntimeEvent {
     CounterDelta(Counters),
     ReadinessProbeFinished(Result<Box<ReadinessProbeReport>, String>),
     HookReceiveProbeFinished(Result<HookReceiveProbeReport, String>),
+    SessionHealthSnapshot(Box<SessionHealthSnapshot>),
+    SessionHealthSummary(Box<SessionHealthSnapshot>),
     Stopped,
 }
 

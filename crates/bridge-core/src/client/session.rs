@@ -1,8 +1,11 @@
 use std::{
     io,
-    sync::mpsc::{self, Receiver, SyncSender},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, SyncSender},
+    },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
@@ -21,11 +24,12 @@ use super::{
     LogLevel, SessionConfig,
     hook_config::{HOOK_IN, HOOK_OUT},
     packet_flow::{
-        InboundGamePacket, OutboundRelayPacket, PacketObserver, decode_inbound_relay_datagram,
-        encode_inbound_local_packet, encode_outbound_relay_packet, hook_counter, relay_counter,
-        send_error,
+        InboundGamePacket, InboundRelayDatagram, OutboundRelayPacket, PacketObserver,
+        decode_inbound_relay_datagram, encode_inbound_local_packet, encode_outbound_relay_packet,
+        hook_counter, relay_counter, send_error,
     },
     relay_transport::{RelayTransport, complete_relay_join, send_control},
+    session_health::{SessionHealth, SessionHealthSnapshot},
     state::{RuntimeEvent, RuntimeEventSender, error_counter, log_event, send_event},
 };
 
@@ -38,11 +42,26 @@ const INJECTOR_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 const HOOK_BUFFER_SIZE: usize = 65_535;
 
+type SharedSessionHealth = Arc<Mutex<SessionHealth>>;
+
 #[derive(Debug)]
 pub(super) struct SessionHandle {
     cancellation: CancellationToken,
     pub(super) events: Receiver<RuntimeEvent>,
     worker: Option<JoinHandle<()>>,
+}
+
+struct RuntimeTasks {
+    essential: JoinSet<io::Result<()>>,
+    health: Option<SharedSessionHealth>,
+}
+
+struct RelayTransportTaskContext {
+    event_tx: RuntimeEventSender,
+    cancellation: CancellationToken,
+    health: Option<SharedSessionHealth>,
+    health_snapshot_interval: Duration,
+    runtime_rtt_interval: Duration,
 }
 
 pub(super) fn spawn_bridge_worker(config: SessionConfig) -> io::Result<SessionHandle> {
@@ -132,7 +151,7 @@ async fn supervise_session(
     let event_forwarder = tokio::spawn(forward_events(event_rx, std_event_tx));
 
     match start_runtime_tasks(&config, &cancellation, &event_tx).await {
-        Ok(mut tasks) => {
+        Ok(mut runtime_tasks) => {
             send_startup(&startup_tx, Ok(()));
             send_event(
                 &event_tx,
@@ -149,12 +168,14 @@ async fn supervise_session(
                 ),
             );
 
-            let stop_reason = wait_for_essential_task(&cancellation, &mut tasks).await;
+            let stop_reason =
+                wait_for_essential_task(&cancellation, &mut runtime_tasks.essential).await;
             cancellation.cancel();
             if let Some(message) = stop_reason {
                 send_event(&event_tx, log_event(LogLevel::Warn, message));
             }
-            shutdown_tasks(tasks, &event_tx).await;
+            shutdown_tasks(runtime_tasks.essential, &event_tx).await;
+            emit_health_summary(&event_tx, &runtime_tasks.health);
         }
         Err(error) => {
             let kind = error.kind();
@@ -177,7 +198,7 @@ async fn start_runtime_tasks(
     config: &SessionConfig,
     cancellation: &CancellationToken,
     event_tx: &RuntimeEventSender,
-) -> io::Result<JoinSet<io::Result<()>>> {
+) -> io::Result<RuntimeTasks> {
     let hook_in_socket = UdpSocket::bind(HOOK_IN).await?;
     let hook_out_socket = UdpSocket::bind("127.0.0.1:0").await?;
     let mut relay = RelayTransport::connect(&config.relay, config.transport).await?;
@@ -192,6 +213,13 @@ async fn start_runtime_tasks(
 
     let (outbound_tx, outbound_rx) = tokio_mpsc::channel(PACKET_QUEUE_CAPACITY);
     let (inbound_tx, inbound_rx) = tokio_mpsc::channel(PACKET_QUEUE_CAPACITY);
+    let health = config.session_health.enabled.then(|| {
+        Arc::new(Mutex::new(SessionHealth::new(
+            config.session_health.runtime_rtt_enabled,
+            Duration::from_secs(config.session_health.runtime_rtt_timeout_seconds),
+            Instant::now(),
+        )))
+    });
     let mut tasks = JoinSet::new();
 
     tasks.spawn(hook_in_task(
@@ -200,24 +228,38 @@ async fn start_runtime_tasks(
         outbound_tx,
         event_tx.clone(),
         cancellation.clone(),
+        health.clone(),
     ));
     tasks.spawn(relay_transport_task(
         relay,
         outbound_rx,
         inbound_tx,
-        event_tx.clone(),
-        cancellation.clone(),
+        RelayTransportTaskContext {
+            event_tx: event_tx.clone(),
+            cancellation: cancellation.clone(),
+            health: health.clone(),
+            health_snapshot_interval: Duration::from_secs(
+                config.session_health.snapshot_interval_seconds,
+            ),
+            runtime_rtt_interval: Duration::from_secs(
+                config.session_health.runtime_rtt_interval_seconds,
+            ),
+        },
     ));
     tasks.spawn(hook_out_task(
         hook_out_socket,
         inbound_rx,
         event_tx.clone(),
         cancellation.clone(),
+        health.clone(),
     ));
 
     tokio::spawn(injector_task(event_tx.clone(), cancellation.clone()));
 
-    Ok(tasks)
+    Ok(RuntimeTasks {
+        essential: tasks,
+        health,
+    })
 }
 
 async fn hook_in_task(
@@ -226,6 +268,7 @@ async fn hook_in_task(
     outbound_tx: TokioSender<OutboundRelayPacket>,
     event_tx: RuntimeEventSender,
     cancellation: CancellationToken,
+    health: Option<SharedSessionHealth>,
 ) -> io::Result<()> {
     let mut buffer = vec![0_u8; HOOK_BUFFER_SIZE];
     loop {
@@ -233,9 +276,12 @@ async fn hook_in_task(
             () = cancellation.cancelled() => return Ok(()),
             received = socket.recv_from(&mut buffer) => {
                 let (size, _) = received?;
+                observe_health(&health, |health| health.observe_hook_in_recv(size, Instant::now()));
                 match encode_outbound_relay_packet(&steam_id64, Bytes::copy_from_slice(&buffer[..size])) {
                     Ok(packet) => {
-                        if outbound_tx.try_send(packet).is_err() {
+                        let accepted = outbound_tx.try_send(packet).is_ok();
+                        observe_health(&health, |health| health.observe_outbound_enqueue(accepted));
+                        if !accepted {
                             send_error(&event_tx, "Relay outbound queue is full; dropping hook packet");
                         }
                     }
@@ -250,34 +296,62 @@ async fn relay_transport_task(
     mut relay: RelayTransport,
     mut outbound_rx: TokioReceiver<OutboundRelayPacket>,
     inbound_tx: TokioSender<InboundGamePacket>,
-    event_tx: RuntimeEventSender,
-    cancellation: CancellationToken,
+    context: RelayTransportTaskContext,
 ) -> io::Result<()> {
     let mut observer = PacketObserver::default();
     let mut heartbeat = time::interval(HEARTBEAT_INTERVAL);
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut health_snapshot = time::interval(context.health_snapshot_interval);
+    health_snapshot.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut runtime_rtt = time::interval(context.runtime_rtt_interval);
+    runtime_rtt.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
-            () = cancellation.cancelled() => return Ok(()),
+            () = context.cancellation.cancelled() => return Ok(()),
             Some(packet) = outbound_rx.recv() => {
+                let started = Instant::now();
                 relay.sender.send_datagram(packet.raw).await?;
-                send_event(&event_tx, RuntimeEvent::CounterDelta(hook_counter(packet.sent_bytes)));
-                observer.observe_hook_packet(&event_tx, &packet.summary);
+                observe_health(&context.health, |health| {
+                    health.observe_relay_send_duration(started.elapsed());
+                });
+                send_event(&context.event_tx, RuntimeEvent::CounterDelta(hook_counter(packet.sent_bytes)));
+                observer.observe_hook_packet(&context.event_tx, &packet.summary);
             }
             raw = relay.receiver.recv_datagram() => {
-                match decode_inbound_relay_datagram(raw?) {
-                    Ok(Some(packet)) => {
-                        if inbound_tx.try_send(packet).is_err() {
-                            send_error(&event_tx, "Hook inbound queue is full; dropping relay packet");
+                let raw = raw?;
+                observe_health(&context.health, |health| {
+                    health.observe_relay_recv(raw.len(), Instant::now());
+                });
+                match decode_inbound_relay_datagram(raw) {
+                    Ok(Some(InboundRelayDatagram::Game(packet))) => {
+                        observe_health(&context.health, |health| {
+                            let peer = packet.game.from_steam_id64.parse::<u64>().unwrap_or_default();
+                            health.observe_source_sequence(peer, packet.game.source_sequence);
+                        });
+                        let accepted = inbound_tx.try_send(packet).is_ok();
+                        observe_health(&context.health, |health| health.observe_inbound_enqueue(accepted));
+                        if !accepted {
+                            send_error(&context.event_tx, "Hook inbound queue is full; dropping relay packet");
                         }
                     }
+                    Ok(Some(InboundRelayDatagram::HealthPong { id })) => {
+                        observe_health(&context.health, |health| health.observe_health_pong(id, Instant::now()));
+                    }
                     Ok(None) => {}
-                    Err(error) => send_error(&event_tx, format!("Bad relay packet: {error}")),
+                    Err(error) => send_error(&context.event_tx, format!("Bad relay packet: {error}")),
                 }
             }
             _ = heartbeat.tick() => {
                 send_control(&mut relay.sender, MessageType::Heartbeat, &ControlMessage::Heartbeat).await?;
+            }
+            _ = health_snapshot.tick(), if context.health.is_some() => {
+                emit_health_snapshot(&context.event_tx, &context.health);
+            }
+            _ = runtime_rtt.tick(), if context.health.is_some() => {
+                if let Some(id) = next_health_ping(&context.health) {
+                    send_control(&mut relay.sender, MessageType::Heartbeat, &ControlMessage::HealthPing { id }).await?;
+                }
             }
         }
     }
@@ -288,6 +362,7 @@ async fn hook_out_task(
     mut inbound_rx: TokioReceiver<InboundGamePacket>,
     event_tx: RuntimeEventSender,
     cancellation: CancellationToken,
+    health: Option<SharedSessionHealth>,
 ) -> io::Result<()> {
     let mut local_sequence = 1_u32;
     let mut observer = PacketObserver::default();
@@ -297,7 +372,11 @@ async fn hook_out_task(
             Some(packet) = inbound_rx.recv() => {
                 match encode_inbound_local_packet(packet, &mut local_sequence) {
                     Ok((bytes, summary, received_bytes)) => {
+                        let started = Instant::now();
                         socket.send_to(&bytes, HOOK_OUT).await?;
+                        observe_health(&health, |health| {
+                            health.observe_hook_out_send_duration(started.elapsed());
+                        });
                         send_event(&event_tx, RuntimeEvent::CounterDelta(relay_counter(received_bytes)));
                         observer.observe_relay_packet(&event_tx, &summary);
                     }
@@ -306,6 +385,56 @@ async fn hook_out_task(
             }
         }
     }
+}
+
+fn observe_health(health: &Option<SharedSessionHealth>, observe: impl FnOnce(&mut SessionHealth)) {
+    let Some(health) = health else {
+        return;
+    };
+    if let Ok(mut health) = health.lock() {
+        observe(&mut health);
+    }
+}
+
+fn next_health_ping(health: &Option<SharedSessionHealth>) -> Option<u64> {
+    health
+        .as_ref()
+        .and_then(|health| health.lock().ok()?.next_health_ping(Instant::now()))
+}
+
+fn emit_health_snapshot(event_tx: &RuntimeEventSender, health: &Option<SharedSessionHealth>) {
+    if let Some(snapshot) = current_health_snapshot(health) {
+        send_event(
+            event_tx,
+            log_event(LogLevel::Info, snapshot.compact_log_line("Session health")),
+        );
+        send_event(
+            event_tx,
+            RuntimeEvent::SessionHealthSnapshot(Box::new(snapshot)),
+        );
+    }
+}
+
+fn emit_health_summary(event_tx: &RuntimeEventSender, health: &Option<SharedSessionHealth>) {
+    if let Some(snapshot) = current_health_snapshot(health) {
+        send_event(
+            event_tx,
+            log_event(
+                LogLevel::Info,
+                snapshot.compact_log_line("Session health summary"),
+            ),
+        );
+        send_event(
+            event_tx,
+            RuntimeEvent::SessionHealthSummary(Box::new(snapshot)),
+        );
+    }
+}
+
+fn current_health_snapshot(health: &Option<SharedSessionHealth>) -> Option<SessionHealthSnapshot> {
+    health
+        .as_ref()
+        .and_then(|health| Some(health.lock().ok()?.snapshot(Instant::now())))
 }
 
 async fn injector_task(event_tx: RuntimeEventSender, cancellation: CancellationToken) {
@@ -466,188 +595,5 @@ fn send_startup(sender: &SyncSender<io::Result<()>>, result: io::Result<()>) {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{
-        net::{SocketAddr, UdpSocket as StdUdpSocket},
-        sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        },
-        time::{Duration, Instant},
-    };
-
-    use bytes::Bytes;
-
-    use crate::protocol::{Envelope, MessageType};
-
-    use super::*;
-    use crate::protocol::ControlMessage;
-
-    static SESSION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    #[test]
-    fn session_reports_malformed_hook_packet_and_stops() {
-        let _guard = SESSION_TEST_LOCK.lock().unwrap();
-        let relay = TestRelay::spawn();
-        let handle = spawn_bridge_worker(SessionConfig {
-            relay: super::super::RelayEndpoint::new("127.0.0.1", relay.address.port()),
-            relay_name: None,
-            transport: super::super::TransportChoice::Udp,
-            room: "test-room".to_owned(),
-            mode: super::super::SessionMode::Pure,
-            steam_id64: "76561198000000001".to_owned(),
-            display_name: "Test".to_owned(),
-        })
-        .unwrap();
-
-        let sender = StdUdpSocket::bind("127.0.0.1:0").unwrap();
-        sender.send_to(b"not-a-local-packet", HOOK_IN).unwrap();
-
-        let event = recv_matching(&handle.events, |event| {
-            matches!(
-                event,
-                RuntimeEvent::Log(level, message) if *level == LogLevel::Warn && message.contains("Bad hook packet")
-            )
-        });
-        assert!(event.is_some());
-
-        handle.stop();
-        relay.stop();
-    }
-
-    #[test]
-    fn session_start_reports_relay_join_timeout() {
-        let _guard = SESSION_TEST_LOCK.lock().unwrap();
-        let relay = SilentRelay::spawn();
-
-        let error = spawn_bridge_worker(SessionConfig {
-            relay: super::super::RelayEndpoint::new("127.0.0.1", relay.address.port()),
-            relay_name: None,
-            transport: super::super::TransportChoice::Udp,
-            room: "test-room".to_owned(),
-            mode: super::super::SessionMode::Pure,
-            steam_id64: "76561198000000001".to_owned(),
-            display_name: "Test".to_owned(),
-        })
-        .unwrap_err();
-
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        relay.stop();
-    }
-
-    fn recv_matching(
-        receiver: &Receiver<RuntimeEvent>,
-        predicate: impl Fn(&RuntimeEvent) -> bool,
-    ) -> Option<RuntimeEvent> {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
-            if let Ok(event) = receiver.recv_timeout(Duration::from_millis(50))
-                && predicate(&event)
-            {
-                return Some(event);
-            }
-        }
-        None
-    }
-
-    struct TestRelay {
-        address: SocketAddr,
-        stop: Arc<AtomicBool>,
-        worker: thread::JoinHandle<()>,
-    }
-
-    impl TestRelay {
-        fn spawn() -> Self {
-            let socket = StdUdpSocket::bind("127.0.0.1:0").unwrap();
-            socket
-                .set_read_timeout(Some(Duration::from_millis(50)))
-                .unwrap();
-            let address = socket.local_addr().unwrap();
-            let stop = Arc::new(AtomicBool::new(false));
-            let worker_stop = Arc::clone(&stop);
-            let worker = thread::spawn(move || run_test_relay(socket, &worker_stop));
-            Self {
-                address,
-                stop,
-                worker,
-            }
-        }
-
-        fn stop(self) {
-            self.stop.store(true, Ordering::Relaxed);
-            let _ = self.worker.join();
-        }
-    }
-
-    struct SilentRelay {
-        address: SocketAddr,
-        stop: Arc<AtomicBool>,
-        worker: thread::JoinHandle<()>,
-    }
-
-    impl SilentRelay {
-        fn spawn() -> Self {
-            let socket = StdUdpSocket::bind("127.0.0.1:0").unwrap();
-            socket
-                .set_read_timeout(Some(Duration::from_millis(50)))
-                .unwrap();
-            let address = socket.local_addr().unwrap();
-            let stop = Arc::new(AtomicBool::new(false));
-            let worker_stop = Arc::clone(&stop);
-            let worker = thread::spawn(move || {
-                let mut buffer = [0_u8; 4096];
-                while !worker_stop.load(Ordering::Relaxed) {
-                    let _ = socket.recv_from(&mut buffer);
-                }
-            });
-            Self {
-                address,
-                stop,
-                worker,
-            }
-        }
-
-        fn stop(self) {
-            self.stop.store(true, Ordering::Relaxed);
-            let _ = self.worker.join();
-        }
-    }
-
-    fn run_test_relay(socket: StdUdpSocket, stop: &AtomicBool) {
-        let mut buffer = [0_u8; 4096];
-        while !stop.load(Ordering::Relaxed) {
-            let Ok((size, address)) = socket.recv_from(&mut buffer) else {
-                continue;
-            };
-            let Ok(envelope) = Envelope::decode(Bytes::copy_from_slice(&buffer[..size])) else {
-                continue;
-            };
-            if envelope.message_type != MessageType::Join {
-                continue;
-            }
-            let Ok(control) = ControlMessage::decode(&envelope.payload) else {
-                continue;
-            };
-            let response = match control {
-                ControlMessage::Join {
-                    challenge: None, ..
-                } => (
-                    MessageType::JoinChallenge,
-                    ControlMessage::Challenge {
-                        token: "token".to_owned(),
-                    },
-                ),
-                ControlMessage::Join {
-                    challenge: Some(_), ..
-                } => (
-                    MessageType::JoinReady,
-                    ControlMessage::Ready { peer_count: 1 },
-                ),
-                _ => continue,
-            };
-            let payload = response.1.encode().unwrap();
-            let raw = Envelope::new(response.0, payload).encode().unwrap();
-            socket.send_to(&raw, address).unwrap();
-        }
-    }
-}
+#[path = "session_tests.rs"]
+mod tests;

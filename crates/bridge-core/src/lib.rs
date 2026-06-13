@@ -11,7 +11,8 @@ pub use client::{
     HookReceiveProbeReport, LoadedClientConfig, LocalDate, LogEntry, LogLevel, PRODUCT_NAME,
     READINESS_PROBE_PAYLOAD_BYTES, READINESS_PROBE_SAMPLES_PER_CASE, ReadinessProbeCaseReport,
     ReadinessProbeReport, RelayEndpoint, RelayPreset, RelayProbeReport, RuntimeState,
-    SessionConfig, SessionMode, SessionStatus, SteamIdentity, TransportChoice,
-    app_data_config_path, bundle_config_path, diagnostics_directory, emit_client_log_event,
-    load_client_config, resolve_room_template, runtime_name,
+    SessionConfig, SessionHealthSnapshot, SessionHealthSummary, SessionMode, SessionQuality,
+    SessionStatus, SteamIdentity, TransportChoice, app_data_config_path, bundle_config_path,
+    diagnostics_directory, emit_client_log_event, load_client_config, resolve_room_template,
+    runtime_name,
 };

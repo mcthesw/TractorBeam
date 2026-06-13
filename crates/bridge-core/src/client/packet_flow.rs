@@ -6,7 +6,9 @@ use std::{
 
 use bytes::Bytes;
 
-use crate::protocol::{Envelope, GamePacket, LocalPacket, LocalPacketType, MessageType};
+use crate::protocol::{
+    ControlMessage, Envelope, GamePacket, LocalPacket, LocalPacketType, MessageType,
+};
 
 use super::{
     Counters, LogLevel,
@@ -34,6 +36,12 @@ pub(super) struct OutboundRelayPacket {
 #[derive(Clone, Debug)]
 pub(super) struct InboundGamePacket {
     pub(super) game: GamePacket,
+}
+
+#[derive(Clone, Debug)]
+pub(super) enum InboundRelayDatagram {
+    Game(InboundGamePacket),
+    HealthPong { id: u64 },
 }
 
 #[derive(Debug, Default)]
@@ -148,13 +156,24 @@ pub(super) fn encode_outbound_relay_packet(
     })
 }
 
-pub(super) fn decode_inbound_relay_datagram(bytes: Bytes) -> io::Result<Option<InboundGamePacket>> {
+pub(super) fn decode_inbound_relay_datagram(
+    bytes: Bytes,
+) -> io::Result<Option<InboundRelayDatagram>> {
     let envelope = Envelope::decode(bytes).map_err(io::Error::other)?;
-    if envelope.message_type != MessageType::Data {
-        return Ok(None);
+    match envelope.message_type {
+        MessageType::Data => {
+            let game = GamePacket::decode(&envelope.payload).map_err(io::Error::other)?;
+            Ok(Some(InboundRelayDatagram::Game(InboundGamePacket { game })))
+        }
+        MessageType::Heartbeat => match ControlMessage::decode(&envelope.payload) {
+            Ok(ControlMessage::HealthPong { id }) => {
+                Ok(Some(InboundRelayDatagram::HealthPong { id }))
+            }
+            Ok(_) => Ok(None),
+            Err(error) => Err(io::Error::other(error)),
+        },
+        _ => Ok(None),
     }
-    let game = GamePacket::decode(&envelope.payload).map_err(io::Error::other)?;
-    Ok(Some(InboundGamePacket { game }))
 }
 
 pub(super) fn encode_inbound_local_packet(
@@ -220,11 +239,11 @@ fn observe_packet_gap(
     let now = Instant::now();
     if let Some(previous) = last_packet_at.replace(now) {
         let gap = now.duration_since(previous);
-        if gap >= Duration::from_millis(200) {
+        if gap >= Duration::from_millis(1_000) {
             send_event(
                 event_tx,
                 log_event(
-                    LogLevel::Warn,
+                    LogLevel::Debug,
                     format!("{direction} packet gap: {} ms", gap.as_millis()),
                 ),
             );
@@ -252,7 +271,7 @@ fn observe_source_sequence(
     send_event(
         event_tx,
         log_event(
-            LogLevel::Warn,
+            LogLevel::Debug,
             format!(
                 "Relay source sequence gap: from={} previous={} expected={} current={}",
                 summary.peer, *previous, expected, summary.source_sequence

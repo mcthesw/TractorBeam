@@ -445,11 +445,32 @@ async fn handle_packet(
         MessageType::Join => handle_join(udp_socket, state, egress, source, &envelope, now).await,
         MessageType::Data => forward_data(udp_socket, state, egress, source, &raw, now).await,
         MessageType::Heartbeat => {
-            state.lock().await.touch_peer(source.peer_id, now);
-            Ok(PacketOutcome::default())
+            handle_heartbeat(udp_socket, state, egress, source, &envelope, now).await
         }
         _ => Ok(PacketOutcome::default()),
     }
+}
+
+async fn handle_heartbeat(
+    udp_socket: Arc<UdpSocket>,
+    state: SharedState,
+    egress: SharedEgress,
+    source: DatagramSource,
+    envelope: &Envelope,
+    now: Instant,
+) -> io::Result<PacketOutcome> {
+    state.lock().await.touch_peer(source.peer_id, now);
+    if let Ok(ControlMessage::HealthPing { id }) = ControlMessage::decode(&envelope.payload) {
+        send_control(
+            udp_socket,
+            egress,
+            source.peer_id,
+            MessageType::Heartbeat,
+            &ControlMessage::HealthPong { id },
+        )
+        .await?;
+    }
+    Ok(PacketOutcome::default())
 }
 
 async fn handle_join(

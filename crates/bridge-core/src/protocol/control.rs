@@ -22,6 +22,12 @@ pub enum ControlMessage {
         message: String,
     },
     Heartbeat,
+    HealthPing {
+        id: u64,
+    },
+    HealthPong {
+        id: u64,
+    },
 }
 
 impl ControlMessage {

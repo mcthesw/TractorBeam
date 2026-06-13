@@ -57,6 +57,34 @@ async fn forwards_between_udp_and_tcp_peers() {
     server.abort();
 }
 
+#[tokio::test]
+async fn answers_health_ping_to_source_only() {
+    let (server, udp_address, _) = spawn_test_relay(false).await;
+    let mut peer_a = TestPeer::udp(udp_address).await;
+    let mut peer_b = TestPeer::udp(udp_address).await;
+    join_peer(&mut peer_a, "room", "76561198000000101").await;
+    join_peer(&mut peer_b, "room", "76561198000000102").await;
+
+    send_control(
+        &mut peer_a,
+        MessageType::Heartbeat,
+        &ControlMessage::HealthPing { id: 42 },
+    )
+    .await;
+
+    assert!(matches!(
+        recv_control(&mut peer_a).await,
+        ControlMessage::HealthPong { id: 42 }
+    ));
+    assert!(
+        timeout(Duration::from_millis(150), peer_b.recv_raw())
+            .await
+            .is_err()
+    );
+
+    server.abort();
+}
+
 #[test]
 fn tcp_egress_channel_uses_configured_capacity() {
     let (sender, _receiver) = tcp_egress_channel(1);
@@ -211,8 +239,12 @@ async fn send_join(peer: &mut TestPeer, room: &str, steam_id64: &str, challenge:
         display_name: None,
         challenge,
     };
+    send_control(peer, MessageType::Join, &message).await;
+}
+
+async fn send_control(peer: &mut TestPeer, message_type: MessageType, message: &ControlMessage) {
     let payload = message.encode().unwrap();
-    let bytes = Envelope::new(MessageType::Join, payload).encode().unwrap();
+    let bytes = Envelope::new(message_type, payload).encode().unwrap();
     peer.send_raw(bytes).await;
 }
 

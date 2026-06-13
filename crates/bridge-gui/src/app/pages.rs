@@ -1,6 +1,6 @@
 use basement_bridge_core::{
-    HookReceiveProbeReport, LogLevel, ReadinessProbeCaseReport, ReadinessProbeReport, SessionMode,
-    SessionStatus, TransportChoice,
+    HookReceiveProbeReport, LogLevel, ReadinessProbeCaseReport, ReadinessProbeReport, RuntimeState,
+    SessionMode, SessionStatus, TransportChoice,
 };
 use eframe::egui::{self, ComboBox, TextEdit};
 
@@ -8,6 +8,7 @@ use crate::i18n::{Language, Text, text};
 
 use super::{
     BridgeApp, Page,
+    status::quality_label,
     widgets::{account_label, detail_counters, selected_account_label},
 };
 
@@ -67,6 +68,8 @@ impl BridgeApp {
         }
         ui.add_space(12.0);
         detail_counters(ui, self.language, self.client.state());
+        ui.add_space(12.0);
+        session_health_summary(ui, self.language, self.client.state());
         ui.add_space(12.0);
         ui.heading(self.t(Text::Logs));
         ui.add_space(4.0);
@@ -330,6 +333,39 @@ fn hook_probe_table(ui: &mut egui::Ui, language: Language, report: &HookReceiveP
         });
 }
 
+fn session_health_summary(ui: &mut egui::Ui, language: Language, state: &RuntimeState) {
+    ui.heading(text(language, Text::SessionQuality));
+    ui.add_space(6.0);
+    let Some(snapshot) = &state.latest_session_health else {
+        ui.label(text(language, Text::NoProbeData));
+        return;
+    };
+    egui::Grid::new("session_health_summary")
+        .num_columns(2)
+        .spacing([24.0, 4.0])
+        .show(ui, |ui| {
+            ui.label(text(language, Text::SessionQuality));
+            ui.label(quality_label(language, snapshot.quality));
+            ui.end_row();
+
+            ui.label(text(language, Text::RuntimeRtt));
+            ui.monospace(display_latency_ms(snapshot.runtime_rtt.latency.p95_ms));
+            ui.end_row();
+
+            ui.label(text(language, Text::QueueDrops));
+            ui.monospace(snapshot.queues.total_dropped().to_string());
+            ui.end_row();
+
+            ui.label(text(language, Text::SequenceGaps));
+            ui.monospace(snapshot.source_sequence.gaps.to_string());
+            ui.end_row();
+
+            ui.label(text(language, Text::PacketGaps));
+            ui.monospace(display_latency_ms(snapshot.relay_recv.gap.p95_ms));
+            ui.end_row();
+        });
+}
+
 fn table_header(ui: &mut egui::Ui, value: &str) {
     ui.label(egui::RichText::new(value).strong());
 }
@@ -376,6 +412,19 @@ fn display_latency(value: Option<u128>) -> String {
                 "<1".to_owned()
             } else {
                 value.to_string()
+            }
+        },
+    )
+}
+
+fn display_latency_ms(value: Option<u64>) -> String {
+    value.map_or_else(
+        || "-".to_owned(),
+        |value| {
+            if value == 0 {
+                "<1 ms".to_owned()
+            } else {
+                format!("{value} ms")
             }
         },
     )

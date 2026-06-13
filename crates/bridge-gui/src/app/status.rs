@@ -1,4 +1,6 @@
-use basement_bridge_core::{ClientError, ConfigError, SessionMode, SessionStatus, TransportChoice};
+use basement_bridge_core::{
+    ClientError, ConfigError, SessionMode, SessionQuality, SessionStatus, TransportChoice,
+};
 use eframe::egui;
 
 use crate::i18n::{Language, Text, text};
@@ -72,6 +74,17 @@ impl BridgeApp {
                 self.t(Text::Errors),
                 state.counters.errors
             ));
+            if let Some(health) = &state.latest_session_health {
+                ui.separator();
+                ui.label(format!(
+                    "{}: {}",
+                    self.t(Text::SessionQuality),
+                    quality_label(self.language, health.quality)
+                ));
+                if let Some(p95) = health.runtime_rtt.latency.p95_ms {
+                    ui.monospace(format!("RTT p95 {p95} ms"));
+                }
+            }
             if let Some(error) = &self.last_error {
                 ui.separator();
                 ui.colored_label(ui.visuals().error_fg_color, error);
@@ -99,6 +112,19 @@ pub(super) fn transport_label(language: Language, transport: TransportChoice) ->
     match transport {
         TransportChoice::Udp => text(language, Text::Udp),
         TransportChoice::Tcp => text(language, Text::Tcp),
+    }
+}
+
+pub(super) fn quality_label(language: Language, quality: SessionQuality) -> &'static str {
+    match (language, quality) {
+        (Language::Chinese, SessionQuality::Unavailable) => "暂无数据",
+        (Language::Chinese, SessionQuality::Good) => "良好",
+        (Language::Chinese, SessionQuality::Watch) => "注意",
+        (Language::Chinese, SessionQuality::Poor) => "较差",
+        (_, SessionQuality::Unavailable) => "Unavailable",
+        (_, SessionQuality::Good) => "Good",
+        (_, SessionQuality::Watch) => "Watch",
+        (_, SessionQuality::Poor) => "Poor",
     }
 }
 

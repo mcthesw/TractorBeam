@@ -3,7 +3,9 @@ use std::{
     fmt::{self, Display},
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+use serde::Serialize;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum SessionMode {
     Official,
     Fallback,
@@ -20,10 +22,10 @@ impl Display for SessionMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 pub enum TransportChoice {
-    #[default]
     Udp,
+    #[default]
     Tcp,
 }
 
@@ -72,7 +74,7 @@ impl Default for SessionHealthConfig {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct RelayEndpoint {
     pub host: String,
     pub port: u16,
@@ -132,6 +134,8 @@ pub struct SessionConfig {
     pub steam_id64: String,
     pub display_name: String,
     pub session_health: SessionHealthConfig,
+    #[cfg(feature = "internal-test")]
+    pub test_run_id: Option<String>,
 }
 
 impl SessionConfig {

@@ -64,9 +64,6 @@ impl BridgeClient {
         } else {
             output.push_str("source: built-in defaults\n");
         }
-        if let Some(room) = &self.loaded_config.resolved_default_room {
-            output.push_str(&format!("resolved_default_room: {room}\n"));
-        }
         output.push_str(&format!(
             "default_transport: {}\ndefault_mode: {}\nrelay_presets: {}\n",
             self.loaded_config.config.default_transport,

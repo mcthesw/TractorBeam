@@ -1,11 +1,15 @@
+#[cfg(feature = "internal-test")]
+use basement_bridge_core::ClientError;
 use basement_bridge_core::{
     HookReceiveProbeReport, LogLevel, ReadinessProbeCaseReport, ReadinessProbeReport, RuntimeState,
-    SessionMode, SessionStatus, TransportChoice,
+    SessionMode, SessionQuality, SessionStatus, TransportChoice,
 };
 use eframe::egui::{self, ComboBox, TextEdit};
 
 use crate::i18n::{Language, Text, text};
 
+#[cfg(feature = "internal-test")]
+use super::status::error_message;
 use super::{
     BridgeApp, Page,
     status::quality_label,
@@ -15,6 +19,8 @@ use super::{
 impl BridgeApp {
     pub(super) fn top_bar(&mut self, ui: &mut egui::Ui) {
         let home = self.t(Text::Home);
+        #[cfg(feature = "internal-test")]
+        let internal_test = self.t(Text::InternalTest);
         let diagnostics = self.t(Text::Diagnostics);
         let debug = self.t(Text::Debug);
         let selected_language = self.language.label();
@@ -22,6 +28,8 @@ impl BridgeApp {
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.page, Page::Home, home);
+                #[cfg(feature = "internal-test")]
+                ui.selectable_value(&mut self.page, Page::InternalTest, internal_test);
                 ui.selectable_value(&mut self.page, Page::Diagnostics, diagnostics);
                 ui.selectable_value(&mut self.page, Page::Debug, debug);
             });
@@ -122,6 +130,174 @@ impl BridgeApp {
         }
     }
 
+    #[cfg(feature = "internal-test")]
+    pub(super) fn internal_test_page(&mut self, ui: &mut egui::Ui) {
+        ui.heading(self.t(Text::InternalTest));
+        ui.add_space(8.0);
+
+        ui.heading(self.t(Text::InviteCode));
+        ui.add_space(6.0);
+        ui.label(self.t(Text::TestRunId));
+        ui.monospace(&self.test_run_id);
+        ui.add_space(6.0);
+        let mut share_code = self.current_share_code();
+        ui.add(
+            TextEdit::multiline(&mut share_code)
+                .desired_rows(4)
+                .desired_width(f32::INFINITY)
+                .interactive(false),
+        );
+        ui.horizontal(|ui| {
+            if ui.button(self.t(Text::CopyCode)).clicked() {
+                if self.room.trim().is_empty() {
+                    self.generate_room();
+                }
+                ui.ctx().copy_text(self.current_share_code());
+                self.share_code_message = Some(self.t(Text::CodeCopied).to_owned());
+            }
+            if ui.button(self.t(Text::ImportCode)).clicked() {
+                self.import_share_code();
+            }
+        });
+        let paste_code = self.t(Text::PasteCode);
+        ui.add(
+            TextEdit::multiline(&mut self.share_code_input)
+                .hint_text(paste_code)
+                .desired_rows(3)
+                .desired_width(f32::INFINITY),
+        );
+        if let Some(message) = &self.share_code_message {
+            ui.add_space(4.0);
+            ui.label(message);
+        }
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(12.0);
+
+        ui.heading(self.t(Text::SelfTest));
+        ui.add_space(6.0);
+        self.setup_status_ui(ui);
+        ui.add_space(8.0);
+        if ui.button(self.t(Text::RunSelfTest)).clicked() {
+            self.run_self_test();
+        }
+        if self.client.state().readiness_probe_running || self.client.state().hook_probe_running {
+            ui.add_space(4.0);
+            ui.label(self.t(Text::SelfTesting));
+        }
+        ui.add_space(8.0);
+        session_health_summary(ui, self.language, self.client.state());
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(12.0);
+
+        ui.heading(self.t(Text::Report));
+        ui.add_space(6.0);
+        ui.label(self.t(Text::UserNote));
+        if ui
+            .add(
+                TextEdit::multiline(&mut self.report_note)
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY),
+            )
+            .changed()
+        {
+            self.clear_prepared_report();
+        }
+        ui.horizontal(|ui| {
+            if ui.button(self.t(Text::PrepareReport)).clicked() {
+                self.prepare_internal_test_report();
+            }
+            if ui.button(self.t(Text::UploadReport)).clicked() {
+                self.upload_internal_test_report();
+            }
+            if ui.button(self.t(Text::OpenReportFolder)).clicked() {
+                self.open_report_directory();
+            }
+        });
+        if let Some(message) = &self.report_message {
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(message).wrap());
+        }
+        if !self.report_preview.is_empty() {
+            ui.add_space(8.0);
+            ui.label(self.t(Text::ReportPreview));
+            let mut preview = self.report_preview.clone();
+            ui.add(
+                TextEdit::multiline(&mut preview)
+                    .desired_rows(12)
+                    .desired_width(f32::INFINITY)
+                    .interactive(false),
+            );
+        }
+    }
+
+    #[cfg(feature = "internal-test")]
+    fn setup_status_ui(&mut self, ui: &mut egui::Ui) {
+        ui.label(self.t(Text::CheckStatus));
+        egui::Grid::new("internal_test_setup_status")
+            .num_columns(2)
+            .spacing([24.0, 4.0])
+            .show(ui, |ui| {
+                ui.label(self.t(Text::ConfigInput));
+                match self.session_config().validate() {
+                    Ok(()) => ui.label(self.t(Text::DataRecorded)),
+                    Err(error) => ui.add(
+                        egui::Label::new(error_message(self.language, &ClientError::Config(error)))
+                            .wrap(),
+                    ),
+                };
+                ui.end_row();
+
+                ui.label(self.t(Text::RelayReadiness));
+                if let Some(report) = &self.client.state().latest_readiness_probe {
+                    if report.has_issue() {
+                        ui.label(self.t(Text::NeedsAttention));
+                    } else {
+                        ui.label(self.t(Text::DataRecorded));
+                    }
+                } else {
+                    ui.label(self.t(Text::NotRun));
+                }
+                ui.end_row();
+
+                ui.label(self.t(Text::SteamCheck));
+                let (steam_id64, _) = self.current_identity();
+                if steam_id64.trim().is_empty() {
+                    ui.label(self.t(Text::NeedsAttention));
+                } else {
+                    ui.label(self.t(Text::DataRecorded));
+                }
+                ui.end_row();
+
+                ui.label(self.t(Text::LaunchAndInjection));
+                if self.client.state().status == SessionStatus::Running {
+                    ui.label(self.t(Text::DataRecorded));
+                } else if let Some(error) = &self.last_error {
+                    ui.add(egui::Label::new(error).wrap());
+                } else {
+                    ui.label(self.t(Text::NotRun));
+                }
+                ui.end_row();
+
+                ui.label(self.t(Text::HookReceive));
+                if let Some(error) = &self.client.state().latest_hook_receive_probe_error {
+                    ui.add(egui::Label::new(error).wrap());
+                } else if let Some(report) = &self.client.state().latest_hook_receive_probe {
+                    if report.local_in && report.read_hit {
+                        ui.label(self.t(Text::DataRecorded));
+                    } else {
+                        ui.label(self.t(Text::NeedsAttention));
+                    }
+                } else {
+                    ui.label(self.t(Text::NotRun));
+                }
+                ui.end_row();
+            });
+    }
+
     fn connection_form(&mut self, ui: &mut egui::Ui) {
         ui.heading(self.t(Text::Home));
         ui.add_space(8.0);
@@ -145,22 +321,35 @@ impl BridgeApp {
         let manual_relay = self.selected_relay.is_none();
         ui.add_space(8.0);
         ui.label(self.t(Text::RelayHost));
-        ui.add_enabled(
-            manual_relay,
-            TextEdit::singleline(&mut self.relay_host).desired_width(f32::INFINITY),
-        );
+        if ui
+            .add_enabled(
+                manual_relay,
+                TextEdit::singleline(&mut self.relay_host).desired_width(f32::INFINITY),
+            )
+            .changed()
+        {
+            #[cfg(feature = "internal-test")]
+            self.clear_prepared_report();
+        }
 
         ui.add_space(8.0);
         ui.label(self.t(Text::RelayPort));
-        ui.add_enabled(
-            manual_relay,
-            egui::DragValue::new(&mut self.relay_port).range(1..=u16::MAX),
-        );
+        if ui
+            .add_enabled(
+                manual_relay,
+                egui::DragValue::new(&mut self.relay_port).range(1..=u16::MAX),
+            )
+            .changed()
+        {
+            #[cfg(feature = "internal-test")]
+            self.clear_prepared_report();
+        }
 
         ui.add_space(8.0);
         let udp = self.t(Text::Udp);
         let tcp = self.t(Text::Tcp);
         ui.label(self.t(Text::Transport));
+        let transport_before = self.transport;
         ui.horizontal(|ui| {
             ui.add_enabled_ui(self.preset_supports_transport(TransportChoice::Udp), |ui| {
                 ui.radio_value(&mut self.transport, TransportChoice::Udp, udp);
@@ -172,21 +361,36 @@ impl BridgeApp {
         if !self.preset_supports_transport(self.transport) {
             self.apply_selected_relay_defaults();
         }
+        if self.transport != transport_before {
+            #[cfg(feature = "internal-test")]
+            self.clear_prepared_report();
+        }
 
         ui.add_space(8.0);
         ui.label(self.t(Text::Room));
-        ui.add(TextEdit::singleline(&mut self.room).desired_width(f32::INFINITY));
+        if ui
+            .add(TextEdit::singleline(&mut self.room).desired_width(f32::INFINITY))
+            .changed()
+        {
+            #[cfg(feature = "internal-test")]
+            self.clear_prepared_report();
+        }
         ui.add_space(8.0);
 
         let official = self.t(Text::Official);
         let fallback = self.t(Text::Fallback);
         let pure = self.t(Text::Pure);
         ui.label(self.t(Text::Mode));
+        let mode_before = self.mode;
         ui.vertical(|ui| {
             ui.radio_value(&mut self.mode, SessionMode::Official, official);
             ui.radio_value(&mut self.mode, SessionMode::Fallback, fallback);
             ui.radio_value(&mut self.mode, SessionMode::Pure, pure);
         });
+        if self.mode != mode_before {
+            #[cfg(feature = "internal-test")]
+            self.clear_prepared_report();
+        }
     }
 
     fn steam_identity_ui(&mut self, ui: &mut egui::Ui) {
@@ -273,15 +477,21 @@ impl BridgeApp {
 }
 
 fn readiness_probe_table(ui: &mut egui::Ui, language: Language, report: &ReadinessProbeReport) {
+    let horizontal_spacing = 12.0;
+    let columns = 5.0;
+    let col_width =
+        ((ui.available_width() - horizontal_spacing * (columns - 1.0)) / columns).max(72.0);
     egui::Grid::new("readiness_probe_table")
-        .num_columns(4)
+        .num_columns(5)
+        .min_col_width(col_width)
         .striped(true)
-        .spacing([12.0, 4.0])
+        .spacing([horizontal_spacing, 4.0])
         .show(ui, |ui| {
             table_header(ui, text(language, Text::Transport));
             table_header(ui, text(language, Text::Size));
             table_header(ui, text(language, Text::Lost));
             table_header(ui, text(language, Text::Latency));
+            table_header(ui, text(language, Text::Jitter));
             ui.end_row();
 
             for case in &report.cases {
@@ -289,6 +499,7 @@ fn readiness_probe_table(ui: &mut egui::Ui, language: Language, report: &Readine
                 ui.label(format!("{} B", case.payload_bytes));
                 ui.label(lost_summary(case));
                 ui.add(egui::Label::new(latency_summary(case)).wrap());
+                ui.label(display_latency(case.jitter_ms));
                 ui.end_row();
             }
         });
@@ -337,17 +548,23 @@ fn session_health_summary(ui: &mut egui::Ui, language: Language, state: &Runtime
     ui.heading(text(language, Text::SessionQuality));
     ui.add_space(6.0);
     let Some(snapshot) = &state.latest_session_health else {
-        ui.label(text(language, Text::NoProbeData));
+        ui.label(text(language, Text::SessionNotStarted));
         return;
     };
+    let quality_color = match snapshot.quality {
+        SessionQuality::Good => ui.visuals().strong_text_color(),
+        SessionQuality::Watch | SessionQuality::Poor => ui.visuals().error_fg_color,
+        SessionQuality::Unavailable => ui.visuals().weak_text_color(),
+    };
+    ui.horizontal(|ui| {
+        ui.colored_label(quality_color, "●");
+        ui.label(quality_label(language, snapshot.quality));
+    });
+    ui.add_space(4.0);
     egui::Grid::new("session_health_summary")
         .num_columns(2)
         .spacing([24.0, 4.0])
         .show(ui, |ui| {
-            ui.label(text(language, Text::SessionQuality));
-            ui.label(quality_label(language, snapshot.quality));
-            ui.end_row();
-
             ui.label(text(language, Text::RuntimeRtt));
             ui.monospace(display_latency_ms(snapshot.runtime_rtt.latency.p95_ms));
             ui.end_row();

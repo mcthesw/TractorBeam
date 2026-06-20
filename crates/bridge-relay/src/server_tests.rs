@@ -109,6 +109,34 @@ fn queue_full_metrics_are_separate_from_packet_errors() {
     assert_eq!(metrics.packet_handling_errors, 0);
 }
 
+#[test]
+fn room_metrics_track_attributed_packet_outcomes() {
+    let mut metrics = RelayMetrics::new(512);
+
+    metrics.record_packet_in();
+    metrics.add(PacketOutcome {
+        room: Some("room-a".to_owned()),
+        room_packets_in: 1,
+        data_in: 1,
+        forwarded_packets: 1,
+        forwarded_bytes: 128,
+        missing_target: 1,
+        ..PacketOutcome::default()
+    });
+    metrics.record_rate_limited(Some("room-a"));
+
+    let room = metrics.room_metrics.get("room-a").unwrap();
+    assert_eq!(metrics.packets_in, 1);
+    assert_eq!(metrics.data_in, 1);
+    assert_eq!(metrics.rate_limited, 1);
+    assert_eq!(room.packets_in, 2);
+    assert_eq!(room.data_in, 1);
+    assert_eq!(room.forwarded_packets, 1);
+    assert_eq!(room.forwarded_bytes, 128);
+    assert_eq!(room.missing_target, 1);
+    assert_eq!(room.rate_limited, 1);
+}
+
 async fn spawn_test_relay(
     tcp_enabled: bool,
 ) -> (

@@ -20,7 +20,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     config::RelayConfig,
-    state::{PeerId, RelayState, error_message},
+    state::{PeerId, PeerTransport, RelayState, error_message},
 };
 
 type SharedState = Arc<Mutex<RelayState>>;
@@ -115,7 +115,11 @@ async fn run_udp_listener(
             Arc::clone(&state),
             Arc::clone(&egress),
             Arc::clone(&metrics),
-            DatagramSource { peer_id, address },
+            DatagramSource {
+                peer_id,
+                address,
+                transport: PeerTransport::Udp,
+            },
             Bytes::copy_from_slice(&buffer[..size]),
         )
         .await?;
@@ -146,7 +150,11 @@ async fn run_tcp_listener(
         };
         tokio::spawn(tcp_connection_task(
             stream,
-            DatagramSource { peer_id, address },
+            DatagramSource {
+                peer_id,
+                address,
+                transport: PeerTransport::Tcp,
+            },
             rx,
             runtime,
         ));
@@ -181,19 +189,37 @@ async fn tcp_connection_task(
                             source,
                             bytes.freeze(),
                         ).await {
-                            warn!(peer_id = %source.peer_id, address = %source.address, %error, "TCP frame handling failed");
+                            warn!(
+                                peer_id = %source.peer_id,
+                                address = %source.address,
+                                transport = %source.transport,
+                                %error,
+                                "TCP frame handling failed"
+                            );
                             break;
                         }
                     }
                     Err(error) => {
-                        warn!(peer_id = %source.peer_id, address = %source.address, %error, "TCP frame rejected");
+                        warn!(
+                            peer_id = %source.peer_id,
+                            address = %source.address,
+                            transport = %source.transport,
+                            %error,
+                            "TCP frame rejected"
+                        );
                         break;
                     }
                 }
             }
             Some(raw) = outbound_rx.recv() => {
                 if let Err(error) = sink.send(raw).await {
-                    warn!(peer_id = %source.peer_id, address = %source.address, %error, "TCP frame send failed");
+                    warn!(
+                        peer_id = %source.peer_id,
+                        address = %source.address,
+                        transport = %source.transport,
+                        %error,
+                        "TCP frame send failed"
+                    );
                     break;
                 }
             }
@@ -220,6 +246,7 @@ async fn run_stats_loop(state: SharedState, metrics: SharedMetrics) -> io::Resul
 struct DatagramSource {
     peer_id: PeerId,
     address: SocketAddr,
+    transport: PeerTransport,
 }
 
 #[derive(Clone)]
@@ -303,6 +330,7 @@ struct RelayMetrics {
     blocked: u64,
     rate_limited: u64,
     packet_handling_errors: u64,
+    room_metrics: HashMap<String, RoomMetrics>,
 }
 
 impl RelayMetrics {
@@ -310,6 +338,37 @@ impl RelayMetrics {
         Self {
             tcp_egress_queue_capacity,
             ..Self::default()
+        }
+    }
+
+    fn record_packet_in(&mut self) {
+        self.packets_in = self.packets_in.saturating_add(1);
+    }
+
+    fn record_blocked(&mut self, room: Option<&str>) {
+        self.blocked = self.blocked.saturating_add(1);
+        if let Some(room) = room {
+            let metrics = self.room_entry(room);
+            metrics.packets_in = metrics.packets_in.saturating_add(1);
+            metrics.blocked = metrics.blocked.saturating_add(1);
+        }
+    }
+
+    fn record_rate_limited(&mut self, room: Option<&str>) {
+        self.rate_limited = self.rate_limited.saturating_add(1);
+        if let Some(room) = room {
+            let metrics = self.room_entry(room);
+            metrics.packets_in = metrics.packets_in.saturating_add(1);
+            metrics.rate_limited = metrics.rate_limited.saturating_add(1);
+        }
+    }
+
+    fn record_packet_handling_error(&mut self, room: Option<&str>) {
+        self.packet_handling_errors = self.packet_handling_errors.saturating_add(1);
+        if let Some(room) = room {
+            let metrics = self.room_entry(room);
+            metrics.packets_in = metrics.packets_in.saturating_add(1);
+            metrics.packet_handling_errors = metrics.packet_handling_errors.saturating_add(1);
         }
     }
 
@@ -328,6 +387,13 @@ impl RelayMetrics {
         self.decode_errors = self.decode_errors.saturating_add(outcome.decode_errors);
         self.unjoined_data = self.unjoined_data.saturating_add(outcome.unjoined_data);
         self.missing_target = self.missing_target.saturating_add(outcome.missing_target);
+        if let Some(room) = outcome.room.as_deref() {
+            self.room_entry(room).add(&outcome);
+        }
+    }
+
+    fn room_entry(&mut self, room: &str) -> &mut RoomMetrics {
+        self.room_metrics.entry(room.to_owned()).or_default()
     }
 
     fn log_and_reset(&mut self, state: &RelayState) {
@@ -349,12 +415,110 @@ impl RelayMetrics {
             packet_handling_errors = self.packet_handling_errors,
             "relay stats"
         );
-        *self = Self::new(self.tcp_egress_queue_capacity);
+        let tcp_egress_queue_capacity = self.tcp_egress_queue_capacity;
+        let mut room_metrics = std::mem::take(&mut self.room_metrics);
+        for summary in state.room_summaries() {
+            let metrics = room_metrics.remove(&summary.name).unwrap_or_default();
+            if summary.peers == 0 && metrics.is_empty() {
+                continue;
+            }
+            log_room_metrics(
+                &summary.name,
+                summary.peers,
+                summary.tcp_peers,
+                summary.udp_peers,
+                &metrics,
+            );
+        }
+        for (room, metrics) in room_metrics {
+            if metrics.is_empty() {
+                continue;
+            }
+            log_room_metrics(&room, 0, 0, 0, &metrics);
+        }
+        *self = Self::new(tcp_egress_queue_capacity);
     }
 }
 
 #[derive(Debug, Default)]
+struct RoomMetrics {
+    packets_in: u64,
+    data_in: u64,
+    forwarded_packets: u64,
+    forwarded_bytes: u64,
+    tcp_egress_queue_full: u64,
+    tcp_egress_dropped_packets: u64,
+    decode_errors: u64,
+    missing_target: u64,
+    blocked: u64,
+    rate_limited: u64,
+    packet_handling_errors: u64,
+}
+
+impl RoomMetrics {
+    fn add(&mut self, outcome: &PacketOutcome) {
+        self.packets_in = self.packets_in.saturating_add(outcome.room_packets_in);
+        self.data_in = self.data_in.saturating_add(outcome.data_in);
+        self.forwarded_packets = self
+            .forwarded_packets
+            .saturating_add(outcome.forwarded_packets);
+        self.forwarded_bytes = self.forwarded_bytes.saturating_add(outcome.forwarded_bytes);
+        self.tcp_egress_queue_full = self
+            .tcp_egress_queue_full
+            .saturating_add(outcome.tcp_egress_queue_full);
+        self.tcp_egress_dropped_packets = self
+            .tcp_egress_dropped_packets
+            .saturating_add(outcome.tcp_egress_dropped_packets);
+        self.decode_errors = self.decode_errors.saturating_add(outcome.decode_errors);
+        self.missing_target = self.missing_target.saturating_add(outcome.missing_target);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.packets_in == 0
+            && self.data_in == 0
+            && self.forwarded_packets == 0
+            && self.forwarded_bytes == 0
+            && self.tcp_egress_queue_full == 0
+            && self.tcp_egress_dropped_packets == 0
+            && self.decode_errors == 0
+            && self.missing_target == 0
+            && self.blocked == 0
+            && self.rate_limited == 0
+            && self.packet_handling_errors == 0
+    }
+}
+
+fn log_room_metrics(
+    room: &str,
+    peers: usize,
+    tcp_peers: usize,
+    udp_peers: usize,
+    metrics: &RoomMetrics,
+) {
+    info!(
+        room = %room,
+        peers,
+        tcp_peers,
+        udp_peers,
+        packets_in = metrics.packets_in,
+        data_in = metrics.data_in,
+        forwarded_packets = metrics.forwarded_packets,
+        forwarded_bytes = metrics.forwarded_bytes,
+        tcp_egress_queue_full = metrics.tcp_egress_queue_full,
+        tcp_egress_dropped_packets = metrics.tcp_egress_dropped_packets,
+        decode_errors = metrics.decode_errors,
+        missing_target = metrics.missing_target,
+        blocked = metrics.blocked,
+        rate_limited = metrics.rate_limited,
+        packet_handling_errors = metrics.packet_handling_errors,
+        "relay room stats"
+    );
+}
+
+#[derive(Debug, Default)]
 struct PacketOutcome {
+    room: Option<String>,
+    room_packets_in: u64,
     data_in: u64,
     forwarded_packets: u64,
     forwarded_bytes: u64,
@@ -363,6 +527,16 @@ struct PacketOutcome {
     decode_errors: u64,
     unjoined_data: u64,
     missing_target: u64,
+}
+
+impl PacketOutcome {
+    fn for_room(room: String) -> Self {
+        Self {
+            room: Some(room),
+            room_packets_in: 1,
+            ..Self::default()
+        }
+    }
 }
 
 async fn handle_datagram(
@@ -376,20 +550,34 @@ async fn handle_datagram(
     let now = Instant::now();
     {
         let mut metrics = metrics.lock().await;
-        metrics.packets_in = metrics.packets_in.saturating_add(1);
+        metrics.record_packet_in();
     }
     {
         let mut state = state.lock().await;
         if state.is_blocked(source.address) {
+            let room = state.peer_room(source.peer_id);
             let mut metrics = metrics.lock().await;
-            metrics.blocked = metrics.blocked.saturating_add(1);
-            debug!(address = %source.address, "packet rejected by blocklist");
+            metrics.record_blocked(room.as_deref());
+            debug!(
+                peer_id = %source.peer_id,
+                address = %source.address,
+                transport = %source.transport,
+                room = room.as_deref().unwrap_or(""),
+                "packet rejected by blocklist"
+            );
             return Ok(());
         }
         if !state.allow_packet(source.peer_id, now) {
+            let room = state.peer_room(source.peer_id);
             let mut metrics = metrics.lock().await;
-            metrics.rate_limited = metrics.rate_limited.saturating_add(1);
-            debug!(peer_id = %source.peer_id, address = %source.address, "rate limit exceeded");
+            metrics.record_rate_limited(room.as_deref());
+            debug!(
+                peer_id = %source.peer_id,
+                address = %source.address,
+                transport = %source.transport,
+                room = room.as_deref().unwrap_or(""),
+                "rate limit exceeded"
+            );
             return Ok(());
         }
     }
@@ -406,9 +594,17 @@ async fn handle_datagram(
     {
         Ok(outcome) => metrics.lock().await.add(outcome),
         Err(error) => {
+            let room = state.lock().await.peer_room(source.peer_id);
             let mut metrics = metrics.lock().await;
-            metrics.packet_handling_errors = metrics.packet_handling_errors.saturating_add(1);
-            warn!(peer_id = %source.peer_id, address = %source.address, %error, "packet handling failed");
+            metrics.record_packet_handling_error(room.as_deref());
+            warn!(
+                peer_id = %source.peer_id,
+                address = %source.address,
+                transport = %source.transport,
+                room = room.as_deref().unwrap_or(""),
+                %error,
+                "packet handling failed"
+            );
         }
     }
     state.lock().await.cleanup(now);
@@ -459,7 +655,7 @@ async fn handle_heartbeat(
     envelope: &Envelope,
     now: Instant,
 ) -> io::Result<PacketOutcome> {
-    state.lock().await.touch_peer(source.peer_id, now);
+    let room = state.lock().await.touch_peer(source.peer_id, now);
     if let Ok(ControlMessage::HealthPing { id }) = ControlMessage::decode(&envelope.payload) {
         send_control(
             udp_socket,
@@ -470,7 +666,7 @@ async fn handle_heartbeat(
         )
         .await?;
     }
-    Ok(PacketOutcome::default())
+    Ok(room.map_or_else(PacketOutcome::default, PacketOutcome::for_room))
 }
 
 async fn handle_join(
@@ -491,7 +687,14 @@ async fn handle_join(
                 steam_id64,
                 display_name: _,
                 challenge: Some(challenge),
-            } => state.complete_join(source.peer_id, room, steam_id64, challenge, now),
+            } => state.complete_join(
+                source.peer_id,
+                room,
+                steam_id64,
+                challenge,
+                source.transport,
+                now,
+            ),
             ControlMessage::Join {
                 room,
                 steam_id64,
@@ -520,6 +723,12 @@ async fn forward_data(
     now: Instant,
 ) -> io::Result<PacketOutcome> {
     let Some(room_name) = state.lock().await.touch_peer(source.peer_id, now) else {
+        debug!(
+            peer_id = %source.peer_id,
+            address = %source.address,
+            transport = %source.transport,
+            "data rejected before join"
+        );
         send_control(
             udp_socket,
             egress,
@@ -533,15 +742,20 @@ async fn forward_data(
             ..PacketOutcome::default()
         });
     };
-    let mut outcome = PacketOutcome {
-        data_in: 1,
-        ..PacketOutcome::default()
-    };
+    let mut outcome = PacketOutcome::for_room(room_name.clone());
+    outcome.data_in = 1;
 
     let data_envelope = match Envelope::decode(raw.clone()) {
         Ok(envelope) => envelope,
         Err(error) => {
-            warn!(peer_id = %source.peer_id, address = %source.address, %error, "bad data envelope");
+            warn!(
+                peer_id = %source.peer_id,
+                address = %source.address,
+                transport = %source.transport,
+                room = %room_name,
+                %error,
+                "bad data envelope"
+            );
             outcome.decode_errors = outcome.decode_errors.saturating_add(1);
             return Ok(outcome);
         }
@@ -549,7 +763,14 @@ async fn forward_data(
     let game = match GamePacket::decode(&data_envelope.payload) {
         Ok(packet) => packet,
         Err(error) => {
-            warn!(peer_id = %source.peer_id, address = %source.address, %error, "bad data packet");
+            warn!(
+                peer_id = %source.peer_id,
+                address = %source.address,
+                transport = %source.transport,
+                room = %room_name,
+                %error,
+                "bad data packet"
+            );
             outcome.decode_errors = outcome.decode_errors.saturating_add(1);
             return Ok(outcome);
         }
@@ -564,6 +785,7 @@ async fn forward_data(
         debug!(
             peer_id = %source.peer_id,
             address = %source.address,
+            transport = %source.transport,
             room = %room_name,
             to_steam_id64 = game.to_steam_id64,
             "data target is not joined"
@@ -583,7 +805,13 @@ async fn forward_data(
                 outcome.tcp_egress_queue_full = outcome.tcp_egress_queue_full.saturating_add(1);
                 outcome.tcp_egress_dropped_packets =
                     outcome.tcp_egress_dropped_packets.saturating_add(1);
-                debug!(peer_id = %target_peer, "TCP egress queue is full; dropping relay datagram");
+                debug!(
+                    source_peer_id = %source.peer_id,
+                    target_peer_id = %target_peer,
+                    source_transport = %source.transport,
+                    room = %room_name,
+                    "TCP egress queue is full; dropping relay datagram"
+                );
             }
             Err(error) => return Err(error),
         }

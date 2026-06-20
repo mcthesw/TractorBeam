@@ -26,6 +26,29 @@ impl Display for PeerId {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PeerTransport {
+    Udp,
+    Tcp,
+}
+
+impl Display for PeerTransport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Udp => formatter.write_str("udp"),
+            Self::Tcp => formatter.write_str("tcp"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RoomSummary {
+    pub(crate) name: String,
+    pub(crate) peers: usize,
+    pub(crate) tcp_peers: usize,
+    pub(crate) udp_peers: usize,
+}
+
 #[derive(Clone, Debug)]
 struct PendingJoin {
     room: String,
@@ -39,6 +62,7 @@ struct PendingJoin {
 struct Peer {
     steam_id64: String,
     display_name: Option<String>,
+    transport: PeerTransport,
     last_seen: Instant,
 }
 
@@ -127,6 +151,7 @@ impl RelayState {
         room: String,
         steam_id64: String,
         challenge: String,
+        transport: PeerTransport,
         now: Instant,
     ) -> ControlMessage {
         let Some(pending) = self.pending.remove(&peer_id) else {
@@ -148,13 +173,24 @@ impl RelayState {
             Peer {
                 steam_id64: pending.steam_id64,
                 display_name: pending.display_name,
+                transport,
                 last_seen: now,
             },
         );
-        info!(%peer_id, room = %pending.room, peers = room.peers.len(), "peer joined");
+        info!(
+            %peer_id,
+            room = %pending.room,
+            %transport,
+            peers = room.peers.len(),
+            "peer joined"
+        );
         ControlMessage::Ready {
             peer_count: room.peers.len(),
         }
+    }
+
+    pub(crate) fn peer_room(&self, peer_id: PeerId) -> Option<String> {
+        self.peer_rooms.get(&peer_id).cloned()
     }
 
     pub(crate) fn touch_peer(&mut self, peer_id: PeerId, now: Instant) -> Option<String> {
@@ -191,6 +227,29 @@ impl RelayState {
         self.rooms.values().map(|room| room.peers.len()).sum()
     }
 
+    pub(crate) fn room_summaries(&self) -> Vec<RoomSummary> {
+        let mut summaries = self
+            .rooms
+            .iter()
+            .map(|(name, room)| {
+                let tcp_peers = room
+                    .peers
+                    .values()
+                    .filter(|peer| peer.transport == PeerTransport::Tcp)
+                    .count();
+                let peers = room.peers.len();
+                RoomSummary {
+                    name: name.clone(),
+                    peers,
+                    tcp_peers,
+                    udp_peers: peers.saturating_sub(tcp_peers),
+                }
+            })
+            .collect::<Vec<_>>();
+        summaries.sort_by(|left, right| left.name.cmp(&right.name));
+        summaries
+    }
+
     pub(crate) fn cleanup(&mut self, now: Instant) {
         let peer_idle = Duration::from_secs(self.config.peer_idle_seconds);
         let room_idle = Duration::from_secs(self.config.room_idle_seconds);
@@ -208,6 +267,7 @@ impl RelayState {
                         room = %room_name,
                         steam_id64 = %peer.steam_id64,
                         display_name = peer.display_name.as_deref().unwrap_or(""),
+                        transport = %peer.transport,
                         "peer expired"
                     );
                 }
@@ -232,8 +292,18 @@ impl RelayState {
         };
         self.pending.remove(&peer_id);
         self.rates.remove(&peer_id);
-        if let Some(room) = self.rooms.get_mut(&room_name) {
-            room.peers.remove(&peer_id);
+        if let Some(room) = self.rooms.get_mut(&room_name)
+            && let Some(peer) = room.peers.remove(&peer_id)
+        {
+            info!(
+                %peer_id,
+                room = %room_name,
+                steam_id64 = %peer.steam_id64,
+                display_name = peer.display_name.as_deref().unwrap_or(""),
+                transport = %peer.transport,
+                peers = room.peers.len(),
+                "peer disconnected"
+            );
         }
     }
 
@@ -289,14 +359,18 @@ impl RelayState {
             .collect::<Vec<_>>();
 
         for duplicate_peer_id in duplicate_peers {
-            room.peers.remove(&duplicate_peer_id);
+            let Some(peer) = room.peers.remove(&duplicate_peer_id) else {
+                continue;
+            };
             self.peer_rooms.remove(&duplicate_peer_id);
             self.rates.remove(&duplicate_peer_id);
             info!(
                 %duplicate_peer_id,
                 replacement = %peer_id,
                 room = %room_name,
-                steam_id64 = %steam_id64,
+                steam_id64 = %peer.steam_id64,
+                display_name = peer.display_name.as_deref().unwrap_or(""),
+                transport = %peer.transport,
                 "duplicate peer replaced"
             );
         }
@@ -396,6 +470,7 @@ mod tests {
                 "one".to_owned(),
                 "76561198000000001".to_owned(),
                 token,
+                PeerTransport::Udp,
                 now
             ),
             ControlMessage::Ready { .. }
@@ -434,6 +509,7 @@ mod tests {
                 "room".to_owned(),
                 "76561198000000001".to_owned(),
                 token,
+                PeerTransport::Udp,
                 now
             ),
             ControlMessage::Ready { .. }
@@ -468,6 +544,7 @@ mod tests {
                 "room".to_owned(),
                 "76561198000000001".to_owned(),
                 first_token,
+                PeerTransport::Udp,
                 now
             ),
             ControlMessage::Ready { .. }
@@ -486,6 +563,7 @@ mod tests {
                 "room".to_owned(),
                 "76561198000000001".to_owned(),
                 second_token,
+                PeerTransport::Udp,
                 now
             ),
             ControlMessage::Ready { peer_count: 1 }
@@ -513,6 +591,7 @@ mod tests {
                 "room".to_owned(),
                 "76561198000000001".to_owned(),
                 first_token,
+                PeerTransport::Udp,
                 now
             ),
             ControlMessage::Ready { .. }
@@ -531,6 +610,7 @@ mod tests {
                 "room".to_owned(),
                 "76561198000000002".to_owned(),
                 second_token,
+                PeerTransport::Udp,
                 now
             ),
             ControlMessage::Ready { .. }
@@ -541,5 +621,59 @@ mod tests {
             Some(peer(2))
         );
         assert_eq!(state.target_peer("room", 76_561_198_000_000_003), None);
+    }
+
+    #[test]
+    fn room_summaries_count_peer_transports() {
+        let mut state = RelayState::new(RelayConfig::default());
+        let now = Instant::now();
+
+        let udp_token = challenge_token(state.challenge_join(
+            peer(1),
+            "room".to_owned(),
+            "76561198000000001".to_owned(),
+            None,
+            now,
+        ));
+        assert!(matches!(
+            state.complete_join(
+                peer(1),
+                "room".to_owned(),
+                "76561198000000001".to_owned(),
+                udp_token,
+                PeerTransport::Udp,
+                now
+            ),
+            ControlMessage::Ready { .. }
+        ));
+
+        let tcp_token = challenge_token(state.challenge_join(
+            peer(2),
+            "room".to_owned(),
+            "76561198000000002".to_owned(),
+            None,
+            now,
+        ));
+        assert!(matches!(
+            state.complete_join(
+                peer(2),
+                "room".to_owned(),
+                "76561198000000002".to_owned(),
+                tcp_token,
+                PeerTransport::Tcp,
+                now
+            ),
+            ControlMessage::Ready { .. }
+        ));
+
+        assert_eq!(
+            state.room_summaries(),
+            vec![RoomSummary {
+                name: "room".to_owned(),
+                peers: 2,
+                tcp_peers: 1,
+                udp_peers: 1,
+            }]
+        );
     }
 }

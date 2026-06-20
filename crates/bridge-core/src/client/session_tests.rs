@@ -30,6 +30,8 @@ fn session_reports_malformed_hook_packet_and_stops() {
         steam_id64: "76561198000000001".to_owned(),
         display_name: "Test".to_owned(),
         session_health: super::super::SessionHealthConfig::default(),
+        #[cfg(feature = "internal-test")]
+        test_run_id: None,
     })
     .unwrap();
 
@@ -62,6 +64,8 @@ fn session_start_reports_relay_join_timeout() {
         steam_id64: "76561198000000001".to_owned(),
         display_name: "Test".to_owned(),
         session_health: super::super::SessionHealthConfig::default(),
+        #[cfg(feature = "internal-test")]
+        test_run_id: None,
     })
     .unwrap_err();
 
@@ -87,6 +91,8 @@ fn runtime_rtt_timeout_is_nonfatal() {
             runtime_rtt_timeout_seconds: 1,
             ..super::super::SessionHealthConfig::default()
         },
+        #[cfg(feature = "internal-test")]
+        test_run_id: None,
     })
     .unwrap();
 

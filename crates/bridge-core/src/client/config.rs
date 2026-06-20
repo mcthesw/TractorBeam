@@ -19,43 +19,35 @@ pub const CLIENT_CONFIG_FILE: &str = "config.toml";
 pub struct LoadedClientConfig {
     pub config: ClientConfig,
     pub source: Option<PathBuf>,
-    pub resolved_default_room: Option<String>,
     pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClientConfig {
-    pub default_room: Option<String>,
-    pub default_room_template: Option<String>,
     pub default_transport: TransportChoice,
     pub default_mode: SessionMode,
     pub selected_relay: Option<String>,
     pub relays: Vec<RelayPreset>,
     pub session_health: SessionHealthConfig,
+    #[cfg(feature = "internal-test")]
+    pub internal_test: InternalTestConfig,
 }
 
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
-            default_room: None,
-            default_room_template: None,
-            default_transport: TransportChoice::Udp,
+            default_transport: TransportChoice::default(),
             default_mode: SessionMode::Pure,
             selected_relay: None,
             relays: Vec::new(),
             session_health: SessionHealthConfig::default(),
+            #[cfg(feature = "internal-test")]
+            internal_test: InternalTestConfig::default(),
         }
     }
 }
 
 impl ClientConfig {
-    pub fn resolved_room_for_startup(&self) -> Result<Option<String>, ClientConfigError> {
-        if let Some(template) = self.default_room_template.as_deref() {
-            return resolve_room_template(template, LocalDate::today()).map(Some);
-        }
-        Ok(self.default_room.clone())
-    }
-
     pub fn selected_relay_index(&self) -> Option<usize> {
         let selected = self.selected_relay.as_deref()?;
         self.relays.iter().position(|relay| relay.id == selected)
@@ -74,7 +66,6 @@ impl ClientConfig {
         {
             return Err(ClientConfigError::UnknownSelectedRelay(selected.to_owned()));
         }
-        self.resolved_room_for_startup()?;
         self.session_health
             .validate()
             .map_err(|message| ClientConfigError::InvalidSessionHealth(message.to_owned()))?;
@@ -90,6 +81,13 @@ pub struct RelayPreset {
     pub supports_udp: bool,
     pub supports_tcp: bool,
     pub default_transport: Option<TransportChoice>,
+}
+
+#[cfg(feature = "internal-test")]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct InternalTestConfig {
+    pub upload_endpoint: Option<String>,
+    pub upload_token: Option<String>,
 }
 
 impl RelayPreset {
@@ -197,12 +195,12 @@ pub enum ClientConfigError {
 
 #[derive(Debug, Deserialize)]
 struct RawClientConfig {
-    default_room: Option<String>,
-    default_room_template: Option<String>,
     default_transport: Option<String>,
     default_mode: Option<String>,
     selected_relay: Option<String>,
     session_health: Option<RawSessionHealthConfig>,
+    #[cfg(feature = "internal-test")]
+    internal_test: Option<RawInternalTestConfig>,
     #[serde(default)]
     relays: Vec<RawRelayPreset>,
 }
@@ -214,6 +212,13 @@ struct RawSessionHealthConfig {
     snapshot_interval_seconds: Option<u64>,
     runtime_rtt_interval_seconds: Option<u64>,
     runtime_rtt_timeout_seconds: Option<u64>,
+}
+
+#[cfg(feature = "internal-test")]
+#[derive(Debug, Default, Deserialize)]
+struct RawInternalTestConfig {
+    upload_endpoint: Option<String>,
+    upload_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -234,8 +239,6 @@ impl TryFrom<RawClientConfig> for ClientConfig {
 
     fn try_from(value: RawClientConfig) -> Result<Self, Self::Error> {
         let config = Self {
-            default_room: trimmed_non_empty(value.default_room),
-            default_room_template: trimmed_non_empty(value.default_room_template),
             default_transport: parse_transport(value.default_transport.as_deref())?
                 .unwrap_or_default(),
             default_mode: parse_mode(value.default_mode.as_deref())?.unwrap_or(SessionMode::Pure),
@@ -246,6 +249,8 @@ impl TryFrom<RawClientConfig> for ClientConfig {
                 .map(TryInto::try_into)
                 .collect::<Result<Vec<_>, _>>()?,
             session_health: value.session_health.unwrap_or_default().into(),
+            #[cfg(feature = "internal-test")]
+            internal_test: value.internal_test.unwrap_or_default().into(),
         };
         config.validate()?;
         Ok(config)
@@ -269,6 +274,16 @@ impl From<RawSessionHealthConfig> for SessionHealthConfig {
             runtime_rtt_timeout_seconds: value
                 .runtime_rtt_timeout_seconds
                 .unwrap_or(defaults.runtime_rtt_timeout_seconds),
+        }
+    }
+}
+
+#[cfg(feature = "internal-test")]
+impl From<RawInternalTestConfig> for InternalTestConfig {
+    fn from(value: RawInternalTestConfig) -> Self {
+        Self {
+            upload_endpoint: trimmed_non_empty(value.upload_endpoint),
+            upload_token: trimmed_non_empty(value.upload_token),
         }
     }
 }
@@ -301,30 +316,16 @@ pub fn load_client_config() -> LoadedClientConfig {
             continue;
         }
         return match load_config_file(&path) {
-            Ok(config) => {
-                let resolved_default_room = match config.resolved_room_for_startup() {
-                    Ok(room) => room,
-                    Err(error) => {
-                        warnings.push(format!(
-                            "Invalid Room template in {}: {error}",
-                            path.display()
-                        ));
-                        None
-                    }
-                };
-                LoadedClientConfig {
-                    config,
-                    source: Some(path),
-                    resolved_default_room,
-                    warnings,
-                }
-            }
+            Ok(config) => LoadedClientConfig {
+                config,
+                source: Some(path),
+                warnings,
+            },
             Err(error) => {
                 warnings.push(format!("Invalid config at {}: {error}", path.display()));
                 LoadedClientConfig {
                     config: ClientConfig::default(),
                     source: Some(path),
-                    resolved_default_room: None,
                     warnings,
                 }
             }
@@ -334,7 +335,6 @@ pub fn load_client_config() -> LoadedClientConfig {
     LoadedClientConfig {
         config: ClientConfig::default(),
         source: None,
-        resolved_default_room: None,
         warnings,
     }
 }
@@ -461,7 +461,6 @@ mod tests {
     #[test]
     fn parses_relay_presets_and_defaults() {
         let raw = r#"
-default_room_template = "bb-{date:%Y%m%d}"
 default_transport = "tcp"
 default_mode = "pure"
 selected_relay = "current"
@@ -510,5 +509,36 @@ snapshot_interval_seconds = 0
             ClientConfig::try_from(toml::from_str::<RawClientConfig>(raw).unwrap()).unwrap_err();
 
         assert!(matches!(error, ClientConfigError::InvalidSessionHealth(_)));
+    }
+
+    #[test]
+    fn defaults_transport_to_tcp_when_omitted() {
+        let config: ClientConfig = toml::from_str::<RawClientConfig>("")
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        assert_eq!(config.default_transport, TransportChoice::Tcp);
+    }
+
+    #[cfg(feature = "internal-test")]
+    #[test]
+    fn parses_internal_test_upload_config() {
+        let raw = r#"
+[internal_test]
+upload_endpoint = "http://upload.example.test:30080/upload"
+upload_token = "secret"
+"#;
+
+        let config: ClientConfig = toml::from_str::<RawClientConfig>(raw)
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        assert_eq!(
+            config.internal_test.upload_endpoint.as_deref(),
+            Some("http://upload.example.test:30080/upload")
+        );
+        assert_eq!(config.internal_test.upload_token.as_deref(), Some("secret"));
     }
 }

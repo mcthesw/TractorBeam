@@ -12,6 +12,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use serde::Serialize;
 use tokio::{runtime::Builder, time};
 
 use crate::protocol::{Envelope, GamePacket, LocalPacket, MessageType};
@@ -35,7 +36,7 @@ pub(super) const MAX_RELAY_PROBE_PAYLOAD_BYTES: usize = 60_000;
 const DATA_TIMEOUT: Duration = Duration::from_secs(3);
 const HOOK_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct RelayProbeReport {
     pub relay: String,
     pub transport: TransportChoice,
@@ -61,7 +62,7 @@ impl Display for RelayProbeReport {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct HookReceiveProbeReport {
     pub peer: u64,
     pub sent_bytes: usize,
@@ -250,6 +251,8 @@ impl ProbePeer {
             steam_id64: steam_id64.to_owned(),
             display_name: display_name.to_owned(),
             session_health: super::session_config::SessionHealthConfig::default(),
+            #[cfg(feature = "internal-test")]
+            test_run_id: None,
         };
         let mut relay_transport = RelayTransport::connect(relay, transport).await?;
         complete_relay_join(

@@ -15,12 +15,13 @@ use crate::client::{
     state::{RuntimeEvent, log_event, unix_seconds},
 };
 use bytes::Bytes;
+use serde::Serialize;
 
 pub const READINESS_PROBE_SAMPLES_PER_CASE: u64 = 50;
 pub const READINESS_PROBE_PAYLOAD_BYTES: [usize; 3] = [512, 1024, 2048];
 const READINESS_SAMPLE_TIMEOUT: Duration = Duration::from_millis(750);
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ReadinessProbeCaseReport {
     pub transport: TransportChoice,
     pub payload_bytes: usize,
@@ -32,6 +33,7 @@ pub struct ReadinessProbeCaseReport {
     pub median_latency_ms: Option<u128>,
     pub p95_latency_ms: Option<u128>,
     pub max_latency_ms: Option<u128>,
+    pub jitter_ms: Option<u128>,
     pub failure_reason: Option<String>,
 }
 
@@ -44,7 +46,7 @@ impl ReadinessProbeCaseReport {
     #[must_use]
     pub fn detailed_log(&self) -> String {
         let mut message = format!(
-            "transport={}; payload_bytes={}; duration_ms={}; sent={}; received={}; missing={}; min_ms={}; median_ms={}; p95_ms={}; max_ms={}",
+            "transport={}; payload_bytes={}; duration_ms={}; sent={}; received={}; missing={}; min_ms={}; median_ms={}; p95_ms={}; max_ms={}; jitter_ms={}",
             self.transport,
             self.payload_bytes,
             self.duration_ms,
@@ -54,7 +56,8 @@ impl ReadinessProbeCaseReport {
             display_latency(self.min_latency_ms),
             display_latency(self.median_latency_ms),
             display_latency(self.p95_latency_ms),
-            display_latency(self.max_latency_ms)
+            display_latency(self.max_latency_ms),
+            display_latency(self.jitter_ms)
         );
         if let Some(reason) = &self.failure_reason {
             message.push_str("; error=");
@@ -64,7 +67,7 @@ impl ReadinessProbeCaseReport {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ReadinessProbeReport {
     pub relay: String,
     pub room: String,
@@ -292,6 +295,9 @@ fn readiness_case_report(stats: ReadinessStats) -> ReadinessProbeCaseReport {
     let median_latency_ms = percentile(&latencies, 50);
     let p95_latency_ms = percentile(&latencies, 95);
     let max_latency_ms = latencies.last().copied();
+    let jitter_ms = median_latency_ms
+        .zip(p95_latency_ms)
+        .map(|(median, p95)| p95.saturating_sub(median));
     ReadinessProbeCaseReport {
         transport: stats.transport,
         payload_bytes: stats.payload_bytes,
@@ -303,6 +309,7 @@ fn readiness_case_report(stats: ReadinessStats) -> ReadinessProbeCaseReport {
         median_latency_ms,
         p95_latency_ms,
         max_latency_ms,
+        jitter_ms,
         failure_reason: stats.failure_reason,
     }
 }

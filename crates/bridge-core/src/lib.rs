@@ -16,3 +16,10 @@ pub use client::{
     diagnostics_directory, emit_client_log_event, load_client_config, resolve_room_template,
     runtime_name,
 };
+
+#[cfg(feature = "internal-test")]
+pub use client::{
+    InternalTestConfig, InternalTestReport, InternalTestReportError, InternalTestReportRequest,
+    InternalTestReportSession, InternalTestShareCode, InternalTestUploadReceipt,
+    new_internal_test_id,
+};

@@ -12,6 +12,8 @@ pub struct ClientSessionLogContext {
     pub transport: TransportChoice,
     pub room: String,
     pub mode: SessionMode,
+    #[cfg(feature = "internal-test")]
+    pub test_run_id: Option<String>,
 }
 
 pub trait ClientLogSink: Debug + Send + Sync {
@@ -94,21 +96,85 @@ pub fn emit_client_log_event(
     let transport = context.map(|context| context.transport.to_string());
     let room = context.map(|context| context.room.as_str());
     let mode = context.map(|context| context.mode.to_string());
-    match level {
-        LogLevel::Trace => tracing::trace!(
-            session_id, relay_name, relay, transport, room, mode, "{}", message
-        ),
-        LogLevel::Debug => tracing::debug!(
-            session_id, relay_name, relay, transport, room, mode, "{}", message
-        ),
-        LogLevel::Info => tracing::info!(
-            session_id, relay_name, relay, transport, room, mode, "{}", message
-        ),
-        LogLevel::Warn => tracing::warn!(
-            session_id, relay_name, relay, transport, room, mode, "{}", message
-        ),
-        LogLevel::Error => tracing::error!(
-            session_id, relay_name, relay, transport, room, mode, "{}", message
-        ),
+    #[cfg(feature = "internal-test")]
+    {
+        let test_run_id = context.and_then(|context| context.test_run_id.as_deref());
+        match level {
+            LogLevel::Trace => tracing::trace!(
+                session_id,
+                relay_name,
+                relay,
+                transport,
+                room,
+                mode,
+                test_run_id,
+                "{}",
+                message
+            ),
+            LogLevel::Debug => tracing::debug!(
+                session_id,
+                relay_name,
+                relay,
+                transport,
+                room,
+                mode,
+                test_run_id,
+                "{}",
+                message
+            ),
+            LogLevel::Info => tracing::info!(
+                session_id,
+                relay_name,
+                relay,
+                transport,
+                room,
+                mode,
+                test_run_id,
+                "{}",
+                message
+            ),
+            LogLevel::Warn => tracing::warn!(
+                session_id,
+                relay_name,
+                relay,
+                transport,
+                room,
+                mode,
+                test_run_id,
+                "{}",
+                message
+            ),
+            LogLevel::Error => tracing::error!(
+                session_id,
+                relay_name,
+                relay,
+                transport,
+                room,
+                mode,
+                test_run_id,
+                "{}",
+                message
+            ),
+        }
+    }
+    #[cfg(not(feature = "internal-test"))]
+    {
+        match level {
+            LogLevel::Trace => tracing::trace!(
+                session_id, relay_name, relay, transport, room, mode, "{}", message
+            ),
+            LogLevel::Debug => tracing::debug!(
+                session_id, relay_name, relay, transport, room, mode, "{}", message
+            ),
+            LogLevel::Info => tracing::info!(
+                session_id, relay_name, relay, transport, room, mode, "{}", message
+            ),
+            LogLevel::Warn => tracing::warn!(
+                session_id, relay_name, relay, transport, room, mode, "{}", message
+            ),
+            LogLevel::Error => tracing::error!(
+                session_id, relay_name, relay, transport, room, mode, "{}", message
+            ),
+        }
     }
 }

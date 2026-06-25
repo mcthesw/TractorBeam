@@ -8,6 +8,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(test)]
+use std::path::PathBuf;
+
 use bytes::Bytes;
 use tokio::{
     net::UdpSocket,
@@ -23,6 +26,7 @@ use crate::protocol::{ControlMessage, MessageType};
 use super::{
     LogLevel, SessionConfig,
     hook_config::{HOOK_IN, HOOK_OUT},
+    hook_lifecycle,
     packet_flow::{
         InboundGamePacket, InboundRelayDatagram, OutboundRelayPacket, PacketObserver,
         decode_inbound_relay_datagram, encode_inbound_local_packet, encode_outbound_relay_packet,
@@ -30,7 +34,9 @@ use super::{
     },
     relay_transport::{RelayTransport, complete_relay_join, send_control},
     session_health::{SessionHealth, SessionHealthSnapshot},
-    state::{RuntimeEvent, RuntimeEventSender, error_counter, log_event, send_event},
+    state::{
+        RuntimeEvent, RuntimeEventSender, SessionStopReason, error_counter, log_event, send_event,
+    },
 };
 
 const EVENT_QUEUE_CAPACITY: usize = 512;
@@ -38,7 +44,6 @@ const PACKET_QUEUE_CAPACITY: usize = 256;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(6);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
-const INJECTOR_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 const HOOK_BUFFER_SIZE: usize = 65_535;
 
@@ -49,6 +54,11 @@ pub(super) struct SessionHandle {
     cancellation: CancellationToken,
     pub(super) events: Receiver<RuntimeEvent>,
     worker: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SessionNativeHook {
+    paths: basement_isaac_injector::NativeHookPaths,
 }
 
 struct RuntimeTasks {
@@ -64,7 +74,10 @@ struct RelayTransportTaskContext {
     runtime_rtt_interval: Duration,
 }
 
-pub(super) fn spawn_bridge_worker(config: SessionConfig) -> io::Result<SessionHandle> {
+pub(super) fn spawn_bridge_worker(
+    config: SessionConfig,
+    native_hook_paths: basement_isaac_injector::NativeHookPaths,
+) -> io::Result<SessionHandle> {
     let cancellation = CancellationToken::new();
     let (event_tx, event_rx) = mpsc::channel();
     let (startup_tx, startup_rx) = mpsc::sync_channel(1);
@@ -89,6 +102,9 @@ pub(super) fn spawn_bridge_worker(config: SessionConfig) -> io::Result<SessionHa
 
         runtime.block_on(supervise_session(
             config,
+            SessionNativeHook {
+                paths: native_hook_paths,
+            },
             worker_cancellation,
             event_tx,
             startup_tx,
@@ -143,6 +159,7 @@ impl Drop for SessionHandle {
 
 async fn supervise_session(
     config: SessionConfig,
+    native_hook: SessionNativeHook,
     cancellation: CancellationToken,
     std_event_tx: mpsc::Sender<RuntimeEvent>,
     startup_tx: SyncSender<io::Result<()>>,
@@ -150,7 +167,7 @@ async fn supervise_session(
     let (event_tx, event_rx) = tokio_mpsc::channel(EVENT_QUEUE_CAPACITY);
     let event_forwarder = tokio::spawn(forward_events(event_rx, std_event_tx));
 
-    match start_runtime_tasks(&config, &cancellation, &event_tx).await {
+    match start_runtime_tasks(&config, native_hook, &cancellation, &event_tx).await {
         Ok(mut runtime_tasks) => {
             send_startup(&startup_tx, Ok(()));
             send_event(
@@ -172,6 +189,12 @@ async fn supervise_session(
                 wait_for_essential_task(&cancellation, &mut runtime_tasks.essential).await;
             cancellation.cancel();
             if let Some(message) = stop_reason {
+                send_event(
+                    &event_tx,
+                    RuntimeEvent::SessionEnded(SessionStopReason::RuntimeEnded {
+                        message: message.clone(),
+                    }),
+                );
                 send_event(&event_tx, log_event(LogLevel::Warn, message));
             }
             shutdown_tasks(runtime_tasks.essential, &event_tx).await;
@@ -196,6 +219,7 @@ async fn supervise_session(
 
 async fn start_runtime_tasks(
     config: &SessionConfig,
+    native_hook: SessionNativeHook,
     cancellation: &CancellationToken,
     event_tx: &RuntimeEventSender,
 ) -> io::Result<RuntimeTasks> {
@@ -254,7 +278,11 @@ async fn start_runtime_tasks(
         health.clone(),
     ));
 
-    tokio::spawn(injector_task(event_tx.clone(), cancellation.clone()));
+    tokio::spawn(hook_lifecycle::injector_task(
+        native_hook.paths,
+        event_tx.clone(),
+        cancellation.clone(),
+    ));
 
     Ok(RuntimeTasks {
         essential: tasks,
@@ -437,109 +465,12 @@ fn current_health_snapshot(health: &Option<SharedSessionHealth>) -> Option<Sessi
         .and_then(|health| Some(health.lock().ok()?.snapshot(Instant::now())))
 }
 
-async fn injector_task(event_tx: RuntimeEventSender, cancellation: CancellationToken) {
-    send_event(
-        &event_tx,
-        log_event(LogLevel::Info, "Waiting for Isaac process"),
-    );
-
-    let Some(process) = wait_for_isaac_process(&cancellation).await else {
-        send_event(
-            &event_tx,
-            log_event(LogLevel::Info, "Native Hook injection cancelled"),
-        );
-        return;
-    };
-
-    let process_name = process.name.clone();
-    let process_id = process.pid;
-    let injection = tokio::task::spawn_blocking(move || {
-        basement_isaac_injector::resolve_native_hook_paths()
-            .and_then(|paths| basement_isaac_injector::run_injector(&paths, process_id))
-    });
-
-    tokio::select! {
-        () = cancellation.cancelled() => {
-            send_event(&event_tx, log_event(LogLevel::Info, "Native Hook injection cancelled"));
-        }
-        result = time::timeout(INJECTOR_WAIT_TIMEOUT, injection) => {
-            match result {
-                Ok(Ok(Ok(()))) => send_event(
-                    &event_tx,
-                    log_event(
-                        LogLevel::Info,
-                        format!("Native Hook injected into {process_name} ({process_id})"),
-                    ),
-                ),
-                Ok(Ok(Err(error))) => {
-                    send_event(
-                        &event_tx,
-                        log_event(
-                            LogLevel::Error,
-                            format!("Native Hook injection failed: {}", injection_support_message(&error)),
-                        ),
-                    );
-                    send_event(&event_tx, RuntimeEvent::CounterDelta(error_counter()));
-                }
-                Ok(Err(error)) => {
-                    send_event(
-                        &event_tx,
-                        log_event(
-                            LogLevel::Error,
-                            format!("Native Hook injection task failed: {error}"),
-                        ),
-                    );
-                    send_event(&event_tx, RuntimeEvent::CounterDelta(error_counter()));
-                }
-                Err(_) => {
-                    send_event(
-                        &event_tx,
-                        log_event(
-                            LogLevel::Error,
-                            "Native Hook injection timed out",
-                        ),
-                    );
-                    send_event(&event_tx, RuntimeEvent::CounterDelta(error_counter()));
-                }
-            }
-        }
+#[cfg(test)]
+fn test_native_hook_paths() -> basement_isaac_injector::NativeHookPaths {
+    basement_isaac_injector::NativeHookPaths {
+        injector: PathBuf::from("basement-isaac-injector.exe"),
+        hook: PathBuf::from("basement_native_hook.dll"),
     }
-}
-
-async fn wait_for_isaac_process(
-    cancellation: &CancellationToken,
-) -> Option<basement_isaac_injector::IsaacProcess> {
-    let wait = async {
-        loop {
-            if let Some(process) = basement_isaac_injector::find_isaac_process() {
-                return Some(process);
-            }
-            time::sleep(Duration::from_millis(250)).await;
-        }
-    };
-
-    tokio::select! {
-        () = cancellation.cancelled() => None,
-        result = time::timeout(INJECTOR_WAIT_TIMEOUT, wait) => result.unwrap_or(None),
-    }
-}
-
-fn injection_support_message(error: &basement_isaac_injector::InjectorError) -> String {
-    let message = error.to_string();
-    if is_access_denied(&message) {
-        format!(
-            "{message}; access denied usually means Bridge GUI, Steam, and Isaac need matching privilege levels or security software allowed the helper"
-        )
-    } else {
-        message
-    }
-}
-
-fn is_access_denied(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    lower.contains("access is denied")
-        || lower.contains("access denied")
-        || lower.contains("os error 5")
 }
 
 async fn wait_for_essential_task(

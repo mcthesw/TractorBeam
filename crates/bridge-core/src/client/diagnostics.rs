@@ -75,6 +75,12 @@ impl BridgeClient {
         } else {
             output.push_str("log_directory: unavailable\n\n");
         }
+        output.push_str("session lifecycle:\n");
+        if let Some(reason) = &self.state.last_stop_reason {
+            output.push_str(&format!("last_stop_reason: {reason}\n\n"));
+        } else {
+            output.push_str("last_stop_reason: none\n\n");
+        }
         output.push_str("latest probes:\n");
         if let Some(report) = &self.state.latest_readiness_probe {
             output.push_str(&format!("readiness: {}\n", report.detailed_log()));
@@ -110,16 +116,58 @@ impl BridgeClient {
             output.push_str("none\n");
         }
         output.push('\n');
-        output.push_str("primary files:\n");
-        for file in crate::diagnostics::primary_diagnostic_files() {
-            output.push_str("- ");
-            output.push_str(file);
+        output.push_str("client incidents:\n");
+        if self.state.client_incidents.is_empty() {
+            output.push_str("none\n\n");
+        } else {
+            for incident in &self.state.client_incidents {
+                output.push_str(&format!(
+                    "- [{}] {}: {}\n",
+                    incident.timestamp, incident.kind, incident.summary
+                ));
+                output.push_str(&format!(
+                    "  {}\n",
+                    incident.health.compact_log_line("health")
+                ));
+            }
             output.push('\n');
         }
-        output.push_str("\nprimary file excerpts:\n");
+        output.push_str("hook runtime files:\n");
+        if let Some(path) = &self.state.hook_config_path_written {
+            output.push_str(&format!("config_path_written: {}\n", path.display()));
+            if let Some(hook_log_path) = self.state.hook_log_path_written() {
+                output.push_str(&format!(
+                    "hook_log_path_expected: {}\n",
+                    hook_log_path.display()
+                ));
+            }
+            if let Some(directory) = path.parent() {
+                for file in [
+                    crate::diagnostics::BRIDGE_CONFIG_FILE,
+                    crate::diagnostics::BRIDGE_HOOK_LOG,
+                ] {
+                    let path = directory.join(file);
+                    output.push_str("\n--- ");
+                    output.push_str(file);
+                    output.push_str(" ---\n");
+                    match fs::read_to_string(&path) {
+                        Ok(contents) => {
+                            output.push_str(crate::diagnostics::file_excerpt(&contents))
+                        }
+                        Err(error) => output.push_str(&format!("unavailable: {error}\n")),
+                    }
+                    if !output.ends_with('\n') {
+                        output.push('\n');
+                    }
+                }
+            }
+        } else {
+            output.push_str("config_path_written: none\n");
+        }
+        output.push_str("\nIsaac online log excerpts:\n");
         let log_directory = crate::diagnostics::isaac_online_logs_directory();
         output.push_str(&format!("directory: {}\n", log_directory.display()));
-        for file in crate::diagnostics::primary_diagnostic_files() {
+        for file in [crate::diagnostics::ONLINE_LOG] {
             let path = log_directory.join(file);
             output.push_str("\n--- ");
             output.push_str(file);

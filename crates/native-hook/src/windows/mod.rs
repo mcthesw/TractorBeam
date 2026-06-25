@@ -24,6 +24,7 @@ pub unsafe extern "system" fn DllMain(
     match reason {
         DLL_PROCESS_ATTACH => unsafe {
             DisableThreadLibraryCalls(module);
+            bridge::set_module_handle(module);
             let thread = CreateThread(
                 ptr::null(),
                 0,

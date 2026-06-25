@@ -21,6 +21,16 @@ pub fn find_isaac_process() -> Option<IsaacProcess> {
     find_process_by_name(ISAAC_PROCESS_NAME)
 }
 
+#[must_use]
+pub fn is_process_running(pid: u32) -> bool {
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+    system
+        .processes()
+        .values()
+        .any(|process| process.pid().as_u32() == pid)
+}
+
 pub fn wait_for_isaac(
     timeout: Duration,
     poll_interval: Duration,

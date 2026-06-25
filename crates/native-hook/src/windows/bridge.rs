@@ -1,19 +1,22 @@
 use std::{
     collections::VecDeque,
-    env,
+    ffi::OsString,
     fmt::Display,
     fs,
     io::{self, Read, Write},
     net::{SocketAddr, UdpSocket},
+    os::windows::ffi::OsStringExt,
     path::PathBuf,
     str::FromStr,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     },
     thread::{self, JoinHandle},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+use windows_sys::Win32::{Foundation::HINSTANCE, System::LibraryLoader::GetModuleFileNameW};
 
 const CONFIG_FILE: &str = "isaac_bridge_config.txt";
 const LOG_FILE: &str = "basement_bridge_hook.log";
@@ -33,6 +36,7 @@ static LOCAL_OUT_EVENTS: AtomicU32 = AtomicU32::new(0);
 static LOCAL_IN_EVENTS: AtomicU32 = AtomicU32::new(0);
 static AVAILABLE_HITS: AtomicU32 = AtomicU32::new(0);
 static READ_HITS: AtomicU32 = AtomicU32::new(0);
+static MODULE_HANDLE: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HookLogLevel {
@@ -88,9 +92,24 @@ struct BridgeState {
     receiver: Option<JoinHandle<()>>,
 }
 
+pub fn set_module_handle(module: HINSTANCE) {
+    MODULE_HANDLE.store(module as usize, Ordering::Relaxed);
+}
+
 pub fn initialize() {
-    let Ok(config) = read_config() else {
-        log_warn("bridge_config_missing");
+    let Some(config_path) = default_config_path() else {
+        log_error("bridge_module_directory_unavailable");
+        return;
+    };
+    log_info(format!(
+        "bridge_config_path_attempted path={}",
+        config_path.display()
+    ));
+    let Ok(config) = read_config(&config_path) else {
+        log_warn(format!(
+            "bridge_config_missing path={}",
+            config_path.display()
+        ));
         return;
     };
     if config.mode == BridgeMode::Off {
@@ -318,7 +337,9 @@ pub fn log(level: HookLogLevel, message: impl Display) {
     let Ok(_guard) = LOG_LOCK.lock() else {
         return;
     };
-    let path = default_config_path().with_file_name(LOG_FILE);
+    let Some(path) = default_config_path().map(|path| path.with_file_name(LOG_FILE)) else {
+        return;
+    };
     if let Some(directory) = path.parent() {
         let _ = fs::create_dir_all(directory);
     }
@@ -378,9 +399,9 @@ fn spawn_receiver(
     })
 }
 
-fn read_config() -> io::Result<BridgeConfig> {
+fn read_config(path: &std::path::Path) -> io::Result<BridgeConfig> {
     let mut contents = String::new();
-    fs::File::open(default_config_path())?.read_to_string(&mut contents)?;
+    fs::File::open(path)?.read_to_string(&mut contents)?;
     let mut mode = BridgeMode::Off;
     let mut fallback_to_steam = true;
     let mut sidecar = SocketAddr::from_str("127.0.0.1:25900").expect("static endpoint");
@@ -420,15 +441,30 @@ fn read_config() -> io::Result<BridgeConfig> {
     })
 }
 
-fn default_config_path() -> PathBuf {
-    env::var_os("USERPROFILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(env::temp_dir)
-        .join("Documents")
-        .join("My Games")
-        .join("Binding of Isaac Repentance+")
-        .join("online_logs")
-        .join(CONFIG_FILE)
+fn default_config_path() -> Option<PathBuf> {
+    module_directory().map(|directory| directory.join(CONFIG_FILE))
+}
+
+fn module_directory() -> Option<PathBuf> {
+    let module = MODULE_HANDLE.load(Ordering::Relaxed) as HINSTANCE;
+    if module.is_null() {
+        return None;
+    }
+    let mut buffer = vec![0_u16; 260];
+    loop {
+        let length =
+            unsafe { GetModuleFileNameW(module, buffer.as_mut_ptr(), buffer.len() as u32) };
+        if length == 0 {
+            return None;
+        }
+        let length = length as usize;
+        if length < buffer.len().saturating_sub(1) {
+            return PathBuf::from(OsString::from_wide(&buffer[..length]))
+                .parent()
+                .map(PathBuf::from);
+        }
+        buffer.resize(buffer.len().saturating_mul(2), 0);
+    }
 }
 
 fn parse_bool(value: &str, fallback: bool) -> bool {

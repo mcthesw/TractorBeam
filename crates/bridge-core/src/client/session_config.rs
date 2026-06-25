@@ -5,6 +5,8 @@ use std::{
 
 use serde::Serialize;
 
+use crate::udp_fec::UdpFecConfig;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum SessionMode {
     Official,
@@ -134,6 +136,7 @@ pub struct SessionConfig {
     pub steam_id64: String,
     pub display_name: String,
     pub session_health: SessionHealthConfig,
+    pub udp_fec: UdpFecConfig,
     #[cfg(feature = "internal-test")]
     pub test_run_id: Option<String>,
 }

@@ -2,6 +2,8 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::udp_fec::UdpFecProfileName;
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ControlMessage {
@@ -10,12 +12,14 @@ pub enum ControlMessage {
         steam_id64: String,
         display_name: Option<String>,
         challenge: Option<String>,
+        udp_fec: Option<UdpFecControl>,
     },
     Challenge {
         token: String,
     },
     Ready {
         peer_count: usize,
+        udp_fec: Option<UdpFecControl>,
     },
     Error {
         code: String,
@@ -28,6 +32,11 @@ pub enum ControlMessage {
     HealthPong {
         id: u64,
     },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct UdpFecControl {
+    pub profile: UdpFecProfileName,
 }
 
 impl ControlMessage {

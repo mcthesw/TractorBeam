@@ -1,9 +1,7 @@
 use std::{
     fs::{self, File},
-    io::{self, Read, Write},
-    net::TcpStream,
+    io::{self, Write},
     path::{Path, PathBuf},
-    time::Duration,
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -16,16 +14,22 @@ use super::{
     RelayEndpoint, SessionHealthSnapshot, SessionMode, TransportChoice, diagnostics_directory,
     runtime_name, state::unix_seconds,
 };
+use crate::udp_fec::{UdpFecConfig, UdpFecSessionSnapshot};
 
 const SHARE_CODE_PREFIX: &str = "BB1.";
-const REPORT_SCHEMA_VERSION: u8 = 1;
-const UPLOAD_TIMEOUT: Duration = Duration::from_secs(20);
+const REPORT_SCHEMA_VERSION: u8 = 2;
+
+#[path = "internal_test_upload.rs"]
+mod upload;
+pub use upload::InternalTestUploadReceipt;
+use upload::post_zip;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct InternalTestReportSession {
     pub relay_name: Option<String>,
     pub relay: RelayEndpoint,
     pub transport: TransportChoice,
+    pub udp_fec: UdpFecConfig,
     pub room: String,
     pub mode: SessionMode,
 }
@@ -49,12 +53,6 @@ pub struct InternalTestReport {
     pub test_run_id: String,
     pub zip_path: PathBuf,
     pub preview_text: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct InternalTestUploadReceipt {
-    pub status_code: u16,
-    pub response_body: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -221,6 +219,7 @@ impl BridgeClient {
                 .latest_session_health_summary
                 .clone()
                 .or_else(|| self.state.latest_session_health.clone()),
+            udp_fec: self.state.latest_udp_fec.clone(),
         }
     }
 }
@@ -232,6 +231,7 @@ struct ShareCodePayload {
     relay_host: String,
     relay_port: u16,
     transport: String,
+    udp_fec: Option<UdpFecConfig>,
     room: String,
     mode: String,
     test_run_id: String,
@@ -245,6 +245,7 @@ impl From<&InternalTestShareCode> for ShareCodePayload {
             relay_host: value.session.relay.host.clone(),
             relay_port: value.session.relay.port,
             transport: serialize_transport(value.session.transport).to_owned(),
+            udp_fec: Some(value.session.udp_fec),
             room: value.session.room.clone(),
             mode: serialize_mode(value.session.mode).to_owned(),
             test_run_id: value.test_run_id.clone(),
@@ -266,6 +267,11 @@ impl TryFrom<ShareCodePayload> for InternalTestShareCode {
         relay
             .validate()
             .map_err(|error| InternalTestReportError::InvalidShareCode(error.to_string()))?;
+        let transport = parse_transport(&value.transport)?;
+        let mut udp_fec = value.udp_fec.unwrap_or_default();
+        if transport != TransportChoice::Udp {
+            udp_fec.enabled = false;
+        }
         let room = value.room.trim().to_owned();
         if room.is_empty() {
             return Err(InternalTestReportError::InvalidShareCode(
@@ -285,7 +291,8 @@ impl TryFrom<ShareCodePayload> for InternalTestShareCode {
                     .map(|name| name.trim().to_owned())
                     .filter(|name| !name.is_empty()),
                 relay,
-                transport: parse_transport(&value.transport)?,
+                transport,
+                udp_fec,
                 room,
                 mode: parse_mode(&value.mode)?,
             },
@@ -310,6 +317,7 @@ struct ReportMetadata {
     hook_receive: Option<HookReceiveProbeReport>,
     hook_receive_error: Option<String>,
     session_health: Option<SessionHealthSnapshot>,
+    udp_fec: Option<UdpFecSessionSnapshot>,
 }
 
 #[derive(Debug, Serialize)]
@@ -387,6 +395,12 @@ fn write_report_zip(
         "artifacts/session_health.json",
         &metadata.session_health,
     )?;
+    write_optional_json(
+        &mut zip,
+        options,
+        "artifacts/udp_fec.json",
+        &metadata.udp_fec,
+    )?;
     if let Some(path) = process_log_path {
         write_zip_file(&mut zip, options, "logs/process", &path)?;
     }
@@ -410,6 +424,10 @@ fn report_preview_text(metadata: &ReportMetadata, diagnostics_text: &str) -> Str
         metadata.session.relay.host, metadata.session.relay.port
     ));
     output.push_str(&format!("transport: {}\n", metadata.session.transport));
+    output.push_str(&format!(
+        "connection_profile: {}\n",
+        connection_profile_summary(&metadata.session)
+    ));
     output.push_str(&format!("room: {}\n", metadata.session.room));
     output.push_str(&format!("mode: {}\n", metadata.session.mode));
     if !metadata.user_note.is_empty() {
@@ -423,6 +441,16 @@ fn report_preview_text(metadata: &ReportMetadata, diagnostics_text: &str) -> Str
         output.push('\n');
     }
     output
+}
+
+fn connection_profile_summary(session: &InternalTestReportSession) -> String {
+    match session.transport {
+        TransportChoice::Tcp => "tcp".to_owned(),
+        TransportChoice::Udp if session.udp_fec.enabled => {
+            format!("udp+fec:{}", session.udp_fec.profile)
+        }
+        TransportChoice::Udp => "udp".to_owned(),
+    }
 }
 
 fn write_optional_json<T: Serialize>(
@@ -468,106 +496,6 @@ fn write_zip_file(
         Err(error) => zip.write_all(format!("unavailable: {error}\n").as_bytes())?,
     }
     Ok(())
-}
-
-fn post_zip(
-    endpoint: &str,
-    token: &str,
-    report_id: &str,
-    test_run_id: &str,
-    body: &[u8],
-) -> Result<InternalTestUploadReceipt, InternalTestReportError> {
-    let endpoint = HttpEndpoint::parse(endpoint)?;
-    let mut stream = TcpStream::connect((endpoint.host.as_str(), endpoint.port))?;
-    stream.set_read_timeout(Some(UPLOAD_TIMEOUT))?;
-    stream.set_write_timeout(Some(UPLOAD_TIMEOUT))?;
-    let request = format!(
-        "POST {} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Type: application/zip\r\nContent-Length: {}\r\nConnection: close\r\nX-Basement-Bridge-Report-Id: {}\r\nX-Basement-Bridge-Test-Run-Id: {}\r\n\r\n",
-        endpoint.path,
-        endpoint.host_header,
-        token,
-        body.len(),
-        report_id,
-        test_run_id
-    );
-    stream.write_all(request.as_bytes())?;
-    stream.write_all(body)?;
-    stream.flush()?;
-
-    let mut response = String::new();
-    stream.read_to_string(&mut response)?;
-    let (status_code, response_body) = parse_http_response(&response)?;
-    if !(200..300).contains(&status_code) {
-        return Err(InternalTestReportError::UploadRejected {
-            status_code,
-            body: response_body,
-        });
-    }
-    Ok(InternalTestUploadReceipt {
-        status_code,
-        response_body,
-    })
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct HttpEndpoint {
-    host: String,
-    host_header: String,
-    port: u16,
-    path: String,
-}
-
-impl HttpEndpoint {
-    fn parse(value: &str) -> Result<Self, InternalTestReportError> {
-        let Some(rest) = value.trim().strip_prefix("http://") else {
-            return Err(InternalTestReportError::UnsupportedUploadEndpoint);
-        };
-        let (authority, path) = rest.split_once('/').map_or((rest, "/"), |(host, path)| {
-            (host, &rest[rest.len() - path.len() - 1..])
-        });
-        if authority.is_empty() {
-            return Err(InternalTestReportError::InvalidUploadEndpoint(
-                "host is required".to_owned(),
-            ));
-        }
-        let (host, port) = authority.rsplit_once(':').map_or_else(
-            || Ok((authority.to_owned(), 80)),
-            |(host, port)| {
-                if host.is_empty() {
-                    return Err(InternalTestReportError::InvalidUploadEndpoint(
-                        "host is required".to_owned(),
-                    ));
-                }
-                let port = port.parse::<u16>().map_err(|error| {
-                    InternalTestReportError::InvalidUploadEndpoint(error.to_string())
-                })?;
-                Ok((host.to_owned(), port))
-            },
-        )?;
-        Ok(Self {
-            host,
-            host_header: authority.to_owned(),
-            port,
-            path: path.to_owned(),
-        })
-    }
-}
-
-fn parse_http_response(response: &str) -> Result<(u16, String), InternalTestReportError> {
-    let (headers, body) = response.split_once("\r\n\r\n").unwrap_or((response, ""));
-    let status_line = headers.lines().next().ok_or_else(|| {
-        InternalTestReportError::InvalidUploadEndpoint("empty HTTP response".to_owned())
-    })?;
-    let mut parts = status_line.split_whitespace();
-    let _http_version = parts.next();
-    let status = parts
-        .next()
-        .ok_or_else(|| {
-            InternalTestReportError::InvalidUploadEndpoint("missing HTTP status".to_owned())
-        })?
-        .parse::<u16>()
-        .map_err(|error| InternalTestReportError::InvalidUploadEndpoint(error.to_string()))?;
-    Ok((status, body.trim().to_owned()))
 }
 
 fn readiness_summary(report: &ReadinessProbeReport) -> String {
@@ -679,7 +607,11 @@ mod tests {
             session: InternalTestReportSession {
                 relay_name: Some("Test relay".to_owned()),
                 relay: RelayEndpoint::new("relay.example.test", 25_910),
-                transport: TransportChoice::Tcp,
+                transport: TransportChoice::Udp,
+                udp_fec: UdpFecConfig {
+                    enabled: true,
+                    ..UdpFecConfig::default()
+                },
                 room: "bb-test".to_owned(),
                 mode: SessionMode::Pure,
             },
@@ -695,7 +627,8 @@ mod tests {
 
         assert_eq!(decoded.test_run_id, "run-123");
         assert_eq!(decoded.session.relay.host, "relay.example.test");
-        assert_eq!(decoded.session.transport, TransportChoice::Tcp);
+        assert_eq!(decoded.session.transport, TransportChoice::Udp);
+        assert!(decoded.session.udp_fec.enabled);
     }
 
     #[test]
@@ -706,20 +639,5 @@ mod tests {
             error,
             InternalTestReportError::InvalidShareCodePrefix
         ));
-    }
-
-    #[test]
-    fn parses_http_upload_endpoint() {
-        let endpoint = HttpEndpoint::parse("http://upload.example.test:30080/upload").unwrap();
-
-        assert_eq!(
-            endpoint,
-            HttpEndpoint {
-                host: "upload.example.test".to_owned(),
-                host_header: "upload.example.test:30080".to_owned(),
-                port: 30080,
-                path: "/upload".to_owned(),
-            }
-        );
     }
 }

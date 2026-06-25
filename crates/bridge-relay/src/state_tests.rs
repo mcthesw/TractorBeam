@@ -3,7 +3,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use basement_bridge_core::protocol::ControlMessage;
+use basement_bridge_core::{
+    protocol::{ControlMessage, UdpFecControl},
+    udp_fec::UdpFecProfileName,
+};
 
 use super::*;
 use crate::incident::{MISSING_TARGET_INITIAL_LOGS, MISSING_TARGET_LOG_INTERVAL};
@@ -43,17 +46,19 @@ fn join_peer(
         room.to_owned(),
         steam_id64.to_owned(),
         None,
+        None,
         now,
     ));
     assert!(matches!(
-        state.complete_join(
+        state.complete_join(JoinCompletion {
             peer_id,
-            room.to_owned(),
-            steam_id64.to_owned(),
-            token,
+            room: room.to_owned(),
+            steam_id64: steam_id64.to_owned(),
+            challenge: token,
             transport,
-            now
-        ),
+            udp_fec: None,
+            now,
+        }),
         ControlMessage::Ready { .. }
     ));
 }
@@ -82,6 +87,7 @@ fn rejects_room_names_over_limit() {
         peer(1),
         "abcde".to_owned(),
         "76561198000000001".to_owned(),
+        None,
         None,
         Instant::now(),
     );
@@ -112,6 +118,7 @@ fn rejects_new_rooms_over_limit() {
         "two".to_owned(),
         "76561198000000002".to_owned(),
         None,
+        None,
         now,
     );
 
@@ -140,6 +147,7 @@ fn rejects_new_peers_over_room_limit() {
         peer(2),
         "room".to_owned(),
         "76561198000000002".to_owned(),
+        None,
         None,
         now,
     );
@@ -233,6 +241,89 @@ fn room_summaries_count_peer_transports() {
             udp_peers: 1,
         }]
     );
+}
+
+#[test]
+fn udp_fec_negotiation_stays_under_udp_transport() {
+    let mut state = RelayState::new(RelayConfig::default());
+    let now = Instant::now();
+    let fec = UdpFecControl {
+        profile: UdpFecProfileName::Rs8_2_4ms,
+    };
+    let token = challenge_token(state.challenge_join(
+        peer(1),
+        "room".to_owned(),
+        "76561198000000001".to_owned(),
+        None,
+        Some(fec),
+        now,
+    ));
+    let ready = state.complete_join(JoinCompletion {
+        peer_id: peer(1),
+        room: "room".to_owned(),
+        steam_id64: "76561198000000001".to_owned(),
+        challenge: token,
+        transport: PeerTransport::Udp,
+        udp_fec: None,
+        now,
+    });
+
+    assert!(matches!(
+        ready,
+        ControlMessage::Ready {
+            udp_fec: Some(actual),
+            ..
+        } if actual == fec
+    ));
+
+    join_peer(
+        &mut state,
+        peer(2),
+        "room",
+        "76561198000000002",
+        PeerTransport::Tcp,
+        now,
+    );
+
+    assert_eq!(
+        state.room_summaries(),
+        vec![RoomSummary {
+            name: "room".to_owned(),
+            peers: 2,
+            tcp_peers: 1,
+            udp_peers: 1,
+        }]
+    );
+}
+
+#[test]
+fn tcp_join_ignores_udp_fec_request() {
+    let mut state = RelayState::new(RelayConfig::default());
+    let now = Instant::now();
+    let fec = Some(UdpFecControl {
+        profile: UdpFecProfileName::Rs8_2_4ms,
+    });
+    let token = challenge_token(state.challenge_join(
+        peer(1),
+        "room".to_owned(),
+        "76561198000000001".to_owned(),
+        None,
+        fec,
+        now,
+    ));
+
+    assert!(matches!(
+        state.complete_join(JoinCompletion {
+            peer_id: peer(1),
+            room: "room".to_owned(),
+            steam_id64: "76561198000000001".to_owned(),
+            challenge: token,
+            transport: PeerTransport::Tcp,
+            udp_fec: fec,
+            now,
+        }),
+        ControlMessage::Ready { udp_fec: None, .. }
+    ));
 }
 
 #[test]

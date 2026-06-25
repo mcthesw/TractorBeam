@@ -252,6 +252,7 @@ impl ProbePeer {
             steam_id64: steam_id64.to_owned(),
             display_name: display_name.to_owned(),
             session_health: super::session_config::SessionHealthConfig::default(),
+            udp_fec: Default::default(),
             #[cfg(feature = "internal-test")]
             test_run_id: None,
         };
@@ -590,7 +591,10 @@ mod tests {
                 peers.insert(steam_id64, address);
                 (
                     MessageType::JoinReady,
-                    ControlMessage::Ready { peer_count: 1 },
+                    ControlMessage::Ready {
+                        peer_count: 1,
+                        udp_fec: None,
+                    },
                 )
             }
             _ => return,

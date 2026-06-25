@@ -1,6 +1,13 @@
-use std::{io, net::SocketAddr, time::Duration};
+use std::{
+    io,
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
 
-use basement_bridge_core::protocol::{ControlMessage, Envelope, GamePacket, MessageType};
+use basement_bridge_core::{
+    protocol::{ControlMessage, Envelope, GamePacket, MessageType, UdpFecControl},
+    udp_fec::{UdpFecDecoder, UdpFecEncoder, UdpFecProfile, UdpFecProfileName},
+};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use tokio::{
@@ -53,6 +60,117 @@ async fn forwards_between_udp_and_tcp_peers() {
     join_peer(&mut peer_c, "room", "76561198000000103").await;
 
     assert_forwards_to_target_only(&mut peer_a, &mut peer_b, &mut peer_c).await;
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn forwards_plain_udp_data_to_udp_fec_peer() {
+    let (server, udp_address, _) = spawn_test_relay(false).await;
+    let mut peer_a = TestPeer::udp(udp_address).await;
+    let mut peer_b = TestPeer::udp(udp_address).await;
+    join_peer(&mut peer_a, "room", "76561198000000101").await;
+    join_peer_with_udp_fec(&mut peer_b, "room", "76561198000000102").await;
+
+    let payload = Bytes::from(vec![7; 128]);
+    send_game(
+        &mut peer_a,
+        "76561198000000101",
+        76_561_198_000_000_102,
+        payload.clone(),
+    )
+    .await;
+
+    let profile = UdpFecProfile::for_name(UdpFecProfileName::Rs8_2_4ms);
+    let mut decoder = UdpFecDecoder::new(profile);
+    let game = recv_fec_game(&mut peer_b, &mut decoder).await;
+    assert_eq!(game.from_steam_id64, "76561198000000101");
+    assert_eq!(game.to_steam_id64, 76_561_198_000_000_102);
+    assert_eq!(game.payload, payload);
+    assert_eq!(decoder.snapshot().original_packets, 1);
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn forwards_udp_fec_data_to_plain_udp_peer() {
+    let (server, udp_address, _) = spawn_test_relay(false).await;
+    let mut peer_a = TestPeer::udp(udp_address).await;
+    let mut peer_b = TestPeer::udp(udp_address).await;
+    join_peer_with_udp_fec(&mut peer_a, "room", "76561198000000101").await;
+    join_peer(&mut peer_b, "room", "76561198000000102").await;
+
+    let payload = Bytes::from(vec![8; 128]);
+    let profile = UdpFecProfile::for_name(UdpFecProfileName::Rs8_2_4ms);
+    let mut encoder = UdpFecEncoder::new(profile);
+    send_fec_game(
+        &mut peer_a,
+        &mut encoder,
+        "76561198000000101",
+        76_561_198_000_000_102,
+        payload.clone(),
+    )
+    .await;
+
+    let game = recv_game(&mut peer_b).await;
+    assert_eq!(game.from_steam_id64, "76561198000000101");
+    assert_eq!(game.to_steam_id64, 76_561_198_000_000_102);
+    assert_eq!(game.payload, payload);
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn forwards_udp_fec_data_to_tcp_peer() {
+    let (server, udp_address, tcp_address) = spawn_test_relay(true).await;
+    let mut peer_a = TestPeer::udp(udp_address).await;
+    let mut peer_b = TestPeer::tcp(tcp_address.unwrap()).await;
+    join_peer_with_udp_fec(&mut peer_a, "room", "76561198000000101").await;
+    join_peer(&mut peer_b, "room", "76561198000000102").await;
+
+    let payload = Bytes::from(vec![9; 128]);
+    let profile = UdpFecProfile::for_name(UdpFecProfileName::Rs8_2_4ms);
+    let mut encoder = UdpFecEncoder::new(profile);
+    send_fec_game(
+        &mut peer_a,
+        &mut encoder,
+        "76561198000000101",
+        76_561_198_000_000_102,
+        payload.clone(),
+    )
+    .await;
+
+    let game = recv_game(&mut peer_b).await;
+    assert_eq!(game.from_steam_id64, "76561198000000101");
+    assert_eq!(game.to_steam_id64, 76_561_198_000_000_102);
+    assert_eq!(game.payload, payload);
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn forwards_tcp_data_to_udp_fec_peer() {
+    let (server, udp_address, tcp_address) = spawn_test_relay(true).await;
+    let mut peer_a = TestPeer::tcp(tcp_address.unwrap()).await;
+    let mut peer_b = TestPeer::udp(udp_address).await;
+    join_peer(&mut peer_a, "room", "76561198000000101").await;
+    join_peer_with_udp_fec(&mut peer_b, "room", "76561198000000102").await;
+
+    let payload = Bytes::from(vec![10; 128]);
+    send_game(
+        &mut peer_a,
+        "76561198000000101",
+        76_561_198_000_000_102,
+        payload.clone(),
+    )
+    .await;
+
+    let profile = UdpFecProfile::for_name(UdpFecProfileName::Rs8_2_4ms);
+    let mut decoder = UdpFecDecoder::new(profile);
+    let game = recv_fec_game(&mut peer_b, &mut decoder).await;
+    assert_eq!(game.from_steam_id64, "76561198000000101");
+    assert_eq!(game.to_steam_id64, 76_561_198_000_000_102);
+    assert_eq!(game.payload, payload);
 
     server.abort();
 }
@@ -260,12 +378,42 @@ async fn join_peer(peer: &mut TestPeer, room: &str, steam_id64: &str) {
     ));
 }
 
+async fn join_peer_with_udp_fec(peer: &mut TestPeer, room: &str, steam_id64: &str) {
+    let fec = Some(UdpFecControl {
+        profile: UdpFecProfileName::Rs8_2_4ms,
+    });
+    send_join_with_udp_fec(peer, room, steam_id64, None, fec).await;
+    let challenge = match recv_control(peer).await {
+        ControlMessage::Challenge { token } => token,
+        other => panic!("expected challenge, got {other:?}"),
+    };
+    send_join_with_udp_fec(peer, room, steam_id64, Some(challenge), fec).await;
+    assert!(matches!(
+        recv_control(peer).await,
+        ControlMessage::Ready {
+            udp_fec: Some(_),
+            ..
+        }
+    ));
+}
+
 async fn send_join(peer: &mut TestPeer, room: &str, steam_id64: &str, challenge: Option<String>) {
+    send_join_with_udp_fec(peer, room, steam_id64, challenge, None).await;
+}
+
+async fn send_join_with_udp_fec(
+    peer: &mut TestPeer,
+    room: &str,
+    steam_id64: &str,
+    challenge: Option<String>,
+    udp_fec: Option<UdpFecControl>,
+) {
     let message = ControlMessage::Join {
         room: room.to_owned(),
         steam_id64: steam_id64.to_owned(),
         display_name: None,
         challenge,
+        udp_fec,
     };
     send_control(peer, MessageType::Join, &message).await;
 }
@@ -283,6 +431,25 @@ async fn recv_control(peer: &mut TestPeer) -> ControlMessage {
 }
 
 async fn send_game(peer: &mut TestPeer, from_steam_id64: &str, to_steam_id64: u64, payload: Bytes) {
+    peer.send_raw(game_datagram(from_steam_id64, to_steam_id64, payload))
+        .await;
+}
+
+async fn send_fec_game(
+    peer: &mut TestPeer,
+    encoder: &mut UdpFecEncoder,
+    from_steam_id64: &str,
+    to_steam_id64: u64,
+    payload: Bytes,
+) {
+    let raw = game_datagram(from_steam_id64, to_steam_id64, payload);
+    let frames = encoder.encode_or_passthrough(raw, Instant::now()).unwrap();
+    for frame in frames {
+        peer.send_raw(frame).await;
+    }
+}
+
+fn game_datagram(from_steam_id64: &str, to_steam_id64: u64, payload: Bytes) -> Bytes {
     let game = GamePacket {
         from_steam_id64: from_steam_id64.to_owned(),
         to_steam_id64,
@@ -292,8 +459,7 @@ async fn send_game(peer: &mut TestPeer, from_steam_id64: &str, to_steam_id64: u6
         payload,
     };
     let payload = game.encode().unwrap();
-    let bytes = Envelope::new(MessageType::Data, payload).encode().unwrap();
-    peer.send_raw(bytes).await;
+    Envelope::new(MessageType::Data, payload).encode().unwrap()
 }
 
 async fn recv_game(peer: &mut TestPeer) -> GamePacket {
@@ -301,4 +467,17 @@ async fn recv_game(peer: &mut TestPeer) -> GamePacket {
     let envelope = Envelope::decode(raw).unwrap();
     assert_eq!(envelope.message_type, MessageType::Data);
     GamePacket::decode(&envelope.payload).unwrap()
+}
+
+async fn recv_fec_game(peer: &mut TestPeer, decoder: &mut UdpFecDecoder) -> GamePacket {
+    loop {
+        let raw = peer.recv_raw().await;
+        let datagrams = decoder.decode(raw, std::time::Instant::now()).unwrap();
+        for datagram in datagrams {
+            let envelope = Envelope::decode(datagram).unwrap();
+            if envelope.message_type == MessageType::Data {
+                return GamePacket::decode(&envelope.payload).unwrap();
+            }
+        }
+    }
 }

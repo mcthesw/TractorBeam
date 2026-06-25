@@ -1,12 +1,11 @@
 use basement_bridge_core::{
     ClientError, ConfigError, SessionMode, SessionQuality, SessionStatus, SessionStopReason,
-    TransportChoice,
 };
 use eframe::egui;
 
 use crate::i18n::{Language, Text, text};
 
-use super::BridgeApp;
+use super::{BridgeApp, ConnectionProfile};
 
 impl BridgeApp {
     pub(super) fn start_error_dialog(&mut self, context: &egui::Context) {
@@ -61,9 +60,12 @@ impl BridgeApp {
             ui.separator();
             ui.label(format!(
                 "{}: {}",
-                self.t(Text::Transport),
-                transport_label(self.language, self.transport)
+                self.t(Text::ConnectionProfile),
+                connection_profile_label(self.language, self.current_connection_profile())
             ));
+            if self.connection_profile_pending() {
+                ui.monospace(self.t(Text::ReconnectRequired));
+            }
             ui.separator();
             ui.monospace(format!(
                 "{} {}",
@@ -125,6 +127,17 @@ fn hook_preflight_error_label(language: Language) -> &'static str {
     }
 }
 
+pub(super) fn connection_profile_label(
+    language: Language,
+    profile: ConnectionProfile,
+) -> &'static str {
+    match profile {
+        ConnectionProfile::Tcp => text(language, Text::Tcp),
+        ConnectionProfile::Udp => text(language, Text::Udp),
+        ConnectionProfile::UdpFec => text(language, Text::UdpFecExperimental),
+    }
+}
+
 pub(super) fn status_label(language: Language, status: SessionStatus) -> &'static str {
     match status {
         SessionStatus::Idle => text(language, Text::Idle),
@@ -137,13 +150,6 @@ pub(super) fn mode_label(language: Language, mode: SessionMode) -> &'static str 
         SessionMode::Official => text(language, Text::Official),
         SessionMode::Fallback => text(language, Text::Fallback),
         SessionMode::Pure => text(language, Text::Pure),
-    }
-}
-
-pub(super) fn transport_label(language: Language, transport: TransportChoice) -> &'static str {
-    match transport {
-        TransportChoice::Udp => text(language, Text::Udp),
-        TransportChoice::Tcp => text(language, Text::Tcp),
     }
 }
 

@@ -1,6 +1,8 @@
 mod config;
+mod egress;
 mod incident;
 mod metrics;
+mod peer_registry;
 mod server;
 mod state;
 

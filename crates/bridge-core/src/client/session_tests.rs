@@ -21,18 +21,10 @@ static SESSION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn session_reports_malformed_hook_packet_and_stops() {
     let _guard = SESSION_TEST_LOCK.lock().unwrap();
     let relay = TestRelay::spawn();
-    let handle = spawn_bridge_worker(SessionConfig {
-        relay: super::super::RelayEndpoint::new("127.0.0.1", relay.address.port()),
-        relay_name: None,
-        transport: super::super::TransportChoice::Udp,
-        room: "test-room".to_owned(),
-        mode: super::super::SessionMode::Pure,
-        steam_id64: "76561198000000001".to_owned(),
-        display_name: "Test".to_owned(),
-        session_health: super::super::SessionHealthConfig::default(),
-        #[cfg(feature = "internal-test")]
-        test_run_id: None,
-    })
+    let handle = spawn_bridge_worker(
+        test_session_config(relay.address.port()),
+        test_native_hook_paths(),
+    )
     .unwrap();
 
     let sender = StdUdpSocket::bind("127.0.0.1:0").unwrap();
@@ -55,18 +47,10 @@ fn session_start_reports_relay_join_timeout() {
     let _guard = SESSION_TEST_LOCK.lock().unwrap();
     let relay = SilentRelay::spawn();
 
-    let error = spawn_bridge_worker(SessionConfig {
-        relay: super::super::RelayEndpoint::new("127.0.0.1", relay.address.port()),
-        relay_name: None,
-        transport: super::super::TransportChoice::Udp,
-        room: "test-room".to_owned(),
-        mode: super::super::SessionMode::Pure,
-        steam_id64: "76561198000000001".to_owned(),
-        display_name: "Test".to_owned(),
-        session_health: super::super::SessionHealthConfig::default(),
-        #[cfg(feature = "internal-test")]
-        test_run_id: None,
-    })
+    let error = spawn_bridge_worker(
+        test_session_config(relay.address.port()),
+        test_native_hook_paths(),
+    )
     .unwrap_err();
 
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
@@ -77,23 +61,26 @@ fn session_start_reports_relay_join_timeout() {
 fn runtime_rtt_timeout_is_nonfatal() {
     let _guard = SESSION_TEST_LOCK.lock().unwrap();
     let relay = TestRelay::spawn();
-    let handle = spawn_bridge_worker(SessionConfig {
-        relay: super::super::RelayEndpoint::new("127.0.0.1", relay.address.port()),
-        relay_name: None,
-        transport: super::super::TransportChoice::Udp,
-        room: "test-room".to_owned(),
-        mode: super::super::SessionMode::Pure,
-        steam_id64: "76561198000000001".to_owned(),
-        display_name: "Test".to_owned(),
-        session_health: super::super::SessionHealthConfig {
-            snapshot_interval_seconds: 1,
-            runtime_rtt_interval_seconds: 1,
-            runtime_rtt_timeout_seconds: 1,
-            ..super::super::SessionHealthConfig::default()
+    let handle = spawn_bridge_worker(
+        SessionConfig {
+            relay: super::super::RelayEndpoint::new("127.0.0.1", relay.address.port()),
+            relay_name: None,
+            transport: super::super::TransportChoice::Udp,
+            room: "test-room".to_owned(),
+            mode: super::super::SessionMode::Pure,
+            steam_id64: "76561198000000001".to_owned(),
+            display_name: "Test".to_owned(),
+            session_health: super::super::SessionHealthConfig {
+                snapshot_interval_seconds: 1,
+                runtime_rtt_interval_seconds: 1,
+                runtime_rtt_timeout_seconds: 1,
+                ..super::super::SessionHealthConfig::default()
+            },
+            #[cfg(feature = "internal-test")]
+            test_run_id: None,
         },
-        #[cfg(feature = "internal-test")]
-        test_run_id: None,
-    })
+        test_native_hook_paths(),
+    )
     .unwrap();
 
     let event = recv_matching(&handle.events, |event| {
@@ -106,6 +93,21 @@ fn runtime_rtt_timeout_is_nonfatal() {
     assert!(event.is_some());
     handle.stop();
     relay.stop();
+}
+
+fn test_session_config(port: u16) -> SessionConfig {
+    SessionConfig {
+        relay: super::super::RelayEndpoint::new("127.0.0.1", port),
+        relay_name: None,
+        transport: super::super::TransportChoice::Udp,
+        room: "test-room".to_owned(),
+        mode: super::super::SessionMode::Pure,
+        steam_id64: "76561198000000001".to_owned(),
+        display_name: "Test".to_owned(),
+        session_health: super::super::SessionHealthConfig::default(),
+        #[cfg(feature = "internal-test")]
+        test_run_id: None,
+    }
 }
 
 fn recv_matching(

@@ -1,5 +1,6 @@
 use std::{
     fmt::{self, Display},
+    path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -11,6 +12,10 @@ use super::{
 };
 
 pub(super) const MAX_IN_MEMORY_LOGS: usize = 2_000;
+const MAX_CLIENT_INCIDENT_SNAPSHOTS: usize = 16;
+const INCIDENT_REPEAT_WINDOW_SECONDS: u64 = 60;
+const DATA_PLANE_STALL_MIN_ELAPSED_SECONDS: u64 = 15;
+const DATA_PLANE_STALL_MIN_PACKETS: u64 = 20;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Counters {
@@ -36,6 +41,138 @@ pub enum SessionStatus {
     #[default]
     Idle,
     Running,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SessionStopReason {
+    UserStopped,
+    GameExited { process_name: String, pid: u32 },
+    RuntimeEnded { message: String },
+}
+
+impl Display for SessionStopReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UserStopped => formatter.write_str("user_stopped"),
+            Self::GameExited { process_name, pid } => {
+                write!(formatter, "game_exited process={process_name} pid={pid}")
+            }
+            Self::RuntimeEnded { message } => write!(formatter, "runtime_ended message={message}"),
+        }
+    }
+}
+
+impl RuntimeState {
+    #[must_use]
+    pub fn hook_log_path_written(&self) -> Option<PathBuf> {
+        self.hook_config_path_written
+            .as_ref()
+            .map(|path| path.with_file_name(crate::diagnostics::BRIDGE_HOOK_LOG))
+    }
+
+    pub(super) fn record_session_health_incident(
+        &mut self,
+        health: &SessionHealthSnapshot,
+    ) -> Option<ClientIncidentSnapshot> {
+        let incident = ClientIncidentSnapshot::from_health(unix_seconds(), health)?;
+        let recently_recorded = self.client_incidents.iter().rev().any(|previous| {
+            previous.kind == incident.kind
+                && incident.timestamp.saturating_sub(previous.timestamp)
+                    < INCIDENT_REPEAT_WINDOW_SECONDS
+        });
+        if recently_recorded {
+            return None;
+        }
+        self.client_incidents.push(incident.clone());
+        let overflow = self
+            .client_incidents
+            .len()
+            .saturating_sub(MAX_CLIENT_INCIDENT_SNAPSHOTS);
+        if overflow > 0 {
+            self.client_incidents.drain(..overflow);
+        }
+        Some(incident)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ClientIncidentKind {
+    DataPlaneStall,
+    QueueDrop,
+    RuntimeRttTimeout,
+    SequenceGap,
+}
+
+impl Display for ClientIncidentKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DataPlaneStall => formatter.write_str("data_plane_stall"),
+            Self::QueueDrop => formatter.write_str("queue_drop"),
+            Self::RuntimeRttTimeout => formatter.write_str("runtime_rtt_timeout"),
+            Self::SequenceGap => formatter.write_str("sequence_gap"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClientIncidentSnapshot {
+    pub timestamp: u64,
+    pub kind: ClientIncidentKind,
+    pub summary: String,
+    pub health: SessionHealthSnapshot,
+}
+
+impl ClientIncidentSnapshot {
+    fn from_health(timestamp: u64, health: &SessionHealthSnapshot) -> Option<Self> {
+        let kind = if health.queues.total_dropped() > 0 {
+            ClientIncidentKind::QueueDrop
+        } else if health.runtime_rtt.timed_out > 0 {
+            ClientIncidentKind::RuntimeRttTimeout
+        } else if health.source_sequence.gaps > 0 {
+            ClientIncidentKind::SequenceGap
+        } else if data_plane_stalled(health) {
+            ClientIncidentKind::DataPlaneStall
+        } else {
+            return None;
+        };
+        Some(Self {
+            timestamp,
+            kind,
+            summary: incident_summary(kind, health),
+            health: health.clone(),
+        })
+    }
+}
+
+fn data_plane_stalled(health: &SessionHealthSnapshot) -> bool {
+    health.elapsed_seconds >= DATA_PLANE_STALL_MIN_ELAPSED_SECONDS
+        && ((health.hook_in_recv.packets >= DATA_PLANE_STALL_MIN_PACKETS
+            && health.relay_recv.packets == 0)
+            || (health.relay_recv.packets >= DATA_PLANE_STALL_MIN_PACKETS
+                && health.hook_out_send_duration.count == 0))
+}
+
+fn incident_summary(kind: ClientIncidentKind, health: &SessionHealthSnapshot) -> String {
+    let base = format!(
+        "elapsed={}s hook_in={} relay_recv={} hook_out_sends={} rtt_sent={} rtt_recv={} rtt_timeout={} queue_drops={} seq_gaps={}",
+        health.elapsed_seconds,
+        health.hook_in_recv.packets,
+        health.relay_recv.packets,
+        health.hook_out_send_duration.count,
+        health.runtime_rtt.sent,
+        health.runtime_rtt.received,
+        health.runtime_rtt.timed_out,
+        health.queues.total_dropped(),
+        health.source_sequence.gaps,
+    );
+    match kind {
+        ClientIncidentKind::DataPlaneStall => {
+            format!("{base}; possible missing target or local data-plane stall")
+        }
+        ClientIncidentKind::QueueDrop => format!("{base}; local queue dropped packets"),
+        ClientIncidentKind::RuntimeRttTimeout => format!("{base}; runtime RTT timed out"),
+        ClientIncidentKind::SequenceGap => format!("{base}; inbound sequence gaps observed"),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -79,6 +216,9 @@ pub struct RuntimeState {
     pub latest_hook_receive_probe_error: Option<String>,
     pub latest_session_health: Option<SessionHealthSnapshot>,
     pub latest_session_health_summary: Option<SessionHealthSnapshot>,
+    pub hook_config_path_written: Option<PathBuf>,
+    pub last_stop_reason: Option<SessionStopReason>,
+    pub client_incidents: Vec<ClientIncidentSnapshot>,
 }
 
 #[derive(Debug)]
@@ -89,6 +229,7 @@ pub(super) enum RuntimeEvent {
     HookReceiveProbeFinished(Result<HookReceiveProbeReport, String>),
     SessionHealthSnapshot(Box<SessionHealthSnapshot>),
     SessionHealthSummary(Box<SessionHealthSnapshot>),
+    SessionEnded(SessionStopReason),
     Stopped,
 }
 
@@ -128,4 +269,71 @@ pub(super) fn unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::session_health::{PacketStageSnapshot, QueueHealthSnapshot};
+
+    #[test]
+    fn startup_data_plane_stall_is_not_recorded() {
+        let mut state = RuntimeState::default();
+        let health = SessionHealthSnapshot {
+            elapsed_seconds: DATA_PLANE_STALL_MIN_ELAPSED_SECONDS - 1,
+            hook_in_recv: PacketStageSnapshot {
+                packets: DATA_PLANE_STALL_MIN_PACKETS,
+                ..PacketStageSnapshot::default()
+            },
+            ..SessionHealthSnapshot::default()
+        };
+
+        assert!(state.record_session_health_incident(&health).is_none());
+        assert!(state.client_incidents.is_empty());
+    }
+
+    #[test]
+    fn records_and_throttles_data_plane_stall_incidents() {
+        let mut state = RuntimeState::default();
+        let health = SessionHealthSnapshot {
+            elapsed_seconds: DATA_PLANE_STALL_MIN_ELAPSED_SECONDS,
+            hook_in_recv: PacketStageSnapshot {
+                packets: DATA_PLANE_STALL_MIN_PACKETS,
+                ..PacketStageSnapshot::default()
+            },
+            ..SessionHealthSnapshot::default()
+        };
+
+        let incident = state
+            .record_session_health_incident(&health)
+            .expect("data-plane stall should be recorded");
+
+        assert_eq!(incident.kind, ClientIncidentKind::DataPlaneStall);
+        assert!(incident.summary.contains("possible missing target"));
+        assert!(state.record_session_health_incident(&health).is_none());
+        assert_eq!(state.client_incidents.len(), 1);
+    }
+
+    #[test]
+    fn queue_drop_incident_takes_priority() {
+        let mut state = RuntimeState::default();
+        let health = SessionHealthSnapshot {
+            elapsed_seconds: DATA_PLANE_STALL_MIN_ELAPSED_SECONDS,
+            hook_in_recv: PacketStageSnapshot {
+                packets: DATA_PLANE_STALL_MIN_PACKETS,
+                ..PacketStageSnapshot::default()
+            },
+            queues: QueueHealthSnapshot {
+                outbound_dropped: 1,
+                ..QueueHealthSnapshot::default()
+            },
+            ..SessionHealthSnapshot::default()
+        };
+
+        let incident = state
+            .record_session_health_incident(&health)
+            .expect("queue drop should be recorded");
+
+        assert_eq!(incident.kind, ClientIncidentKind::QueueDrop);
+    }
 }

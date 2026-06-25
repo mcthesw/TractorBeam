@@ -7,6 +7,12 @@ use std::{
 use serde::Serialize;
 
 const LATENCY_SAMPLE_CAPACITY: usize = 2_048;
+const ACTIVE_TRAFFIC_STARTUP_GRACE_SECONDS: u64 = 15;
+const ACTIVE_TRAFFIC_MIN_PACKETS: u64 = 20;
+const WATCH_SEQUENCE_GAPS: u64 = 1;
+const POOR_SEQUENCE_GAPS: u64 = 10;
+const WATCH_DUPLICATE_OR_REORDERED: u64 = 10;
+const RTT_MIN_SAMPLES_FOR_QUALITY: u64 = 20;
 const WATCH_RTT_P95_MS: u64 = 120;
 const POOR_RTT_P95_MS: u64 = 250;
 
@@ -217,7 +223,9 @@ impl SessionHealth {
         let runtime_rtt = self.runtime_rtt.snapshot(self.runtime_rtt_enabled);
         let relay_send_duration = self.relay_send_duration.summary();
         let hook_out_send_duration = self.hook_out_send_duration.summary();
+        let elapsed_seconds = now.duration_since(self.start).as_secs();
         let quality = classify_quality(
+            elapsed_seconds,
             hook_in_recv,
             relay_recv,
             queues,
@@ -227,7 +235,7 @@ impl SessionHealth {
         );
 
         SessionHealthSnapshot {
-            elapsed_seconds: now.duration_since(self.start).as_secs(),
+            elapsed_seconds,
             quality,
             hook_in_recv,
             relay_recv,
@@ -465,6 +473,7 @@ fn percentile(sorted_samples: &[u64], percentile: usize) -> Option<u64> {
 }
 
 fn classify_quality(
+    elapsed_seconds: u64,
     hook_in_recv: PacketStageSnapshot,
     relay_recv: PacketStageSnapshot,
     queues: QueueHealthSnapshot,
@@ -476,25 +485,36 @@ fn classify_quality(
     if !has_evidence {
         return SessionQuality::Unavailable;
     }
-    if queues.total_dropped() > 0
-        || source_sequence.gaps > 0
+    let active_traffic = elapsed_seconds >= ACTIVE_TRAFFIC_STARTUP_GRACE_SECONDS
+        && hook_in_recv.packets >= ACTIVE_TRAFFIC_MIN_PACKETS
+        && relay_recv.packets >= ACTIVE_TRAFFIC_MIN_PACKETS;
+
+    if queues.total_dropped() > 0 {
+        return SessionQuality::Poor;
+    }
+
+    if !active_traffic {
+        return SessionQuality::Unavailable;
+    }
+
+    if runtime_rtt.timed_out > 0
+        || runtime_rtt.latency.p95_ms.is_some_and(|p95| {
+            p95 >= POOR_RTT_P95_MS && runtime_rtt.latency.count >= RTT_MIN_SAMPLES_FOR_QUALITY
+        })
+        || source_sequence.gaps >= POOR_SEQUENCE_GAPS
         || relay_recv.gap.over_1000_ms > 0
         || hook_out_send_duration.over_1000_ms > 0
-        || runtime_rtt.timed_out > 0
-        || runtime_rtt
-            .latency
-            .p95_ms
-            .is_some_and(|p95| p95 >= POOR_RTT_P95_MS)
     {
         return SessionQuality::Poor;
     }
-    if source_sequence.duplicate_or_reordered > 0
+
+    if source_sequence.gaps >= WATCH_SEQUENCE_GAPS
+        || source_sequence.duplicate_or_reordered >= WATCH_DUPLICATE_OR_REORDERED
         || relay_recv.gap.over_500_ms > 0
         || hook_out_send_duration.over_500_ms > 0
-        || runtime_rtt
-            .latency
-            .p95_ms
-            .is_some_and(|p95| p95 >= WATCH_RTT_P95_MS)
+        || runtime_rtt.latency.p95_ms.is_some_and(|p95| {
+            p95 >= WATCH_RTT_P95_MS && runtime_rtt.latency.count >= RTT_MIN_SAMPLES_FOR_QUALITY
+        })
     {
         return SessionQuality::Watch;
     }
@@ -568,15 +588,103 @@ mod tests {
     fn runtime_rtt_times_out_without_marking_session_failed() {
         let start = Instant::now();
         let mut health = SessionHealth::new(true, Duration::from_millis(10), start);
+        let active = start + Duration::from_secs(ACTIVE_TRAFFIC_STARTUP_GRACE_SECONDS);
 
-        let id = health.next_health_ping(start).unwrap();
-        health.snapshot(start + Duration::from_millis(20));
-        health.observe_health_pong(id, start + Duration::from_millis(30));
-        let snapshot = health.snapshot(start + Duration::from_millis(30));
+        for _ in 0..ACTIVE_TRAFFIC_MIN_PACKETS {
+            health.observe_hook_in_recv(1, active);
+            health.observe_relay_recv(1, active);
+        }
+
+        let id = health.next_health_ping(active).unwrap();
+        health.snapshot(active + Duration::from_millis(20));
+        health.observe_health_pong(id, active + Duration::from_millis(30));
+        let snapshot = health.snapshot(active + Duration::from_millis(30));
 
         assert_eq!(snapshot.runtime_rtt.sent, 1);
         assert_eq!(snapshot.runtime_rtt.received, 0);
         assert_eq!(snapshot.runtime_rtt.timed_out, 1);
         assert_eq!(snapshot.quality, SessionQuality::Poor);
+    }
+
+    #[test]
+    fn startup_sequence_gap_does_not_mark_quality_poor() {
+        let quality = classify_quality(
+            5,
+            PacketStageSnapshot {
+                packets: 1,
+                ..PacketStageSnapshot::default()
+            },
+            PacketStageSnapshot {
+                packets: 1,
+                ..PacketStageSnapshot::default()
+            },
+            QueueHealthSnapshot::default(),
+            SequenceHealthSnapshot {
+                gaps: 1,
+                ..SequenceHealthSnapshot::default()
+            },
+            RuntimeRttSnapshot::default(),
+            LatencySummary::default(),
+        );
+
+        assert_eq!(quality, SessionQuality::Unavailable);
+    }
+
+    #[test]
+    fn startup_runtime_rtt_timeout_does_not_mark_quality_poor() {
+        let quality = classify_quality(
+            5,
+            PacketStageSnapshot::default(),
+            PacketStageSnapshot::default(),
+            QueueHealthSnapshot::default(),
+            SequenceHealthSnapshot::default(),
+            RuntimeRttSnapshot {
+                enabled: true,
+                sent: 1,
+                timed_out: 1,
+                ..RuntimeRttSnapshot::default()
+            },
+            LatencySummary::default(),
+        );
+
+        assert_eq!(quality, SessionQuality::Unavailable);
+    }
+
+    #[test]
+    fn active_sequence_gaps_are_thresholded() {
+        let watch = classify_quality(
+            60,
+            active_packets(),
+            active_packets(),
+            QueueHealthSnapshot::default(),
+            SequenceHealthSnapshot {
+                gaps: 1,
+                ..SequenceHealthSnapshot::default()
+            },
+            RuntimeRttSnapshot::default(),
+            LatencySummary::default(),
+        );
+        let poor = classify_quality(
+            60,
+            active_packets(),
+            active_packets(),
+            QueueHealthSnapshot::default(),
+            SequenceHealthSnapshot {
+                gaps: 10,
+                ..SequenceHealthSnapshot::default()
+            },
+            RuntimeRttSnapshot::default(),
+            LatencySummary::default(),
+        );
+
+        assert_eq!(watch, SessionQuality::Watch);
+        assert_eq!(poor, SessionQuality::Poor);
+    }
+
+    fn active_packets() -> PacketStageSnapshot {
+        PacketStageSnapshot {
+            packets: ACTIVE_TRAFFIC_MIN_PACKETS,
+            ..PacketStageSnapshot::default()
+        }
     }
 }

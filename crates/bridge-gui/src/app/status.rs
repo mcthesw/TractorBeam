@@ -1,5 +1,6 @@
 use basement_bridge_core::{
-    ClientError, ConfigError, SessionMode, SessionQuality, SessionStatus, TransportChoice,
+    ClientError, ConfigError, SessionMode, SessionQuality, SessionStatus, SessionStopReason,
+    TransportChoice,
 };
 use eframe::egui;
 
@@ -46,6 +47,11 @@ impl BridgeApp {
                 self.t(Text::Status),
                 status_label(self.language, state.status)
             ));
+            if state.status == SessionStatus::Idle
+                && let Some(reason) = &state.last_stop_reason
+            {
+                ui.monospace(stop_reason_label(self.language, reason));
+            }
             ui.separator();
             ui.label(format!(
                 "{}: {}",
@@ -85,11 +91,37 @@ impl BridgeApp {
                     ui.monospace(format!("RTT p95 {p95} ms"));
                 }
             }
+            if let Some(error) = &state.latest_hook_receive_probe_error {
+                ui.separator();
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    hook_preflight_error_label(self.language),
+                )
+                .on_hover_text(error);
+            }
             if let Some(error) = &self.last_error {
                 ui.separator();
                 ui.colored_label(ui.visuals().error_fg_color, error);
             }
         });
+    }
+}
+
+fn stop_reason_label(language: Language, reason: &SessionStopReason) -> String {
+    match (language, reason) {
+        (Language::Chinese, SessionStopReason::UserStopped) => "用户停止".to_owned(),
+        (Language::Chinese, SessionStopReason::GameExited { .. }) => "游戏已关闭".to_owned(),
+        (Language::Chinese, SessionStopReason::RuntimeEnded { .. }) => "会话已结束".to_owned(),
+        (_, SessionStopReason::UserStopped) => "Stopped".to_owned(),
+        (_, SessionStopReason::GameExited { .. }) => "Game closed".to_owned(),
+        (_, SessionStopReason::RuntimeEnded { .. }) => "Session ended".to_owned(),
+    }
+}
+
+fn hook_preflight_error_label(language: Language) -> &'static str {
+    match language {
+        Language::Chinese => "Hook 预检异常",
+        Language::English => "Hook preflight issue",
     }
 }
 

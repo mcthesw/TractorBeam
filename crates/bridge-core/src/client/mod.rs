@@ -3,6 +3,7 @@
 mod config;
 mod diagnostics;
 mod hook_config;
+mod hook_lifecycle;
 #[cfg(feature = "internal-test")]
 mod internal_test;
 mod logging;
@@ -42,6 +43,9 @@ pub use session_config::{
     TransportChoice,
 };
 pub use session_health::{SessionHealthSnapshot, SessionHealthSummary, SessionQuality};
-pub use state::{Counters, LogEntry, LogLevel, RuntimeState, SessionStatus};
+pub use state::{
+    ClientIncidentKind, ClientIncidentSnapshot, Counters, LogEntry, LogLevel, RuntimeState,
+    SessionStatus, SessionStopReason,
+};
 
 pub const PRODUCT_NAME: &str = "Basement Bridge";

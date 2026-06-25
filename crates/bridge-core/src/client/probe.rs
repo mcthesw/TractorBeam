@@ -6,6 +6,7 @@ use std::{
     future::Future,
     io,
     net::UdpSocket,
+    path::{Path, PathBuf},
     sync::mpsc::{self, Receiver},
     thread::{self, JoinHandle},
     time::Duration,
@@ -141,7 +142,7 @@ impl BridgeClient {
     }
 
     pub fn run_hook_receive_probe(&mut self) -> io::Result<HookReceiveProbeReport> {
-        let report = run_hook_receive_probe()?;
+        let report = run_hook_receive_probe(self.state.hook_log_path_written())?;
         self.log(LogLevel::Info, report.to_string());
         Ok(report)
     }
@@ -151,9 +152,9 @@ pub(super) fn spawn_readiness_probe(relay: RelayEndpoint) -> io::Result<ProbeHan
     readiness::spawn_readiness_probe(relay)
 }
 
-pub(super) fn spawn_hook_receive_probe() -> ProbeHandle {
+pub(super) fn spawn_hook_receive_probe(hook_log_path: Option<PathBuf>) -> ProbeHandle {
     let (event_tx, events) = mpsc::channel();
-    let worker = thread::spawn(move || match run_hook_receive_probe() {
+    let worker = thread::spawn(move || match run_hook_receive_probe(hook_log_path) {
         Ok(report) => {
             let _ = event_tx.send(log_event(LogLevel::Info, report.to_string()));
             let _ = event_tx.send(RuntimeEvent::HookReceiveProbeFinished(Ok(report)));
@@ -368,11 +369,21 @@ fn block_on_probe<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<
         .block_on(future)
 }
 
-fn run_hook_receive_probe() -> io::Result<HookReceiveProbeReport> {
-    block_on_probe(run_hook_receive_probe_async())
+pub(super) fn run_hook_receive_probe(
+    hook_log_path: Option<PathBuf>,
+) -> io::Result<HookReceiveProbeReport> {
+    let hook_log_path = hook_log_path.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Hook log path is unavailable; start a Native Hook session first",
+        )
+    })?;
+    block_on_probe(run_hook_receive_probe_async(hook_log_path))
 }
 
-async fn run_hook_receive_probe_async() -> io::Result<HookReceiveProbeReport> {
+async fn run_hook_receive_probe_async(
+    hook_log_path: PathBuf,
+) -> io::Result<HookReceiveProbeReport> {
     let peer = hook_probe_peer();
     let payload = Bytes::from(format!("basement-bridge-hook-probe-{peer}"));
     let game = GamePacket {
@@ -397,7 +408,7 @@ async fn run_hook_receive_probe_async() -> io::Result<HookReceiveProbeReport> {
     };
     let probe_result = time::timeout(HOOK_PROBE_TIMEOUT, async {
         loop {
-            update_hook_probe_report(&mut report);
+            update_hook_probe_report(&mut report, &hook_log_path);
             if report.local_in && report.read_hit {
                 return;
             }
@@ -405,7 +416,7 @@ async fn run_hook_receive_probe_async() -> io::Result<HookReceiveProbeReport> {
         }
     })
     .await;
-    update_hook_probe_report(&mut report);
+    update_hook_probe_report(&mut report, &hook_log_path);
     if probe_result.is_err() {
         return Err(io::Error::new(
             io::ErrorKind::TimedOut,
@@ -419,10 +430,8 @@ fn hook_probe_peer() -> u64 {
     4_000_000_000 + (u64::from(std::process::id()) % 1_000) * 100_000 + (unix_seconds() % 100_000)
 }
 
-fn update_hook_probe_report(report: &mut HookReceiveProbeReport) {
-    let path =
-        crate::diagnostics::isaac_online_logs_directory().join(crate::diagnostics::BRIDGE_HOOK_LOG);
-    let Ok(contents) = fs::read_to_string(path) else {
+fn update_hook_probe_report(report: &mut HookReceiveProbeReport, hook_log_path: &Path) {
+    let Ok(contents) = fs::read_to_string(hook_log_path) else {
         return;
     };
     let peer_marker = format!("peer={}", report.peer);

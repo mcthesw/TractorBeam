@@ -11,4 +11,6 @@ pub use paths::{
     NativeHookPaths, injector_args, resolve_native_hook_paths, run_injector,
 };
 pub use platform::inject;
-pub use process::{ISAAC_PROCESS_NAME, IsaacProcess, find_isaac_process, wait_for_isaac};
+pub use process::{
+    ISAAC_PROCESS_NAME, IsaacProcess, find_isaac_process, is_process_running, wait_for_isaac,
+};

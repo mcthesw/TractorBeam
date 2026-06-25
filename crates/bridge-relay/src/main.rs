@@ -1,4 +1,6 @@
 mod config;
+mod incident;
+mod metrics;
 mod server;
 mod state;
 

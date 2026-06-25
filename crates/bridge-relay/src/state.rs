@@ -9,7 +9,10 @@ use basement_bridge_core::protocol::ControlMessage;
 use rand::RngExt as _;
 use tracing::info;
 
-use crate::config::RelayConfig;
+use crate::{
+    config::RelayConfig,
+    incident::{MissingTargetIncident, MissingTargetLogBudget, RoomPeerSnapshot},
+};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct PeerId(u64);
@@ -85,6 +88,7 @@ pub(crate) struct RelayState {
     rooms: HashMap<String, Room>,
     peer_rooms: HashMap<PeerId, String>,
     rates: HashMap<PeerId, RateWindow>,
+    missing_target_logs: HashMap<String, MissingTargetLogBudget>,
 }
 
 impl RelayState {
@@ -95,6 +99,7 @@ impl RelayState {
             rooms: HashMap::new(),
             peer_rooms: HashMap::new(),
             rates: HashMap::new(),
+            missing_target_logs: HashMap::new(),
         }
     }
 
@@ -209,6 +214,47 @@ impl RelayState {
                 .iter()
                 .find_map(|(peer_id, peer)| (peer.steam_id64 == target).then_some(*peer_id))
         })
+    }
+
+    pub(crate) fn record_missing_target_incident(
+        &mut self,
+        room_name: &str,
+        now: Instant,
+    ) -> Option<MissingTargetIncident> {
+        if !self
+            .missing_target_logs
+            .entry(room_name.to_owned())
+            .or_default()
+            .should_log(now)
+        {
+            return None;
+        }
+        Some(MissingTargetIncident {
+            peers: self.room_peer_snapshots(room_name),
+        })
+    }
+
+    fn room_peer_snapshots(&self, room_name: &str) -> Vec<RoomPeerSnapshot> {
+        let mut peers = self
+            .rooms
+            .get(room_name)
+            .map(|room| {
+                room.peers
+                    .iter()
+                    .map(|(peer_id, peer)| RoomPeerSnapshot {
+                        peer_id: *peer_id,
+                        steam_id64: peer.steam_id64.clone(),
+                        transport: peer.transport,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        peers.sort_by(|left, right| {
+            left.steam_id64
+                .cmp(&right.steam_id64)
+                .then_with(|| left.peer_id.0.cmp(&right.peer_id.0))
+        });
+        peers
     }
 
     #[cfg(test)]
@@ -390,290 +436,5 @@ fn join_token() -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-
-    use super::*;
-
-    fn address(port: u16) -> SocketAddr {
-        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))
-    }
-
-    const fn peer(value: u64) -> PeerId {
-        PeerId::new(value)
-    }
-
-    fn challenge_token(message: ControlMessage) -> String {
-        let ControlMessage::Challenge { token } = message else {
-            panic!("expected challenge message");
-        };
-        token
-    }
-
-    fn error_code(message: ControlMessage) -> String {
-        let ControlMessage::Error { code, .. } = message else {
-            panic!("expected error message");
-        };
-        code
-    }
-
-    #[test]
-    fn matches_blocked_cidrs() {
-        let config = RelayConfig {
-            blocked_cidrs: vec!["127.0.0.0/8".parse().unwrap()],
-            ..RelayConfig::default()
-        };
-        let state = RelayState::new(config);
-
-        assert!(state.is_blocked(address(25_910)));
-        assert!(!state.is_blocked("192.0.2.1:25910".parse().unwrap()));
-    }
-
-    #[test]
-    fn rejects_room_names_over_limit() {
-        let config = RelayConfig {
-            max_room_name_len: 4,
-            ..RelayConfig::default()
-        };
-        let mut state = RelayState::new(config);
-
-        let response = state.challenge_join(
-            peer(1),
-            "abcde".to_owned(),
-            "76561198000000001".to_owned(),
-            None,
-            Instant::now(),
-        );
-
-        assert_eq!(error_code(response), "room_name_too_long");
-    }
-
-    #[test]
-    fn rejects_new_rooms_over_limit() {
-        let config = RelayConfig {
-            max_rooms: 1,
-            ..RelayConfig::default()
-        };
-        let mut state = RelayState::new(config);
-        let now = Instant::now();
-
-        let token = challenge_token(state.challenge_join(
-            peer(1),
-            "one".to_owned(),
-            "76561198000000001".to_owned(),
-            None,
-            now,
-        ));
-        assert!(matches!(
-            state.complete_join(
-                peer(1),
-                "one".to_owned(),
-                "76561198000000001".to_owned(),
-                token,
-                PeerTransport::Udp,
-                now
-            ),
-            ControlMessage::Ready { .. }
-        ));
-
-        let response = state.challenge_join(
-            peer(2),
-            "two".to_owned(),
-            "76561198000000002".to_owned(),
-            None,
-            now,
-        );
-
-        assert_eq!(error_code(response), "too_many_rooms");
-    }
-
-    #[test]
-    fn rejects_new_peers_over_room_limit() {
-        let config = RelayConfig {
-            max_peers_per_room: 1,
-            ..RelayConfig::default()
-        };
-        let mut state = RelayState::new(config);
-        let now = Instant::now();
-
-        let token = challenge_token(state.challenge_join(
-            peer(1),
-            "room".to_owned(),
-            "76561198000000001".to_owned(),
-            None,
-            now,
-        ));
-        assert!(matches!(
-            state.complete_join(
-                peer(1),
-                "room".to_owned(),
-                "76561198000000001".to_owned(),
-                token,
-                PeerTransport::Udp,
-                now
-            ),
-            ControlMessage::Ready { .. }
-        ));
-
-        let response = state.challenge_join(
-            peer(2),
-            "room".to_owned(),
-            "76561198000000002".to_owned(),
-            None,
-            now,
-        );
-
-        assert_eq!(error_code(response), "room_full");
-    }
-
-    #[test]
-    fn replaces_duplicate_steam_id_in_same_room() {
-        let mut state = RelayState::new(RelayConfig::default());
-        let now = Instant::now();
-
-        let first_token = challenge_token(state.challenge_join(
-            peer(1),
-            "room".to_owned(),
-            "76561198000000001".to_owned(),
-            None,
-            now,
-        ));
-        assert!(matches!(
-            state.complete_join(
-                peer(1),
-                "room".to_owned(),
-                "76561198000000001".to_owned(),
-                first_token,
-                PeerTransport::Udp,
-                now
-            ),
-            ControlMessage::Ready { .. }
-        ));
-
-        let second_token = challenge_token(state.challenge_join(
-            peer(2),
-            "room".to_owned(),
-            "76561198000000001".to_owned(),
-            None,
-            now,
-        ));
-        assert!(matches!(
-            state.complete_join(
-                peer(2),
-                "room".to_owned(),
-                "76561198000000001".to_owned(),
-                second_token,
-                PeerTransport::Udp,
-                now
-            ),
-            ControlMessage::Ready { peer_count: 1 }
-        ));
-
-        assert_eq!(state.peer_ids("room"), vec![peer(2)]);
-        assert_eq!(state.peer_count(), 1);
-    }
-
-    #[test]
-    fn finds_target_peer_by_steam_id() {
-        let mut state = RelayState::new(RelayConfig::default());
-        let now = Instant::now();
-
-        let first_token = challenge_token(state.challenge_join(
-            peer(1),
-            "room".to_owned(),
-            "76561198000000001".to_owned(),
-            None,
-            now,
-        ));
-        assert!(matches!(
-            state.complete_join(
-                peer(1),
-                "room".to_owned(),
-                "76561198000000001".to_owned(),
-                first_token,
-                PeerTransport::Udp,
-                now
-            ),
-            ControlMessage::Ready { .. }
-        ));
-
-        let second_token = challenge_token(state.challenge_join(
-            peer(2),
-            "room".to_owned(),
-            "76561198000000002".to_owned(),
-            None,
-            now,
-        ));
-        assert!(matches!(
-            state.complete_join(
-                peer(2),
-                "room".to_owned(),
-                "76561198000000002".to_owned(),
-                second_token,
-                PeerTransport::Udp,
-                now
-            ),
-            ControlMessage::Ready { .. }
-        ));
-
-        assert_eq!(
-            state.target_peer("room", 76_561_198_000_000_002),
-            Some(peer(2))
-        );
-        assert_eq!(state.target_peer("room", 76_561_198_000_000_003), None);
-    }
-
-    #[test]
-    fn room_summaries_count_peer_transports() {
-        let mut state = RelayState::new(RelayConfig::default());
-        let now = Instant::now();
-
-        let udp_token = challenge_token(state.challenge_join(
-            peer(1),
-            "room".to_owned(),
-            "76561198000000001".to_owned(),
-            None,
-            now,
-        ));
-        assert!(matches!(
-            state.complete_join(
-                peer(1),
-                "room".to_owned(),
-                "76561198000000001".to_owned(),
-                udp_token,
-                PeerTransport::Udp,
-                now
-            ),
-            ControlMessage::Ready { .. }
-        ));
-
-        let tcp_token = challenge_token(state.challenge_join(
-            peer(2),
-            "room".to_owned(),
-            "76561198000000002".to_owned(),
-            None,
-            now,
-        ));
-        assert!(matches!(
-            state.complete_join(
-                peer(2),
-                "room".to_owned(),
-                "76561198000000002".to_owned(),
-                tcp_token,
-                PeerTransport::Tcp,
-                now
-            ),
-            ControlMessage::Ready { .. }
-        ));
-
-        assert_eq!(
-            state.room_summaries(),
-            vec![RoomSummary {
-                name: "room".to_owned(),
-                peers: 2,
-                tcp_peers: 1,
-                udp_peers: 1,
-            }]
-        );
-    }
-}
+#[path = "state_tests.rs"]
+mod tests;

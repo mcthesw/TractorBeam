@@ -129,12 +129,21 @@ impl BridgeClient {
                     }
                 }
                 state::RuntimeEvent::SessionHealthSnapshot(snapshot) => {
+                    if let Some(incident) = self.state.record_session_health_incident(&snapshot) {
+                        self.log(
+                            LogLevel::Warn,
+                            format!("Client incident {}: {}", incident.kind, incident.summary),
+                        );
+                    }
                     self.state.latest_session_health = Some(*snapshot);
                 }
                 state::RuntimeEvent::SessionHealthSummary(snapshot) => {
                     let snapshot = *snapshot;
                     self.state.latest_session_health = Some(snapshot.clone());
                     self.state.latest_session_health_summary = Some(snapshot);
+                }
+                state::RuntimeEvent::SessionEnded(reason) => {
+                    self.state.last_stop_reason = Some(reason.clone());
                 }
                 state::RuntimeEvent::Stopped => {
                     self.state.status = state::SessionStatus::Idle;
@@ -167,6 +176,12 @@ impl BridgeClient {
     pub fn start_session(&mut self, config: &SessionConfig) -> Result<(), ClientError> {
         config.validate()?;
         self.stop_session();
+        self.state.last_stop_reason = None;
+        self.state.latest_hook_receive_probe = None;
+        self.state.latest_hook_receive_probe_error = None;
+        self.state.latest_session_health = None;
+        self.state.latest_session_health_summary = None;
+        self.state.client_incidents.clear();
         self.active_session_log = self
             .log_sink
             .start_session(ClientSessionLogContext {
@@ -181,9 +196,20 @@ impl BridgeClient {
             .ok();
 
         let session = if config.mode != SessionMode::Official {
-            hook_config::write_hook_config(config)?;
-            Some(session::spawn_bridge_worker(config.clone())?)
+            let native_hook_paths =
+                basement_isaac_injector::resolve_native_hook_paths().map_err(io::Error::other)?;
+            let write = hook_config::write_hook_config(config, &native_hook_paths)?;
+            self.state.hook_config_path_written = Some(write.path.clone());
+            self.log(
+                LogLevel::Info,
+                format!("Native Hook config written to {}", write.path.display()),
+            );
+            Some(session::spawn_bridge_worker(
+                config.clone(),
+                native_hook_paths,
+            )?)
         } else {
+            self.state.hook_config_path_written = None;
             None
         };
 
@@ -229,6 +255,7 @@ impl BridgeClient {
     pub fn stop_session(&mut self) {
         if let Some(handle) = self.session.take() {
             handle.stop();
+            self.state.last_stop_reason = Some(state::SessionStopReason::UserStopped);
         }
         self.state.status = state::SessionStatus::Idle;
         self.active_session_log = None;
@@ -265,7 +292,9 @@ impl BridgeClient {
             )
             .into());
         }
-        self.hook_receive_probe = Some(probe::spawn_hook_receive_probe());
+        self.hook_receive_probe = Some(probe::spawn_hook_receive_probe(
+            self.state.hook_log_path_written(),
+        ));
         self.state.hook_probe_running = true;
         self.state.latest_hook_receive_probe_error = None;
         self.log(LogLevel::Info, "Hook receive probe started");

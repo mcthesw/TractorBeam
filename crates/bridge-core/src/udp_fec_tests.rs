@@ -38,6 +38,78 @@ fn fec_roundtrip_recovers_one_missing_original() {
 }
 
 #[test]
+fn reordered_originals_with_expanding_layout_are_accepted() {
+    let profile = UdpFecProfile::for_name(UdpFecProfileName::Rs8_2_4ms);
+    let now = Instant::now();
+    let mut encoder = UdpFecEncoder::new(profile);
+
+    let mut frames = encoder.encode(Bytes::from_static(b"first"), now).unwrap();
+    frames.extend(encoder.encode(Bytes::from_static(b"second"), now).unwrap());
+
+    let first = frames
+        .iter()
+        .find(|frame| {
+            let decoded = UdpFecFrame::decode((*frame).clone()).expect("frame");
+            decoded.kind == KIND_ORIGINAL && decoded.shard_index == 0
+        })
+        .expect("first original")
+        .clone();
+    let second = frames
+        .iter()
+        .find(|frame| {
+            let decoded = UdpFecFrame::decode((*frame).clone()).expect("frame");
+            decoded.kind == KIND_ORIGINAL && decoded.shard_index == 1
+        })
+        .expect("second original")
+        .clone();
+
+    assert_eq!(UdpFecFrame::decode(first.clone()).unwrap().data_count, 1);
+    assert_eq!(UdpFecFrame::decode(second.clone()).unwrap().data_count, 2);
+
+    let mut decoder = UdpFecDecoder::new(profile);
+    assert_eq!(
+        decoder.decode(second, now).unwrap(),
+        vec![Bytes::from_static(b"second")]
+    );
+    assert_eq!(
+        decoder.decode(first, now).unwrap(),
+        vec![Bytes::from_static(b"first")]
+    );
+    assert_eq!(decoder.snapshot().original_packets, 2);
+}
+
+#[test]
+fn repair_frames_cannot_shrink_expanded_layout() {
+    let profile = UdpFecProfile::for_name(UdpFecProfileName::Rs8_2_4ms);
+    let now = Instant::now();
+    let mut encoder = UdpFecEncoder::new(profile);
+
+    let mut frames = encoder.encode(Bytes::from_static(b"first"), now).unwrap();
+    frames.extend(encoder.encode(Bytes::from_static(b"second"), now).unwrap());
+    let second = frames
+        .iter()
+        .find(|frame| {
+            let decoded = UdpFecFrame::decode((*frame).clone()).expect("frame");
+            decoded.kind == KIND_ORIGINAL && decoded.shard_index == 1
+        })
+        .expect("second original")
+        .clone();
+    let group_id = UdpFecFrame::decode(second.clone()).unwrap().group_id;
+
+    let mut decoder = UdpFecDecoder::new(profile);
+    decoder.decode(second, now).unwrap();
+
+    let pending = [PendingOriginal {
+        padded: vec![0; 16],
+        len: 16,
+    }];
+    let repair = repair_frame(profile, group_id, 0, &pending, &[0; 16]);
+    let error = decoder.decode(repair, now).unwrap_err();
+
+    assert!(matches!(error, UdpFecError::InvalidShardLayout));
+}
+
+#[test]
 fn fec_rejects_oversized_inner_datagram() {
     let profile = UdpFecProfile::for_name(UdpFecProfileName::Rs8_2_4ms);
     let mut encoder = UdpFecEncoder::new(profile);

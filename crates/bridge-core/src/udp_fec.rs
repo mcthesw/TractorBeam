@@ -376,9 +376,13 @@ impl DecodeGroup {
     }
 
     fn merge_layout(&mut self, frame: &UdpFecFrame) -> Result<(), UdpFecError> {
-        if frame.data_count < self.data_count || frame.repair_count < self.repair_count {
+        if (frame.kind != KIND_ORIGINAL && frame.data_count < self.data_count)
+            || frame.repair_count < self.repair_count
+        {
             return Err(UdpFecError::InvalidShardLayout);
         }
+        // Original frames can arrive with the group size seen by the encoder so far.
+        // Keep the largest decoded layout so reordered originals from the same group merge.
         if frame.data_count > self.data_count {
             self.originals.resize(frame.data_count, None);
             self.delivered.resize(frame.data_count, false);

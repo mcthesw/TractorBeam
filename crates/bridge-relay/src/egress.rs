@@ -64,6 +64,12 @@ impl EgressTable {
         }
     }
 
+    pub(crate) fn disable_udp_fec(&mut self, peer_id: PeerId) {
+        if let Some(PeerEgress::Udp { fec, .. }) = self.peers.get_mut(&peer_id) {
+            *fec = None;
+        }
+    }
+
     pub(crate) fn decode_udp(
         &mut self,
         peer_id: PeerId,
@@ -142,5 +148,41 @@ impl EgressTable {
                 frame: raw,
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use basement_bridge_core::udp_fec::UdpFecProfileName;
+
+    #[test]
+    fn disabling_udp_fec_restores_plain_udp_output() {
+        let peer_id = PeerId::new(1);
+        let mut table = EgressTable::default();
+        table.upsert_udp(peer_id, SocketAddr::from(([127, 0, 0, 1], 25910)));
+        table.enable_udp_fec(
+            peer_id,
+            UdpFecProfile::for_name(UdpFecProfileName::Rs8_2_4ms),
+        );
+
+        let raw = Bytes::from_static(b"relay-data");
+        let encoded = table
+            .send_data(peer_id, raw.clone(), Instant::now())
+            .unwrap();
+        let PeerOutput::Udp { frames, .. } = encoded else {
+            panic!("expected udp output");
+        };
+        assert_ne!(frames, vec![raw.clone()]);
+
+        table.disable_udp_fec(peer_id);
+        let plain = table
+            .send_data(peer_id, raw.clone(), Instant::now())
+            .unwrap();
+        let PeerOutput::Udp { frames, .. } = plain else {
+            panic!("expected udp output");
+        };
+        assert_eq!(frames, vec![raw]);
     }
 }

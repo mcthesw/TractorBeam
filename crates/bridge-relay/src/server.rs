@@ -477,16 +477,15 @@ async fn handle_join(
             _ => error_message("bad_join", "expected join message"),
         }
     };
-    if let ControlMessage::Ready {
-        udp_fec: Some(udp_fec),
-        ..
-    } = &response
-        && source.transport == PeerTransport::Udp
+    if source.transport == PeerTransport::Udp
+        && let ControlMessage::Ready { udp_fec, .. } = &response
     {
-        egress
-            .lock()
-            .await
-            .enable_udp_fec(source.peer_id, UdpFecProfile::for_name(udp_fec.profile));
+        let mut egress = egress.lock().await;
+        if let Some(udp_fec) = udp_fec {
+            egress.enable_udp_fec(source.peer_id, UdpFecProfile::for_name(udp_fec.profile));
+        } else {
+            egress.disable_udp_fec(source.peer_id);
+        }
     }
     let response_type = match response {
         ControlMessage::Challenge { .. } => MessageType::JoinChallenge,

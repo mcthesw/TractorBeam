@@ -1,0 +1,10 @@
+services:
+  relay:
+    image: "@RELAY_IMAGE@"
+    restart: unless-stopped
+    ports:
+      - "25910:25910/udp"
+      - "25910:25910/tcp"
+    volumes:
+      - ./relay.toml:/etc/basement-bridge/relay.toml:ro
+    command: ["--config", "/etc/basement-bridge/relay.toml"]

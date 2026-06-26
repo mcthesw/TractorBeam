@@ -500,6 +500,13 @@ fn write_zip_file(
 
 fn readiness_summary(report: &ReadinessProbeReport) -> String {
     let cases = report.cases.len();
+    let mut profiles = Vec::new();
+    for case in &report.cases {
+        let profile = case.connection_profile.to_string();
+        if !profiles.contains(&profile) {
+            profiles.push(profile);
+        }
+    }
     let lost = report
         .cases
         .iter()
@@ -512,7 +519,8 @@ fn readiness_summary(report: &ReadinessProbeReport) -> String {
         .max();
     let worst_jitter = report.cases.iter().filter_map(|case| case.jitter_ms).max();
     format!(
-        "cases={cases}; missing_packets={lost}; worst_p95_ms={}; worst_jitter_ms={}",
+        "profiles={}; cases={cases}; missing_packets={lost}; worst_p95_ms={}; worst_jitter_ms={}",
+        profiles.join(","),
         display_optional(worst_p95),
         display_optional(worst_jitter)
     )

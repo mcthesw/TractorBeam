@@ -9,8 +9,9 @@ pub mod udp_fec;
 pub use client::{
     BridgeClient, CLIENT_CONFIG_FILE, ClientConfig, ClientError, ClientIncidentKind,
     ClientIncidentSnapshot, ClientLogSink, ClientSessionLog, ClientSessionLogContext, ConfigError,
-    Counters, DEFAULT_RELAY_PROBE_PAYLOAD_BYTES, HookReceiveProbeReport, LoadedClientConfig,
-    LocalDate, LogEntry, LogLevel, PRODUCT_NAME, READINESS_PROBE_PAYLOAD_BYTES,
+    ConnectionProfile, Counters, DEFAULT_RELAY_PROBE_PAYLOAD_BYTES, HookReceiveProbeReport,
+    LoadedClientConfig, LocalDate, LogEntry, LogLevel, PRODUCT_NAME,
+    READINESS_PROBE_CONNECTION_PROFILES, READINESS_PROBE_PAYLOAD_BYTES,
     READINESS_PROBE_SAMPLES_PER_CASE, ReadinessProbeCaseReport, ReadinessProbeReport,
     RelayEndpoint, RelayPreset, RelayProbeReport, RuntimeState, SessionConfig,
     SessionHealthSnapshot, SessionHealthSummary, SessionMode, SessionQuality, SessionStatus,

@@ -4,8 +4,9 @@ mod status;
 mod widgets;
 
 use basement_bridge_core::{
-    BridgeClient, ClientLogSink, LocalDate, RelayEndpoint, RelayPreset, SessionConfig, SessionMode,
-    SessionStatus, TransportChoice, load_client_config, resolve_room_template,
+    BridgeClient, ClientLogSink, ConnectionProfile, LocalDate, RelayEndpoint, RelayPreset,
+    SessionConfig, SessionMode, SessionStatus, TransportChoice, load_client_config,
+    resolve_room_template,
 };
 #[cfg(feature = "internal-test")]
 use basement_bridge_core::{
@@ -55,34 +56,6 @@ enum Page {
     InternalTest,
     Diagnostics,
     Debug,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ConnectionProfile {
-    Tcp,
-    Udp,
-    UdpFec,
-}
-
-impl ConnectionProfile {
-    fn from_parts(transport: TransportChoice, udp_fec_enabled: bool) -> Self {
-        match (transport, udp_fec_enabled) {
-            (TransportChoice::Tcp, _) => Self::Tcp,
-            (TransportChoice::Udp, true) => Self::UdpFec,
-            (TransportChoice::Udp, false) => Self::Udp,
-        }
-    }
-
-    const fn transport(self) -> TransportChoice {
-        match self {
-            Self::Tcp => TransportChoice::Tcp,
-            Self::Udp | Self::UdpFec => TransportChoice::Udp,
-        }
-    }
-
-    const fn udp_fec_enabled(self) -> bool {
-        matches!(self, Self::UdpFec)
-    }
 }
 
 pub struct BridgeApp {
@@ -221,9 +194,8 @@ impl BridgeApp {
     }
 
     fn current_udp_fec_config(&self) -> basement_bridge_core::udp_fec::UdpFecConfig {
-        let mut udp_fec = self.client.loaded_config().config.udp_fec;
-        udp_fec.enabled = self.current_connection_profile().udp_fec_enabled();
-        udp_fec
+        self.current_connection_profile()
+            .udp_fec_config(self.client.loaded_config().config.udp_fec)
     }
 
     fn current_connection_profile(&self) -> ConnectionProfile {

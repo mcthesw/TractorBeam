@@ -1,11 +1,12 @@
 use basement_bridge_core::{
-    ClientError, ConfigError, SessionMode, SessionQuality, SessionStatus, SessionStopReason,
+    ClientError, ConfigError, ConnectionProfile, SessionMode, SessionQuality, SessionStatus,
+    SessionStopReason,
 };
 use eframe::egui;
 
 use crate::i18n::{Language, Text, text};
 
-use super::{BridgeApp, ConnectionProfile};
+use super::BridgeApp;
 
 impl BridgeApp {
     pub(super) fn start_error_dialog(&mut self, context: &egui::Context) {

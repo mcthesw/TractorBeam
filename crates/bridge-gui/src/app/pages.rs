@@ -1,8 +1,9 @@
 #[cfg(feature = "internal-test")]
 use basement_bridge_core::ClientError;
 use basement_bridge_core::{
-    HookReceiveProbeReport, LogLevel, ReadinessProbeCaseReport, ReadinessProbeReport, RuntimeState,
-    SessionMode, SessionQuality, SessionStatus, TransportChoice,
+    ConnectionProfile, HookReceiveProbeReport, LogLevel, ReadinessProbeCaseReport,
+    ReadinessProbeReport, RuntimeState, SessionMode, SessionQuality, SessionStatus,
+    TransportChoice,
 };
 use eframe::egui::{self, ComboBox, TextEdit};
 
@@ -11,8 +12,8 @@ use crate::i18n::{Language, Text, text};
 #[cfg(feature = "internal-test")]
 use super::status::error_message;
 use super::{
-    BridgeApp, ConnectionProfile, Page,
-    status::quality_label,
+    BridgeApp, Page,
+    status::{connection_profile_label, quality_label},
     widgets::{account_label, detail_counters, selected_account_label, udp_fec_summary},
 };
 
@@ -505,7 +506,7 @@ fn readiness_probe_table(ui: &mut egui::Ui, language: Language, report: &Readine
             ui.end_row();
 
             for case in &report.cases {
-                ui.label(case.transport.to_string());
+                ui.label(connection_profile_label(language, case.connection_profile));
                 ui.label(format!("{} B", case.payload_bytes));
                 ui.label(lost_summary(case));
                 ui.add(egui::Label::new(latency_summary(case)).wrap());
@@ -525,7 +526,11 @@ fn readiness_probe_table(ui: &mut egui::Ui, language: Language, report: &Readine
         wrapped_colored_label(
             ui,
             ui.visuals().error_fg_color,
-            &format!("{} {} B: {reason}", case.transport, case.payload_bytes),
+            &format!(
+                "{} {} B: {reason}",
+                connection_profile_label(language, case.connection_profile),
+                case.payload_bytes
+            ),
         );
     }
     if report.cases.is_empty() {

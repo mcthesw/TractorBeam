@@ -9,14 +9,17 @@ use std::{
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver},
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
 use serde::Serialize;
 use tokio::{runtime::Builder, time};
 
-use crate::protocol::{Envelope, GamePacket, LocalPacket, MessageType};
+use crate::{
+    protocol::{Envelope, GamePacket, LocalPacket, MessageType},
+    udp_fec::UdpFecConfig,
+};
 
 use super::{
     BridgeClient, LogLevel, RelayEndpoint, SessionConfig, SessionMode, TransportChoice,
@@ -26,8 +29,8 @@ use super::{
 };
 
 pub use readiness::{
-    READINESS_PROBE_PAYLOAD_BYTES, READINESS_PROBE_SAMPLES_PER_CASE, ReadinessProbeCaseReport,
-    ReadinessProbeReport,
+    READINESS_PROBE_CONNECTION_PROFILES, READINESS_PROBE_PAYLOAD_BYTES,
+    READINESS_PROBE_SAMPLES_PER_CASE, ReadinessProbeCaseReport, ReadinessProbeReport,
 };
 
 pub(super) const PROBE_A_STEAM: &str = "76561198000000101";
@@ -243,6 +246,25 @@ impl ProbePeer {
         steam_id64: &'static str,
         display_name: &str,
     ) -> io::Result<Self> {
+        Self::join_with_udp_fec(
+            relay,
+            transport,
+            room,
+            steam_id64,
+            display_name,
+            UdpFecConfig::default(),
+        )
+        .await
+    }
+
+    pub(super) async fn join_with_udp_fec(
+        relay: &RelayEndpoint,
+        transport: TransportChoice,
+        room: &str,
+        steam_id64: &'static str,
+        display_name: &str,
+        udp_fec: UdpFecConfig,
+    ) -> io::Result<Self> {
         let config = SessionConfig {
             relay: relay.clone(),
             relay_name: None,
@@ -252,7 +274,7 @@ impl ProbePeer {
             steam_id64: steam_id64.to_owned(),
             display_name: display_name.to_owned(),
             session_health: super::session_config::SessionHealthConfig::default(),
-            udp_fec: Default::default(),
+            udp_fec,
             #[cfg(feature = "internal-test")]
             test_run_id: None,
         };
@@ -292,7 +314,10 @@ impl ProbePeer {
         let bytes = Envelope::new(MessageType::Data, payload)
             .encode()
             .map_err(io::Error::other)?;
-        self.transport.sender.send_datagram(bytes).await
+        self.transport
+            .sender
+            .send_data_datagram(bytes, Instant::now())
+            .await
     }
 
     async fn expect_game(

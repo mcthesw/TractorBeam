@@ -280,9 +280,14 @@ impl BridgeClient {
         self.log(
             LogLevel::Info,
             format!(
-                "Readiness probe started: relay={relay} samples_per_case={} payload_bytes={:?} transports=[TCP, UDP]",
+                "Readiness probe started: relay={relay} samples_per_case={} payload_bytes={:?} connection_profiles=[{}]",
                 probe::READINESS_PROBE_SAMPLES_PER_CASE,
-                probe::READINESS_PROBE_PAYLOAD_BYTES
+                probe::READINESS_PROBE_PAYLOAD_BYTES,
+                probe::READINESS_PROBE_CONNECTION_PROFILES
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         );
         Ok(())

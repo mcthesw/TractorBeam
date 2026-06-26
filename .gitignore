@@ -4,6 +4,9 @@
 /.vscode/
 /.local/
 /openspec/
+/release-assets/
+/staging/
+/verify/
 
 *.pdb
 *.ilk
@@ -14,6 +17,10 @@
 
 __pycache__/
 *.py[cod]
+/scripts/compat/.venv/
+/scripts/compat/.uv-cache/
+/scripts/compat/downloads/
+/scripts/compat/out/
 
 .DS_Store
 Thumbs.db

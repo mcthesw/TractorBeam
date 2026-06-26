@@ -1,0 +1,86 @@
+name: Compatibility
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: "Base branch, tag, or SHA to compare."
+        required: false
+        type: string
+        default: main
+      head_ref:
+        description: "Head branch, tag, or SHA to check."
+        required: false
+        type: string
+        default: main
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: compatibility-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  BASE_REF: ${{ github.event.pull_request.base.sha || github.event.inputs.base_ref || github.event.repository.default_branch }}
+  HEAD_REF: ${{ github.event.pull_request.head.sha || github.event.inputs.head_ref || github.sha }}
+
+jobs:
+  relay-compat:
+    name: Relay protocol compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout base
+        uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ env.BASE_REF }}
+          path: base
+
+      - name: Checkout head
+        uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ env.HEAD_REF }}
+          path: head
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          workspaces: |
+            base -> target
+            head -> target
+
+      - uses: astral-sh/setup-uv@v8.2.0
+
+      - name: Build base Relay Server
+        working-directory: base
+        env:
+          BASEMENT_BRIDGE_GIT_HASH: ${{ env.BASE_REF }}
+        run: cargo build --locked --release -p basement-bridge-relay
+
+      - name: Build head Relay Server
+        working-directory: head
+        env:
+          BASEMENT_BRIDGE_GIT_HASH: ${{ env.HEAD_REF }}
+        run: cargo build --locked --release -p basement-bridge-relay
+
+      - name: Run compatibility probes
+        run: |
+          set -euo pipefail
+          uv run --project head/scripts/compat python head/scripts/compat/check_compat.py \
+            --base-relay-binary base/target/release/basement-bridge-relay \
+            --head-relay-binary head/target/release/basement-bridge-relay \
+            --json-out head/.local/compat/compat-report.json
+
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: compatibility-report
+          path: head/.local/compat/compat-report.json
+          if-no-files-found: warn
+          retention-days: 14

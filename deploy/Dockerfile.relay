@@ -1,12 +1,13 @@
 FROM rust:1-bookworm AS builder
 WORKDIR /app
 COPY . .
-RUN cargo build --release -p basement-bridge-relay
+RUN cargo build --locked --release -p basement-bridge-relay
 
 FROM debian:bookworm-slim
 WORKDIR /app
 COPY --from=builder /app/target/release/basement-bridge-relay /usr/local/bin/basement-bridge-relay
 COPY deploy/relay.example.toml /etc/basement-bridge/relay.toml
 EXPOSE 25910/udp
+EXPOSE 25910/tcp
 ENTRYPOINT ["basement-bridge-relay"]
 CMD ["--config", "/etc/basement-bridge/relay.toml"]

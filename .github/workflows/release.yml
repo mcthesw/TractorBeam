@@ -1,0 +1,350 @@
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to build and publish, for example v0.2.0."
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to rebuild, for example v0.2.0."
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  setup:
+    name: Resolve release context
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      ref: ${{ steps.resolve.outputs.ref }}
+      version: ${{ steps.resolve.outputs.version }}
+      image: ${{ steps.resolve.outputs.image }}
+    steps:
+      - id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag }}"
+          if [[ -z "${tag}" ]]; then
+            echo "Release tag input is required" >&2
+            exit 1
+          fi
+          owner="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          echo "tag=${tag}" >>"${GITHUB_OUTPUT}"
+          echo "ref=refs/tags/${tag}" >>"${GITHUB_OUTPUT}"
+          echo "version=${tag#v}" >>"${GITHUB_OUTPUT}"
+          echo "image=ghcr.io/${owner}/basement-bridge-relay" >>"${GITHUB_OUTPUT}"
+
+  client-windows:
+    name: Client Bundle Windows
+    needs: setup
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ needs.setup.outputs.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc,i686-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2.9.1
+
+      - name: Build Bridge GUI
+        run: cargo build --locked --release -p basement-bridge-gui --target x86_64-pc-windows-msvc
+
+      - name: Build Injector
+        run: cargo build --locked --release -p basement-isaac-injector --target i686-pc-windows-msvc
+
+      - name: Build Native Hook
+        run: cargo build --locked --release -p basement-native-hook --target i686-pc-windows-msvc
+
+      - name: Package Client Bundle
+        shell: pwsh
+        run: |
+          $version = "${{ needs.setup.outputs.version }}"
+          $tag = "${{ needs.setup.outputs.tag }}"
+          $commit = (git rev-parse HEAD).Trim()
+          $bundle = "BasementBridgeClient-$version"
+          $bundleDir = Join-Path "dist" $bundle
+          New-Item -ItemType Directory -Force $bundleDir | Out-Null
+          Copy-Item "target/x86_64-pc-windows-msvc/release/basement-bridge.exe" $bundleDir
+          Copy-Item "target/i686-pc-windows-msvc/release/basement-isaac-injector.exe" $bundleDir
+          Copy-Item "target/i686-pc-windows-msvc/release/basement_native_hook.dll" $bundleDir
+          Copy-Item "deploy/client.release.example.toml" (Join-Path $bundleDir "config.example.toml")
+          @{
+            name = "Basement Bridge Client Bundle"
+            version = $version
+            tag = $tag
+            git_hash = $commit
+            files = @(
+              "basement-bridge.exe",
+              "basement-isaac-injector.exe",
+              "basement_native_hook.dll",
+              "config.example.toml"
+            )
+          } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 (Join-Path $bundleDir "bundle-manifest.json")
+          Compress-Archive -Path "$bundleDir/*" -DestinationPath "dist/basement-bridge-client-bundle-windows-x86_64.zip"
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: release-client-windows-x86_64
+          path: dist/basement-bridge-client-bundle-windows-x86_64.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  relay-linux:
+    name: Relay Server Linux x86_64
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ needs.setup.outputs.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2.9.1
+
+      - name: Build Relay Server
+        run: cargo build --locked --release -p basement-bridge-relay
+
+      - name: Stage Relay Server binary
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/release/basement-bridge-relay dist/basement-bridge-relay-linux-x86_64
+          chmod 0755 dist/basement-bridge-relay-linux-x86_64
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: release-relay-linux-x86_64
+          path: dist/basement-bridge-relay-linux-x86_64
+          if-no-files-found: error
+          retention-days: 7
+
+  relay-windows:
+    name: Relay Server Windows x86_64
+    needs: setup
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ needs.setup.outputs.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2.9.1
+
+      - name: Build Relay Server
+        run: cargo build --locked --release -p basement-bridge-relay --target x86_64-pc-windows-msvc
+
+      - name: Stage Relay Server binary
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "target/x86_64-pc-windows-msvc/release/basement-bridge-relay.exe" "dist/basement-bridge-relay-windows-x86_64.exe"
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: release-relay-windows-x86_64
+          path: dist/basement-bridge-relay-windows-x86_64.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  relay-image:
+    name: Relay Server GHCR image
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      actions: write
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ needs.setup.outputs.ref }}
+
+      - uses: docker/setup-buildx-action@v4.1.0
+
+      - uses: docker/login-action@v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6.1.0
+        with:
+          images: ${{ needs.setup.outputs.image }}
+          tags: |
+            type=raw,value=${{ needs.setup.outputs.tag }}
+            type=raw,value=${{ needs.setup.outputs.version }}
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v7.2.0
+        with:
+          context: .
+          file: deploy/Dockerfile.relay
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Stage image metadata
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cat > dist/relay-image.json <<JSON
+          {
+            "image": "${{ needs.setup.outputs.image }}",
+            "tag": "${{ needs.setup.outputs.tag }}",
+            "version": "${{ needs.setup.outputs.version }}",
+            "digest": "${{ steps.build.outputs.digest }}"
+          }
+          JSON
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: release-relay-image
+          path: dist/relay-image.json
+          if-no-files-found: error
+          retention-days: 7
+
+  assemble:
+    name: Assemble release
+    needs: [setup, client-windows, relay-linux, relay-windows, relay-image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ needs.setup.outputs.ref }}
+
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          path: staging
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Assemble release assets
+        env:
+          TAG: ${{ needs.setup.outputs.tag }}
+          VERSION: ${{ needs.setup.outputs.version }}
+          IMAGE: ${{ needs.setup.outputs.image }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          cp staging/basement-bridge-client-bundle-windows-x86_64.zip release-assets/
+          cp staging/basement-bridge-relay-linux-x86_64 release-assets/
+          cp staging/basement-bridge-relay-windows-x86_64.exe release-assets/
+          sed "s|@RELAY_IMAGE@|${IMAGE}:${TAG}|g" \
+            deploy/docker-compose.relay.template.yml > release-assets/docker-compose.relay.yml
+          cp staging/relay-image.json release-assets/
+          (
+            cd release-assets
+            : > SHA256SUMS
+            while IFS= read -r -d '' file; do
+              sha256sum "${file#./}" >> SHA256SUMS
+            done < <(find . -maxdepth 1 -type f ! -name 'SHA256SUMS' ! -name 'manifest.json' -print0 | sort -z)
+            rm -f assets.jsonl
+            while IFS= read -r -d '' file; do
+              name="${file#./}"
+              size="$(wc -c < "${name}" | tr -d ' ')"
+              sha="$(sha256sum "${name}" | cut -d ' ' -f1)"
+              url="https://github.com/${REPO}/releases/download/${TAG}/${name}"
+              jq -n \
+                --arg name "${name}" \
+                --arg size "${size}" \
+                --arg sha256 "${sha}" \
+                --arg url "${url}" \
+                '{name: $name, size: ($size | tonumber), sha256: $sha256, url: $url}' >> assets.jsonl
+            done < <(find . -maxdepth 1 -type f ! -name 'manifest.json' -print0 | sort -z)
+            relay_digest="$(jq -r '.digest' relay-image.json)"
+            jq -s \
+              --arg tag "${TAG}" \
+              --arg version "${VERSION}" \
+              --arg repository "${REPO}" \
+              --arg commit "$(git rev-parse HEAD)" \
+              --arg image "${IMAGE}:${TAG}" \
+              --arg digest "${relay_digest}" \
+              '{tag: $tag, version: $version, repository: $repository, commit: $commit, relay_image: {image: $image, digest: $digest}, assets: .}' \
+              assets.jsonl > manifest.json
+            rm assets.jsonl
+          )
+          ls -la release-assets
+
+      - name: Verify release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.setup.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}"
+
+      - name: Upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.setup.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "${TAG}" release-assets/* --repo "${GITHUB_REPOSITORY}" --clobber
+
+  validate:
+    name: Validate release assets
+    needs: [setup, assemble]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.setup.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p verify
+          gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" --dir verify
+          ls -la verify
+
+      - name: Verify manifest and checksums
+        working-directory: verify
+        run: |
+          set -euo pipefail
+          test -f manifest.json
+          test -f SHA256SUMS
+          sha256sum -c SHA256SUMS
+          for name in \
+            basement-bridge-client-bundle-windows-x86_64.zip \
+            basement-bridge-relay-linux-x86_64 \
+            basement-bridge-relay-windows-x86_64.exe \
+            docker-compose.relay.yml \
+            relay-image.json \
+            SHA256SUMS; do
+            test -f "${name}" || { echo "missing asset: ${name}" >&2; exit 1; }
+            jq -e --arg name "${name}" '.assets[] | select(.name == $name)' manifest.json >/dev/null
+          done
+          jq -e '.relay_image.image and .relay_image.digest' manifest.json >/dev/null

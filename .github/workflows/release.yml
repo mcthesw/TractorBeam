@@ -30,6 +30,7 @@ jobs:
       ref: ${{ steps.resolve.outputs.ref }}
       version: ${{ steps.resolve.outputs.version }}
       image: ${{ steps.resolve.outputs.image }}
+      commit: ${{ steps.resolve.outputs.commit }}
     steps:
       - id: resolve
         shell: bash
@@ -45,12 +46,23 @@ jobs:
           echo "ref=refs/tags/${tag}" >>"${GITHUB_OUTPUT}"
           echo "version=${tag#v}" >>"${GITHUB_OUTPUT}"
           echo "image=ghcr.io/${owner}/basement-bridge-relay" >>"${GITHUB_OUTPUT}"
+          commit="$(git ls-remote "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" "refs/tags/${tag}^{}" | awk '{print $1}')"
+          if [[ -z "${commit}" ]]; then
+            commit="$(git ls-remote "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" "refs/tags/${tag}" | awk '{print $1}')"
+          fi
+          if [[ -z "${commit}" ]]; then
+            echo "Release tag ${tag} was not found" >&2
+            exit 1
+          fi
+          echo "commit=${commit}" >>"${GITHUB_OUTPUT}"
 
   client-windows:
     name: Client Bundle Windows
     needs: setup
     runs-on: windows-latest
     timeout-minutes: 45
+    env:
+      BASEMENT_BRIDGE_GIT_HASH: ${{ needs.setup.outputs.commit }}
     steps:
       - uses: actions/checkout@v7.0.0
         with:
@@ -110,6 +122,8 @@ jobs:
     needs: setup
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      BASEMENT_BRIDGE_GIT_HASH: ${{ needs.setup.outputs.commit }}
     steps:
       - uses: actions/checkout@v7.0.0
         with:
@@ -141,6 +155,8 @@ jobs:
     needs: setup
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      BASEMENT_BRIDGE_GIT_HASH: ${{ needs.setup.outputs.commit }}
     steps:
       - uses: actions/checkout@v7.0.0
         with:
@@ -173,6 +189,8 @@ jobs:
     needs: setup
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      BASEMENT_BRIDGE_GIT_HASH: ${{ needs.setup.outputs.commit }}
     permissions:
       actions: write
       contents: read
@@ -206,6 +224,8 @@ jobs:
           context: .
           file: deploy/Dockerfile.relay
           push: true
+          build-args: |
+            BASEMENT_BRIDGE_GIT_HASH=${{ needs.setup.outputs.commit }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 

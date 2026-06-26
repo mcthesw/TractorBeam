@@ -14,10 +14,13 @@ use super::{
     RelayEndpoint, SessionHealthSnapshot, SessionMode, TransportChoice, diagnostics_directory,
     runtime_name, state::unix_seconds,
 };
-use crate::udp_fec::{UdpFecConfig, UdpFecSessionSnapshot};
+use crate::{
+    build_info::{self, BuildInfo},
+    udp_fec::{UdpFecConfig, UdpFecSessionSnapshot},
+};
 
 const SHARE_CODE_PREFIX: &str = "BB1.";
-const REPORT_SCHEMA_VERSION: u8 = 2;
+const REPORT_SCHEMA_VERSION: u8 = 3;
 
 #[path = "internal_test_upload.rs"]
 mod upload;
@@ -199,7 +202,8 @@ impl BridgeClient {
             created_at_unix: unix_seconds(),
             product: PRODUCT_NAME.to_owned(),
             runtime: runtime_name().to_owned(),
-            app_version: env!("CARGO_PKG_VERSION").to_owned(),
+            app_version: build_info::version_label(),
+            build_info: build_info::current(),
             session: request.session.clone(),
             user_note: request.user_note.clone(),
             observability: ObservabilitySummary::from_state(
@@ -310,6 +314,7 @@ struct ReportMetadata {
     product: String,
     runtime: String,
     app_version: String,
+    build_info: BuildInfo,
     session: InternalTestReportSession,
     user_note: String,
     observability: ObservabilitySummary,

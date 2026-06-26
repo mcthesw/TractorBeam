@@ -3,7 +3,7 @@ use basement_bridge_core::ClientError;
 use basement_bridge_core::{
     ConnectionProfile, HookReceiveProbeReport, LogLevel, ReadinessProbeCaseReport,
     ReadinessProbeReport, RuntimeState, SessionMode, SessionQuality, SessionStatus,
-    TransportChoice,
+    TransportChoice, build_info,
 };
 use eframe::egui::{self, ComboBox, TextEdit};
 
@@ -66,6 +66,11 @@ impl BridgeApp {
 
     pub(super) fn diagnostics_page(&mut self, ui: &mut egui::Ui) {
         ui.heading(self.t(Text::Diagnostics));
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label(self.t(Text::Version));
+            ui.monospace(build_info::version_label());
+        });
         ui.add_space(8.0);
         if ui.button(self.t(Text::OpenLogDirectory)).clicked() {
             self.open_log_directory();

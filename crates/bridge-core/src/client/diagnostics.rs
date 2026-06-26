@@ -43,6 +43,10 @@ impl BridgeClient {
         let mut output = String::new();
         output.push_str(PRODUCT_NAME);
         output.push_str(" diagnostics\n\n");
+        output.push_str(&format!(
+            "version: {}\n",
+            crate::build_info::version_label()
+        ));
         output.push_str(&format!("status: {:?}\n", self.state.status));
         output.push_str(&format!(
             "hook_to_relay: {}\n",

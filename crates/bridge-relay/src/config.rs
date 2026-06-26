@@ -1,14 +1,16 @@
 use std::{fs, io, path::PathBuf};
 
-use clap::Parser;
+use clap::{ArgAction, Parser};
 use ipnet::IpNet;
 use serde::Deserialize;
 
 const MAX_UDP_PACKET_SIZE: usize = 65_535;
 
 #[derive(Debug, Parser)]
-#[command(author, version, about)]
+#[command(author, about)]
 pub(crate) struct Args {
+    #[arg(short = 'V', long, action = ArgAction::SetTrue, help = "Print version information")]
+    version: bool,
     #[arg(long)]
     config: Option<PathBuf>,
     #[arg(long)]
@@ -17,6 +19,13 @@ pub(crate) struct Args {
     tcp_bind: Option<String>,
     #[arg(long)]
     disable_tcp: bool,
+}
+
+impl Args {
+    #[must_use]
+    pub(crate) fn should_print_version(&self) -> bool {
+        self.version
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]

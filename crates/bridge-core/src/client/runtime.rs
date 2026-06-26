@@ -45,7 +45,13 @@ impl BridgeClient {
             hook_receive_probe: None,
         };
         client.refresh_steam_accounts();
-        client.log(LogLevel::Info, "Bridge Client ready");
+        client.log(
+            LogLevel::Info,
+            format!(
+                "Bridge Client ready ({})",
+                crate::build_info::version_label()
+            ),
+        );
         if let Some(path) = &client.loaded_config.source {
             client.log(
                 LogLevel::Info,

@@ -1,4 +1,5 @@
 use std::{
+    cmp::Reverse,
     collections::BTreeMap,
     env, fs, io,
     path::{Path, PathBuf},
@@ -90,7 +91,7 @@ pub fn detect_accounts() -> Vec<SteamAccount> {
         }
     }
     let mut values = accounts.into_values().collect::<Vec<_>>();
-    values.sort_by(|left, right| right.most_recent.cmp(&left.most_recent));
+    values.sort_by_key(|account| Reverse(account.most_recent));
     values
 }
 

@@ -17,6 +17,17 @@ async fn main() -> io::Result<()> {
     tracing_subscriber::fmt::init();
 
     let args = Args::parse();
+    if args.should_print_version() {
+        println!(
+            "basement-bridge-relay {}",
+            basement_bridge_core::build_info::version_label()
+        );
+        return Ok(());
+    }
+    tracing::info!(
+        version = %basement_bridge_core::build_info::version_label(),
+        "relay starting"
+    );
     let config = RelayConfig::load(&args)?;
     server::run(config).await
 }

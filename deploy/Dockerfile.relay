@@ -1,6 +1,7 @@
 FROM rust:1-bookworm AS builder
 WORKDIR /app
 COPY . .
+ARG BASEMENT_BRIDGE_GIT_HASH=""
 RUN cargo build --locked --release -p basement-bridge-relay
 
 FROM debian:bookworm-slim

@@ -16,6 +16,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  BASEMENT_BRIDGE_GIT_HASH: ${{ github.sha }}
 
 jobs:
   rust:

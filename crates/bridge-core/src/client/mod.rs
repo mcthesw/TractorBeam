@@ -33,14 +33,14 @@ pub use logging::{
     ClientLogSink, ClientSessionLog, ClientSessionLogContext, emit_client_log_event,
 };
 pub use probe::{
-    DEFAULT_RELAY_PROBE_PAYLOAD_BYTES, HookReceiveProbeReport, READINESS_PROBE_PAYLOAD_BYTES,
-    READINESS_PROBE_SAMPLES_PER_CASE, ReadinessProbeCaseReport, ReadinessProbeReport,
-    RelayProbeReport,
+    DEFAULT_RELAY_PROBE_PAYLOAD_BYTES, HookReceiveProbeReport, READINESS_PROBE_CONNECTION_PROFILES,
+    READINESS_PROBE_PAYLOAD_BYTES, READINESS_PROBE_SAMPLES_PER_CASE, ReadinessProbeCaseReport,
+    ReadinessProbeReport, RelayProbeReport,
 };
 pub use runtime::{BridgeClient, ClientError, runtime_name};
 pub use session_config::{
-    ConfigError, RelayEndpoint, SessionConfig, SessionHealthConfig, SessionMode, SteamIdentity,
-    TransportChoice,
+    ConfigError, ConnectionProfile, RelayEndpoint, SessionConfig, SessionHealthConfig, SessionMode,
+    SteamIdentity, TransportChoice,
 };
 pub use session_health::{SessionHealthSnapshot, SessionHealthSummary, SessionQuality};
 pub use state::{

@@ -116,6 +116,21 @@ impl BridgeClient {
             output.push_str("none\n");
         }
         output.push('\n');
+        output.push_str("udp fec:\n");
+        if let Some(snapshot) = &self.state.latest_udp_fec {
+            output.push_str(&snapshot.compact_log_line("summary"));
+            output.push('\n');
+            match serde_json::to_string_pretty(snapshot) {
+                Ok(json) => {
+                    output.push_str(&json);
+                    output.push('\n');
+                }
+                Err(error) => output.push_str(&format!("json_unavailable: {error}\n")),
+            }
+        } else {
+            output.push_str("none\n");
+        }
+        output.push('\n');
         output.push_str("client incidents:\n");
         if self.state.client_incidents.is_empty() {
             output.push_str("none\n\n");
@@ -167,18 +182,17 @@ impl BridgeClient {
         output.push_str("\nIsaac online log excerpts:\n");
         let log_directory = crate::diagnostics::isaac_online_logs_directory();
         output.push_str(&format!("directory: {}\n", log_directory.display()));
-        for file in [crate::diagnostics::ONLINE_LOG] {
-            let path = log_directory.join(file);
-            output.push_str("\n--- ");
-            output.push_str(file);
-            output.push_str(" ---\n");
-            match fs::read_to_string(&path) {
-                Ok(contents) => output.push_str(crate::diagnostics::file_excerpt(&contents)),
-                Err(error) => output.push_str(&format!("unavailable: {error}\n")),
-            }
-            if !output.ends_with('\n') {
-                output.push('\n');
-            }
+        let file = crate::diagnostics::ONLINE_LOG;
+        let path = log_directory.join(file);
+        output.push_str("\n--- ");
+        output.push_str(file);
+        output.push_str(" ---\n");
+        match fs::read_to_string(&path) {
+            Ok(contents) => output.push_str(crate::diagnostics::file_excerpt(&contents)),
+            Err(error) => output.push_str(&format!("unavailable: {error}\n")),
+        }
+        if !output.ends_with('\n') {
+            output.push('\n');
         }
         output.push_str("\nlogs:\n");
         for entry in &self.state.logs {

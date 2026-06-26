@@ -11,19 +11,23 @@ use super::{
     validate_probe_payload,
 };
 use crate::client::{
-    LogLevel, RelayEndpoint, TransportChoice,
+    ConnectionProfile, LogLevel, RelayEndpoint, TransportChoice,
     state::{RuntimeEvent, log_event, unix_seconds},
 };
+use crate::udp_fec::{UdpFecConfig, UdpFecProfileName};
 use bytes::Bytes;
 use serde::Serialize;
 
 pub const READINESS_PROBE_SAMPLES_PER_CASE: u64 = 50;
 pub const READINESS_PROBE_PAYLOAD_BYTES: [usize; 3] = [512, 1024, 2048];
+pub const READINESS_PROBE_CONNECTION_PROFILES: [ConnectionProfile; 3] = ConnectionProfile::ALL;
 const READINESS_SAMPLE_TIMEOUT: Duration = Duration::from_millis(750);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ReadinessProbeCaseReport {
+    pub connection_profile: ConnectionProfile,
     pub transport: TransportChoice,
+    pub udp_fec_profile: Option<UdpFecProfileName>,
     pub payload_bytes: usize,
     pub duration_ms: u128,
     pub packets_sent: u64,
@@ -46,8 +50,11 @@ impl ReadinessProbeCaseReport {
     #[must_use]
     pub fn detailed_log(&self) -> String {
         let mut message = format!(
-            "transport={}; payload_bytes={}; duration_ms={}; sent={}; received={}; missing={}; min_ms={}; median_ms={}; p95_ms={}; max_ms={}; jitter_ms={}",
+            "connection_profile={}; transport={}; udp_fec_profile={}; payload_bytes={}; duration_ms={}; sent={}; received={}; missing={}; min_ms={}; median_ms={}; p95_ms={}; max_ms={}; jitter_ms={}",
+            self.connection_profile,
             self.transport,
+            self.udp_fec_profile
+                .map_or_else(|| "none".to_owned(), |profile| profile.to_string()),
             self.payload_bytes,
             self.duration_ms,
             self.packets_sent,
@@ -132,7 +139,7 @@ fn run_readiness_probe(relay: RelayEndpoint) -> ReadinessProbeReport {
     let cases = block_on_probe(async { Ok(run_readiness_probe_matrix_async(relay, &room).await) })
         .unwrap_or_else(|error| {
             vec![failed_readiness_case_report(
-                TransportChoice::Tcp,
+                ConnectionProfile::Tcp,
                 READINESS_PROBE_PAYLOAD_BYTES[0],
                 started.elapsed(),
                 error.to_string(),
@@ -152,18 +159,23 @@ async fn run_readiness_probe_matrix_async(
     room: &str,
 ) -> Vec<ReadinessProbeCaseReport> {
     let mut cases = Vec::new();
-    for transport in [TransportChoice::Tcp, TransportChoice::Udp] {
+    for connection_profile in READINESS_PROBE_CONNECTION_PROFILES {
         for payload_bytes in READINESS_PROBE_PAYLOAD_BYTES {
             let started = Instant::now();
-            let case = match run_readiness_probe_case_async(&relay, transport, room, payload_bytes)
-                .await
+            let case = match run_readiness_probe_case_async(
+                &relay,
+                connection_profile,
+                room,
+                payload_bytes,
+            )
+            .await
             {
                 Ok(mut report) => {
                     report.duration_ms = started.elapsed().as_millis();
                     report
                 }
                 Err(error) => failed_readiness_case_report(
-                    transport,
+                    connection_profile,
                     payload_bytes,
                     started.elapsed(),
                     error.to_string(),
@@ -177,12 +189,18 @@ async fn run_readiness_probe_matrix_async(
 
 async fn run_readiness_probe_case_async(
     relay: &RelayEndpoint,
-    transport: TransportChoice,
+    connection_profile: ConnectionProfile,
     room: &str,
     payload_bytes: usize,
 ) -> io::Result<ReadinessProbeCaseReport> {
-    let mut peer_a = ProbePeer::join(relay, transport, room, PROBE_A_STEAM, "Probe A").await?;
-    let mut peer_b = ProbePeer::join(relay, transport, room, PROBE_B_STEAM, "Probe B").await?;
+    let transport = connection_profile.transport();
+    let udp_fec = connection_profile.udp_fec_config(UdpFecConfig::default());
+    let mut peer_a =
+        ProbePeer::join_with_udp_fec(relay, transport, room, PROBE_A_STEAM, "Probe A", udp_fec)
+            .await?;
+    let mut peer_b =
+        ProbePeer::join_with_udp_fec(relay, transport, room, PROBE_B_STEAM, "Probe B", udp_fec)
+            .await?;
     let payload = probe_payload(payload_bytes);
     let started = Instant::now();
     let mut sequence = 1_u32;
@@ -223,7 +241,9 @@ async fn run_readiness_probe_case_async(
     }
 
     Ok(readiness_case_report(ReadinessStats {
+        connection_profile,
         transport,
+        udp_fec_profile: connection_profile.udp_fec_profile(udp_fec),
         payload_bytes,
         duration: started.elapsed(),
         packets_sent: sent,
@@ -278,7 +298,9 @@ async fn sample_direction(
 
 #[derive(Debug)]
 struct ReadinessStats {
+    connection_profile: ConnectionProfile,
     transport: TransportChoice,
+    udp_fec_profile: Option<UdpFecProfileName>,
     payload_bytes: usize,
     duration: Duration,
     packets_sent: u64,
@@ -299,7 +321,9 @@ fn readiness_case_report(stats: ReadinessStats) -> ReadinessProbeCaseReport {
         .zip(p95_latency_ms)
         .map(|(median, p95)| p95.saturating_sub(median));
     ReadinessProbeCaseReport {
+        connection_profile: stats.connection_profile,
         transport: stats.transport,
+        udp_fec_profile: stats.udp_fec_profile,
         payload_bytes: stats.payload_bytes,
         duration_ms: stats.duration.as_millis(),
         packets_sent: stats.packets_sent,
@@ -315,13 +339,16 @@ fn readiness_case_report(stats: ReadinessStats) -> ReadinessProbeCaseReport {
 }
 
 fn failed_readiness_case_report(
-    transport: TransportChoice,
+    connection_profile: ConnectionProfile,
     payload_bytes: usize,
     duration: Duration,
     failure_reason: String,
 ) -> ReadinessProbeCaseReport {
+    let udp_fec = connection_profile.udp_fec_config(UdpFecConfig::default());
     readiness_case_report(ReadinessStats {
-        transport,
+        connection_profile,
+        transport: connection_profile.transport(),
+        udp_fec_profile: connection_profile.udp_fec_profile(udp_fec),
         payload_bytes,
         duration,
         packets_sent: 0,
@@ -350,4 +377,40 @@ fn display_latency(value: Option<u128>) -> String {
             }
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn readiness_matrix_declares_udp_fec_as_a_peer_profile() {
+        assert_eq!(
+            READINESS_PROBE_CONNECTION_PROFILES,
+            [
+                ConnectionProfile::Tcp,
+                ConnectionProfile::Udp,
+                ConnectionProfile::UdpFec
+            ]
+        );
+
+        let report = failed_readiness_case_report(
+            ConnectionProfile::UdpFec,
+            READINESS_PROBE_PAYLOAD_BYTES[0],
+            Duration::from_millis(1),
+            "probe error".to_owned(),
+        );
+
+        assert_eq!(report.connection_profile, ConnectionProfile::UdpFec);
+        assert_eq!(report.transport, TransportChoice::Udp);
+        assert_eq!(
+            report.udp_fec_profile,
+            Some(UdpFecConfig::default().profile)
+        );
+        assert!(
+            report
+                .detailed_log()
+                .contains("connection_profile=UDP + FEC")
+        );
+    }
 }

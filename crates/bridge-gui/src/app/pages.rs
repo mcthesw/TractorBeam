@@ -1,8 +1,9 @@
 #[cfg(feature = "internal-test")]
 use basement_bridge_core::ClientError;
 use basement_bridge_core::{
-    HookReceiveProbeReport, LogLevel, ReadinessProbeCaseReport, ReadinessProbeReport, RuntimeState,
-    SessionMode, SessionQuality, SessionStatus, TransportChoice,
+    ConnectionProfile, HookReceiveProbeReport, LogLevel, ReadinessProbeCaseReport,
+    ReadinessProbeReport, RuntimeState, SessionMode, SessionQuality, SessionStatus,
+    TransportChoice,
 };
 use eframe::egui::{self, ComboBox, TextEdit};
 
@@ -12,8 +13,8 @@ use crate::i18n::{Language, Text, text};
 use super::status::error_message;
 use super::{
     BridgeApp, Page,
-    status::quality_label,
-    widgets::{account_label, detail_counters, selected_account_label},
+    status::{connection_profile_label, quality_label},
+    widgets::{account_label, detail_counters, selected_account_label, udp_fec_summary},
 };
 
 impl BridgeApp {
@@ -78,6 +79,7 @@ impl BridgeApp {
         detail_counters(ui, self.language, self.client.state());
         ui.add_space(12.0);
         session_health_summary(ui, self.language, self.client.state());
+        udp_fec_summary(ui, self.client.state());
         ui.add_space(12.0);
         ui.heading(self.t(Text::Logs));
         ui.add_space(4.0);
@@ -346,24 +348,33 @@ impl BridgeApp {
         }
 
         ui.add_space(8.0);
-        let udp = self.t(Text::Udp);
         let tcp = self.t(Text::Tcp);
-        ui.label(self.t(Text::Transport));
-        let transport_before = self.transport;
+        let udp = self.t(Text::Udp);
+        let udp_fec = self.t(Text::UdpFecExperimental);
+        ui.label(self.t(Text::ConnectionProfile));
+        let profile_before = self.current_connection_profile();
+        let mut selected_profile = profile_before;
         ui.horizontal(|ui| {
-            ui.add_enabled_ui(self.preset_supports_transport(TransportChoice::Udp), |ui| {
-                ui.radio_value(&mut self.transport, TransportChoice::Udp, udp);
-            });
             ui.add_enabled_ui(self.preset_supports_transport(TransportChoice::Tcp), |ui| {
-                ui.radio_value(&mut self.transport, TransportChoice::Tcp, tcp);
+                ui.radio_value(&mut selected_profile, ConnectionProfile::Tcp, tcp);
+            });
+            ui.add_enabled_ui(self.preset_supports_transport(TransportChoice::Udp), |ui| {
+                ui.radio_value(&mut selected_profile, ConnectionProfile::Udp, udp);
+                ui.radio_value(&mut selected_profile, ConnectionProfile::UdpFec, udp_fec);
             });
         });
+        if selected_profile != profile_before {
+            self.set_connection_profile(selected_profile);
+        }
         if !self.preset_supports_transport(self.transport) {
             self.apply_selected_relay_defaults();
         }
-        if self.transport != transport_before {
+        if self.current_connection_profile() != profile_before {
             #[cfg(feature = "internal-test")]
             self.clear_prepared_report();
+        }
+        if self.connection_profile_pending() {
+            ui.small(self.t(Text::ReconnectRequired));
         }
 
         ui.add_space(8.0);
@@ -495,7 +506,7 @@ fn readiness_probe_table(ui: &mut egui::Ui, language: Language, report: &Readine
             ui.end_row();
 
             for case in &report.cases {
-                ui.label(case.transport.to_string());
+                ui.label(connection_profile_label(language, case.connection_profile));
                 ui.label(format!("{} B", case.payload_bytes));
                 ui.label(lost_summary(case));
                 ui.add(egui::Label::new(latency_summary(case)).wrap());
@@ -515,7 +526,11 @@ fn readiness_probe_table(ui: &mut egui::Ui, language: Language, report: &Readine
         wrapped_colored_label(
             ui,
             ui.visuals().error_fg_color,
-            &format!("{} {} B: {reason}", case.transport, case.payload_bytes),
+            &format!(
+                "{} {} B: {reason}",
+                connection_profile_label(language, case.connection_profile),
+                case.payload_bytes
+            ),
         );
     }
     if report.cases.is_empty() {

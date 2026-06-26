@@ -142,6 +142,9 @@ impl BridgeClient {
                     self.state.latest_session_health = Some(snapshot.clone());
                     self.state.latest_session_health_summary = Some(snapshot);
                 }
+                state::RuntimeEvent::UdpFecSnapshot(snapshot) => {
+                    self.state.latest_udp_fec = Some(*snapshot);
+                }
                 state::RuntimeEvent::SessionEnded(reason) => {
                     self.state.last_stop_reason = Some(reason.clone());
                 }
@@ -181,6 +184,7 @@ impl BridgeClient {
         self.state.latest_hook_receive_probe_error = None;
         self.state.latest_session_health = None;
         self.state.latest_session_health_summary = None;
+        self.state.latest_udp_fec = None;
         self.state.client_incidents.clear();
         self.active_session_log = self
             .log_sink
@@ -215,7 +219,7 @@ impl BridgeClient {
 
         if let Err(error) = crate::steam::launch_isaac() {
             if let Some(handle) = session {
-                handle.stop();
+                self.apply_stopped_session_events(handle.stop());
             }
             self.active_session_log = None;
             return Err(error.into());
@@ -254,7 +258,7 @@ impl BridgeClient {
 
     pub fn stop_session(&mut self) {
         if let Some(handle) = self.session.take() {
-            handle.stop();
+            self.apply_stopped_session_events(handle.stop());
             self.state.last_stop_reason = Some(state::SessionStopReason::UserStopped);
         }
         self.state.status = state::SessionStatus::Idle;
@@ -276,9 +280,14 @@ impl BridgeClient {
         self.log(
             LogLevel::Info,
             format!(
-                "Readiness probe started: relay={relay} samples_per_case={} payload_bytes={:?} transports=[TCP, UDP]",
+                "Readiness probe started: relay={relay} samples_per_case={} payload_bytes={:?} connection_profiles=[{}]",
                 probe::READINESS_PROBE_SAMPLES_PER_CASE,
-                probe::READINESS_PROBE_PAYLOAD_BYTES
+                probe::READINESS_PROBE_PAYLOAD_BYTES,
+                probe::READINESS_PROBE_CONNECTION_PROFILES
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         );
         Ok(())
@@ -316,6 +325,38 @@ impl BridgeClient {
         let entry = log_entry(level, message);
         self.state.logs.push(entry);
         trim_logs(&mut self.state.logs);
+    }
+
+    fn apply_stopped_session_events(&mut self, events: Vec<state::RuntimeEvent>) {
+        for event in events {
+            match event {
+                state::RuntimeEvent::Log(level, message) => self.push_log(level, message),
+                state::RuntimeEvent::CounterDelta(delta) => self.state.counters.add(delta),
+                state::RuntimeEvent::SessionHealthSnapshot(snapshot) => {
+                    if let Some(incident) = self.state.record_session_health_incident(&snapshot) {
+                        self.log(
+                            LogLevel::Warn,
+                            format!("Client incident {}: {}", incident.kind, incident.summary),
+                        );
+                    }
+                    self.state.latest_session_health = Some(*snapshot);
+                }
+                state::RuntimeEvent::SessionHealthSummary(snapshot) => {
+                    let snapshot = *snapshot;
+                    self.state.latest_session_health = Some(snapshot.clone());
+                    self.state.latest_session_health_summary = Some(snapshot);
+                }
+                state::RuntimeEvent::UdpFecSnapshot(snapshot) => {
+                    self.state.latest_udp_fec = Some(*snapshot);
+                }
+                state::RuntimeEvent::SessionEnded(reason) => {
+                    self.state.last_stop_reason = Some(reason);
+                }
+                state::RuntimeEvent::Stopped
+                | state::RuntimeEvent::ReadinessProbeFinished(_)
+                | state::RuntimeEvent::HookReceiveProbeFinished(_) => {}
+            }
+        }
     }
 }
 
@@ -389,6 +430,7 @@ mod tests {
             steam_id64: "76561198000000001".to_owned(),
             display_name: "Alice".to_owned(),
             session_health: SessionHealthConfig::default(),
+            udp_fec: Default::default(),
             #[cfg(feature = "internal-test")]
             test_run_id: None,
         };

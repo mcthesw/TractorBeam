@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::{InjectionStep, InjectorError};
+use crate::InjectorError;
 
 pub fn inject(pid: u32, hook: &Path) -> Result<(), InjectorError> {
     inject_platform(pid, hook)
@@ -9,6 +9,8 @@ pub fn inject(pid: u32, hook: &Path) -> Result<(), InjectorError> {
 #[cfg(windows)]
 fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
     use std::{ffi::OsStr, io, iter, os::windows::ffi::OsStrExt, ptr};
+
+    use crate::InjectionStep;
 
     use windows_sys::Win32::{
         Foundation::{CloseHandle, WAIT_OBJECT_0},

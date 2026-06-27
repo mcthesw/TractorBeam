@@ -510,11 +510,11 @@ impl eframe::App for BridgeApp {
         egui::Panel::bottom("status_bar")
             .resizable(false)
             .exact_size(30.0)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 self.status_bar(ui);
             });
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             self.top_bar(ui);
             ui.separator();
             ui.add_space(8.0);

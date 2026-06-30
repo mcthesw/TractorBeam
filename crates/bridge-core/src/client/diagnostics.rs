@@ -99,6 +99,42 @@ impl BridgeClient {
         if let Some(error) = &self.state.latest_hook_receive_probe_error {
             output.push_str(&format!("hook_receive_error: {error}\n"));
         }
+        if let Some(warning) = &self.state.latest_hook_receive_probe_warning {
+            output.push_str(&format!("hook_receive_warning: {warning}\n"));
+        }
+        output.push('\n');
+        output.push_str("native hook startup:\n");
+        let startup = &self.state.hook_startup;
+        if startup.is_started() {
+            output.push_str(&format!("phase: {}\n", startup.phase));
+            output.push_str(&format!("injected: {}\n", startup.injected));
+            output.push_str(&format!("endpoint_ready: {}\n", startup.endpoint_ready));
+            output.push_str(&format!("access_denied: {}\n", startup.access_denied));
+            output.push_str(&format!("updated_at: {}\n", startup.updated_at));
+            if let Some(process_name) = &startup.process_name {
+                output.push_str(&format!("process_name: {process_name}\n"));
+            }
+            if let Some(pid) = startup.pid {
+                output.push_str(&format!("pid: {pid}\n"));
+            }
+            if let Some(path) = &startup.injector_path {
+                output.push_str(&format!("injector_path: {}\n", path.display()));
+            }
+            if let Some(path) = &startup.hook_path {
+                output.push_str(&format!("hook_path: {}\n", path.display()));
+            }
+            if let Some(path) = &startup.launch_parameters_path {
+                output.push_str(&format!("launch_parameters_path: {}\n", path.display()));
+            }
+            if let Some(endpoint) = &startup.endpoint {
+                output.push_str(&format!("endpoint: {endpoint}\n"));
+            }
+            if let Some(message) = &startup.message {
+                output.push_str(&format!("message: {message}\n"));
+            }
+        } else {
+            output.push_str("phase: not_started\n");
+        }
         output.push('\n');
         output.push_str("session health:\n");
         if let Some(snapshot) = self
@@ -152,8 +188,16 @@ impl BridgeClient {
             output.push('\n');
         }
         output.push_str("hook runtime files:\n");
-        if let Some(path) = &self.state.hook_config_path_written {
-            output.push_str(&format!("config_path_written: {}\n", path.display()));
+        if let Some(path) = &self.state.hook_launch_parameters_path_written {
+            output.push_str(&format!(
+                "launch_parameters_path_written: {}\n",
+                path.display()
+            ));
+            if let Some(cleanup) = &self.state.hook_launch_parameters_cleanup {
+                output.push_str(&format!("launch_parameters_cleanup: {cleanup}\n"));
+            } else {
+                output.push_str("launch_parameters_cleanup: none\n");
+            }
             if let Some(hook_log_path) = self.state.hook_log_path_written() {
                 output.push_str(&format!(
                     "hook_log_path_expected: {}\n",
@@ -181,7 +225,7 @@ impl BridgeClient {
                 }
             }
         } else {
-            output.push_str("config_path_written: none\n");
+            output.push_str("launch_parameters_path_written: none\n");
         }
         output.push_str("\nIsaac online log excerpts:\n");
         let log_directory = crate::diagnostics::isaac_online_logs_directory();

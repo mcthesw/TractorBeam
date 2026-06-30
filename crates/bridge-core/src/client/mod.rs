@@ -44,8 +44,8 @@ pub use session_config::{
 };
 pub use session_health::{SessionHealthSnapshot, SessionHealthSummary, SessionQuality};
 pub use state::{
-    ClientIncidentKind, ClientIncidentSnapshot, Counters, LogEntry, LogLevel, RuntimeState,
-    SessionStatus, SessionStopReason,
+    ClientIncidentKind, ClientIncidentSnapshot, Counters, HookStartupPhase, HookStartupState,
+    LogEntry, LogLevel, RuntimeState, SessionStatus, SessionStopReason,
 };
 
 pub const PRODUCT_NAME: &str = "Basement Bridge";

@@ -18,9 +18,9 @@ pub(super) fn write_hook_config(
     paths: &basement_isaac_injector::NativeHookPaths,
 ) -> io::Result<HookConfigWrite> {
     let path = hook_config_path(&paths.hook)?;
-    let directory = path
-        .parent()
-        .ok_or_else(|| io::Error::other("Native Hook config path has no parent directory"))?;
+    let directory = path.parent().ok_or_else(|| {
+        io::Error::other("Native Hook launch parameter path has no parent directory")
+    })?;
     fs::create_dir_all(directory)?;
     let fallback_to_steam = u8::from(config.mode == SessionMode::Fallback);
     let contents = format!(

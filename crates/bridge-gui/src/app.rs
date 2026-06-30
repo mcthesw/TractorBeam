@@ -67,7 +67,6 @@ pub struct BridgeApp {
     relay_host: String,
     relay_port: u16,
     transport: TransportChoice,
-    udp_fec_enabled: bool,
     active_connection_profile: Option<ConnectionProfile>,
     room: String,
     mode: SessionMode,
@@ -124,7 +123,6 @@ impl BridgeApp {
             relay_host: String::new(),
             relay_port: 25_910,
             transport: loaded_config.config.default_transport,
-            udp_fec_enabled: loaded_config.config.udp_fec.enabled,
             active_connection_profile: None,
             room: startup_room,
             mode: loaded_config.config.default_mode,
@@ -187,24 +185,20 @@ impl BridgeApp {
             steam_id64,
             display_name,
             session_health: self.client.loaded_config().config.session_health,
-            udp_fec: self.current_udp_fec_config(),
             #[cfg(feature = "internal-test")]
             test_run_id: Some(self.test_run_id.clone()),
         }
     }
 
-    fn current_udp_fec_config(&self) -> basement_bridge_core::udp_fec::UdpFecConfig {
-        self.current_connection_profile()
-            .udp_fec_config(self.client.loaded_config().config.udp_fec)
-    }
-
     fn current_connection_profile(&self) -> ConnectionProfile {
-        ConnectionProfile::from_parts(self.transport, self.udp_fec_enabled)
+        match self.transport {
+            TransportChoice::Tcp => ConnectionProfile::Tcp,
+            TransportChoice::Udp => ConnectionProfile::Udp,
+        }
     }
 
     fn set_connection_profile(&mut self, profile: ConnectionProfile) {
         self.transport = profile.transport();
-        self.udp_fec_enabled = profile.udp_fec_enabled();
     }
 
     fn connection_profile_pending(&self) -> bool {
@@ -337,9 +331,6 @@ impl BridgeApp {
             self.imported_relay_name = None;
         }
         self.transport = relay.preferred_transport(self.transport);
-        if self.transport == TransportChoice::Tcp {
-            self.udp_fec_enabled = false;
-        }
         self.relay_host = relay.endpoint.host;
         self.relay_port = relay.endpoint.port;
         #[cfg(feature = "internal-test")]
@@ -360,7 +351,6 @@ impl BridgeApp {
                 .or_else(|| self.imported_relay_name.clone()),
             relay: RelayEndpoint::new(self.relay_host.trim(), self.relay_port),
             transport: self.transport,
-            udp_fec: self.current_udp_fec_config(),
             room: self.room.trim().to_owned(),
             mode: self.mode,
         }
@@ -379,15 +369,11 @@ impl BridgeApp {
     fn import_share_code(&mut self) {
         match InternalTestShareCode::decode(&self.share_code_input) {
             Ok(code) => {
-                let profile = ConnectionProfile::from_parts(
-                    code.session.transport,
-                    code.session.udp_fec.enabled,
-                );
                 self.selected_relay = None;
                 self.imported_relay_name = code.session.relay_name;
                 self.relay_host = code.session.relay.host;
                 self.relay_port = code.session.relay.port;
-                self.set_connection_profile(profile);
+                self.transport = code.session.transport;
                 self.room = code.session.room;
                 self.mode = code.session.mode;
                 self.test_run_id = code.test_run_id;

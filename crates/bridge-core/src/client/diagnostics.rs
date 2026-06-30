@@ -156,21 +156,6 @@ impl BridgeClient {
             output.push_str("none\n");
         }
         output.push('\n');
-        output.push_str("udp fec:\n");
-        if let Some(snapshot) = &self.state.latest_udp_fec {
-            output.push_str(&snapshot.compact_log_line("summary"));
-            output.push('\n');
-            match serde_json::to_string_pretty(snapshot) {
-                Ok(json) => {
-                    output.push_str(&json);
-                    output.push('\n');
-                }
-                Err(error) => output.push_str(&format!("json_unavailable: {error}\n")),
-            }
-        } else {
-            output.push_str("none\n");
-        }
-        output.push('\n');
         output.push_str("client incidents:\n");
         if self.state.client_incidents.is_empty() {
             output.push_str("none\n\n");

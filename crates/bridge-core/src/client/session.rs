@@ -43,7 +43,6 @@ const EVENT_QUEUE_CAPACITY: usize = 512;
 const PACKET_QUEUE_CAPACITY: usize = 256;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(6);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
-const UDP_FEC_FLUSH_INTERVAL: Duration = Duration::from_millis(1);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 const HOOK_BUFFER_SIZE: usize = 65_535;
@@ -335,18 +334,15 @@ async fn relay_transport_task(
     health_snapshot.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut runtime_rtt = time::interval(context.runtime_rtt_interval);
     runtime_rtt.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    let mut udp_fec_flush = time::interval(UDP_FEC_FLUSH_INTERVAL);
-    udp_fec_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
             () = context.cancellation.cancelled() => {
-                emit_udp_fec_snapshot(&context.event_tx, &relay);
                 return Ok(());
             }
             Some(packet) = outbound_rx.recv() => {
                 let started = Instant::now();
-                relay.sender.send_data_datagram(packet.raw, started).await?;
+                relay.sender.send_data_datagram(packet.raw).await?;
                 observe_health(&context.health, |health| {
                     health.observe_relay_send_duration(started.elapsed());
                 });
@@ -377,17 +373,11 @@ async fn relay_transport_task(
                     Err(error) => send_error(&context.event_tx, format!("Bad relay packet: {error}")),
                 }
             }
-            _ = udp_fec_flush.tick(), if relay.sender.fec_enabled() => {
-                let now = Instant::now();
-                relay.sender.flush_fec(now).await?;
-                relay.receiver.expire_fec(now);
-            }
             _ = heartbeat.tick() => {
                 send_control(&mut relay.sender, MessageType::Heartbeat, &ControlMessage::Heartbeat).await?;
             }
             _ = health_snapshot.tick(), if context.health.is_some() => {
                 emit_health_snapshot(&context.event_tx, &context.health);
-                emit_udp_fec_snapshot(&context.event_tx, &relay);
             }
             _ = runtime_rtt.tick(), if context.health.is_some() => {
                 if let Some(id) = next_health_ping(&context.health) {
@@ -454,18 +444,6 @@ fn emit_health_snapshot(event_tx: &RuntimeEventSender, health: &Option<SharedSes
             RuntimeEvent::SessionHealthSnapshot(Box::new(snapshot)),
         );
     }
-}
-
-fn emit_udp_fec_snapshot(event_tx: &RuntimeEventSender, relay: &RelayTransport) {
-    let snapshot = relay.udp_fec_snapshot();
-    if snapshot.is_empty() {
-        return;
-    }
-    send_event(
-        event_tx,
-        log_event(LogLevel::Info, snapshot.compact_log_line("UDP FEC")),
-    );
-    send_event(event_tx, RuntimeEvent::UdpFecSnapshot(Box::new(snapshot)));
 }
 
 fn emit_health_summary(event_tx: &RuntimeEventSender, health: &Option<SharedSessionHealth>) {

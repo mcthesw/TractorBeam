@@ -162,9 +162,6 @@ impl BridgeClient {
                     self.state.latest_session_health = Some(snapshot.clone());
                     self.state.latest_session_health_summary = Some(snapshot);
                 }
-                state::RuntimeEvent::UdpFecSnapshot(snapshot) => {
-                    self.state.latest_udp_fec = Some(*snapshot);
-                }
                 state::RuntimeEvent::SessionEnded(reason) => {
                     self.state.last_stop_reason = Some(reason.clone());
                 }
@@ -206,7 +203,6 @@ impl BridgeClient {
         self.state.latest_hook_receive_probe_warning = None;
         self.state.latest_session_health = None;
         self.state.latest_session_health_summary = None;
-        self.state.latest_udp_fec = None;
         self.state.hook_launch_parameters_path_written = None;
         self.state.hook_launch_parameters_cleanup = None;
         self.state.hook_startup = state::HookStartupState::default();
@@ -410,9 +406,6 @@ impl BridgeClient {
                     self.state.latest_session_health = Some(snapshot.clone());
                     self.state.latest_session_health_summary = Some(snapshot);
                 }
-                state::RuntimeEvent::UdpFecSnapshot(snapshot) => {
-                    self.state.latest_udp_fec = Some(*snapshot);
-                }
                 state::RuntimeEvent::HookReceiveProbeWarning(message) => {
                     self.state.latest_hook_receive_probe_warning = Some(message);
                     self.state.latest_hook_receive_probe_error = None;
@@ -587,7 +580,6 @@ mod tests {
             steam_id64: "76561198000000001".to_owned(),
             display_name: "Alice".to_owned(),
             session_health: SessionHealthConfig::default(),
-            udp_fec: Default::default(),
             #[cfg(feature = "internal-test")]
             test_run_id: None,
         };

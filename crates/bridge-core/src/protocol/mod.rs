@@ -4,7 +4,7 @@ mod control;
 mod envelope;
 mod local;
 
-pub use control::{ControlMessage, ControlMessageError, UdpFecControl};
+pub use control::{ControlMessage, ControlMessageError};
 pub use envelope::{DecodeError, EncodeError, Envelope, MessageType};
 pub use local::{GamePacket, GamePacketError, LocalPacket, LocalPacketError, LocalPacketType};
 
@@ -76,7 +76,6 @@ mod tests {
             steam_id64: "76561198000000001".to_owned(),
             display_name: Some("Alice".to_owned()),
             challenge: None,
-            udp_fec: None,
         };
 
         let bytes = message.encode().unwrap();

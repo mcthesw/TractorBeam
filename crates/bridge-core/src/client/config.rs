@@ -12,7 +12,6 @@ use super::{
     PRODUCT_NAME,
     session_config::{RelayEndpoint, SessionHealthConfig, SessionMode, TransportChoice},
 };
-use crate::udp_fec::UdpFecConfig;
 
 pub const CLIENT_CONFIG_FILE: &str = "config.toml";
 
@@ -30,7 +29,6 @@ pub struct ClientConfig {
     pub selected_relay: Option<String>,
     pub relays: Vec<RelayPreset>,
     pub session_health: SessionHealthConfig,
-    pub udp_fec: UdpFecConfig,
     #[cfg(feature = "internal-test")]
     pub internal_test: InternalTestConfig,
 }
@@ -43,7 +41,6 @@ impl Default for ClientConfig {
             selected_relay: None,
             relays: Vec::new(),
             session_health: SessionHealthConfig::default(),
-            udp_fec: UdpFecConfig::default(),
             #[cfg(feature = "internal-test")]
             internal_test: InternalTestConfig::default(),
         }
@@ -202,7 +199,6 @@ struct RawClientConfig {
     default_mode: Option<String>,
     selected_relay: Option<String>,
     session_health: Option<RawSessionHealthConfig>,
-    udp_fec: Option<UdpFecConfig>,
     #[cfg(feature = "internal-test")]
     internal_test: Option<RawInternalTestConfig>,
     #[serde(default)]
@@ -253,7 +249,6 @@ impl TryFrom<RawClientConfig> for ClientConfig {
                 .map(TryInto::try_into)
                 .collect::<Result<Vec<_>, _>>()?,
             session_health: value.session_health.unwrap_or_default().into(),
-            udp_fec: value.udp_fec.unwrap_or_default(),
             #[cfg(feature = "internal-test")]
             internal_test: value.internal_test.unwrap_or_default().into(),
         };
@@ -475,10 +470,6 @@ enabled = true
 runtime_rtt_enabled = false
 snapshot_interval_seconds = 10
 
-[udp_fec]
-enabled = true
-profile = "rs_8_2_4ms"
-
 [[relays]]
 id = "current"
 name = "Current test relay"
@@ -499,11 +490,6 @@ default_transport = "tcp"
         assert!(config.session_health.enabled);
         assert!(!config.session_health.runtime_rtt_enabled);
         assert_eq!(config.session_health.snapshot_interval_seconds, 10);
-        assert!(config.udp_fec.enabled);
-        assert_eq!(
-            config.udp_fec.profile,
-            crate::udp_fec::UdpFecProfileName::Rs8_2_4ms
-        );
         assert_eq!(config.selected_relay_index(), Some(0));
         assert_eq!(
             config.relays[0].preferred_transport(TransportChoice::Udp),

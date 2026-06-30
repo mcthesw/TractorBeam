@@ -1,6 +1,5 @@
-use std::{collections::HashMap, io, net::SocketAddr, time::Instant};
+use std::{collections::HashMap, io, net::SocketAddr};
 
-use basement_bridge_core::udp_fec::{UdpFecDecoder, UdpFecEncoder, UdpFecProfile};
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
@@ -8,24 +7,15 @@ use crate::state::PeerId;
 
 #[derive(Debug)]
 pub(crate) enum PeerEgress {
-    Udp {
-        address: SocketAddr,
-        fec: Option<Box<UdpFecPeer>>,
-    },
+    Udp { address: SocketAddr },
     Tcp(mpsc::Sender<Bytes>),
-}
-
-#[derive(Debug)]
-pub(crate) struct UdpFecPeer {
-    encoder: UdpFecEncoder,
-    decoder: UdpFecDecoder,
 }
 
 #[derive(Debug)]
 pub(crate) enum PeerOutput {
     Udp {
         address: SocketAddr,
-        frames: Vec<Bytes>,
+        frame: Bytes,
     },
     Tcp {
         sender: mpsc::Sender<Bytes>,
@@ -41,12 +31,9 @@ pub(crate) struct EgressTable {
 impl EgressTable {
     pub(crate) fn upsert_udp(&mut self, peer_id: PeerId, address: SocketAddr) {
         match self.peers.get_mut(&peer_id) {
-            Some(PeerEgress::Udp {
-                address: existing, ..
-            }) => *existing = address,
+            Some(PeerEgress::Udp { address: existing }) => *existing = address,
             _ => {
-                self.peers
-                    .insert(peer_id, PeerEgress::Udp { address, fec: None });
+                self.peers.insert(peer_id, PeerEgress::Udp { address });
             }
         }
     }
@@ -55,74 +42,19 @@ impl EgressTable {
         self.peers.insert(peer_id, PeerEgress::Tcp(sender));
     }
 
-    pub(crate) fn enable_udp_fec(&mut self, peer_id: PeerId, profile: UdpFecProfile) {
-        if let Some(PeerEgress::Udp { fec, .. }) = self.peers.get_mut(&peer_id) {
-            *fec = Some(Box::new(UdpFecPeer {
-                encoder: UdpFecEncoder::new(profile),
-                decoder: UdpFecDecoder::new(profile),
-            }));
-        }
-    }
-
-    pub(crate) fn disable_udp_fec(&mut self, peer_id: PeerId) {
-        if let Some(PeerEgress::Udp { fec, .. }) = self.peers.get_mut(&peer_id) {
-            *fec = None;
-        }
-    }
-
-    pub(crate) fn decode_udp(
-        &mut self,
-        peer_id: PeerId,
-        raw: Bytes,
-        now: Instant,
-    ) -> io::Result<Vec<Bytes>> {
-        let Some(PeerEgress::Udp { fec: Some(fec), .. }) = self.peers.get_mut(&peer_id) else {
-            return Ok(vec![raw]);
-        };
-        fec.decoder.decode(raw, now).map_err(io::Error::other)
-    }
-
     pub(crate) fn send_control(&mut self, peer_id: PeerId, raw: Bytes) -> io::Result<PeerOutput> {
-        self.peer_output(peer_id, raw, None)
+        self.peer_output(peer_id, raw)
     }
 
-    pub(crate) fn send_data(
-        &mut self,
-        peer_id: PeerId,
-        raw: Bytes,
-        now: Instant,
-    ) -> io::Result<PeerOutput> {
-        self.peer_output(peer_id, raw, Some(now))
-    }
-
-    pub(crate) fn flush_udp_fec(&mut self, now: Instant) -> io::Result<Vec<(SocketAddr, Bytes)>> {
-        let mut outputs = Vec::new();
-        for peer in self.peers.values_mut() {
-            let PeerEgress::Udp {
-                address,
-                fec: Some(fec),
-            } = peer
-            else {
-                continue;
-            };
-            fec.decoder.expire(now);
-            for frame in fec.encoder.flush_expired(now).map_err(io::Error::other)? {
-                outputs.push((*address, frame));
-            }
-        }
-        Ok(outputs)
+    pub(crate) fn send_data(&mut self, peer_id: PeerId, raw: Bytes) -> io::Result<PeerOutput> {
+        self.peer_output(peer_id, raw)
     }
 
     pub(crate) fn remove(&mut self, peer_id: PeerId) {
         self.peers.remove(&peer_id);
     }
 
-    fn peer_output(
-        &mut self,
-        peer_id: PeerId,
-        raw: Bytes,
-        fec_now: Option<Instant>,
-    ) -> io::Result<PeerOutput> {
+    fn peer_output(&mut self, peer_id: PeerId, raw: Bytes) -> io::Result<PeerOutput> {
         let Some(target) = self.peers.get_mut(&peer_id) else {
             return Err(io::Error::new(
                 io::ErrorKind::NotConnected,
@@ -130,59 +62,14 @@ impl EgressTable {
             ));
         };
         match target {
-            PeerEgress::Udp { address, fec } => {
-                let frames = match (fec, fec_now) {
-                    (Some(fec), Some(now)) => fec
-                        .encoder
-                        .encode_or_passthrough(raw, now)
-                        .map_err(io::Error::other)?,
-                    _ => vec![raw],
-                };
-                Ok(PeerOutput::Udp {
-                    address: *address,
-                    frames,
-                })
-            }
+            PeerEgress::Udp { address } => Ok(PeerOutput::Udp {
+                address: *address,
+                frame: raw,
+            }),
             PeerEgress::Tcp(sender) => Ok(PeerOutput::Tcp {
                 sender: sender.clone(),
                 frame: raw,
             }),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use basement_bridge_core::udp_fec::UdpFecProfileName;
-
-    #[test]
-    fn disabling_udp_fec_restores_plain_udp_output() {
-        let peer_id = PeerId::new(1);
-        let mut table = EgressTable::default();
-        table.upsert_udp(peer_id, SocketAddr::from(([127, 0, 0, 1], 25910)));
-        table.enable_udp_fec(
-            peer_id,
-            UdpFecProfile::for_name(UdpFecProfileName::Rs8_2_4ms),
-        );
-
-        let raw = Bytes::from_static(b"relay-data");
-        let encoded = table
-            .send_data(peer_id, raw.clone(), Instant::now())
-            .unwrap();
-        let PeerOutput::Udp { frames, .. } = encoded else {
-            panic!("expected udp output");
-        };
-        assert_ne!(frames, vec![raw.clone()]);
-
-        table.disable_udp_fec(peer_id);
-        let plain = table
-            .send_data(peer_id, raw.clone(), Instant::now())
-            .unwrap();
-        let PeerOutput::Udp { frames, .. } = plain else {
-            panic!("expected udp output");
-        };
-        assert_eq!(frames, vec![raw]);
     }
 }

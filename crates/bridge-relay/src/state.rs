@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use basement_bridge_core::protocol::{ControlMessage, UdpFecControl};
+use basement_bridge_core::protocol::ControlMessage;
 use rand::RngExt as _;
 use tracing::info;
 
@@ -57,7 +57,6 @@ struct PendingJoin {
     room: String,
     steam_id64: String,
     display_name: Option<String>,
-    udp_fec: Option<UdpFecControl>,
     token: String,
     issued_at: Instant,
 }
@@ -69,7 +68,6 @@ pub(crate) struct JoinCompletion {
     pub(crate) steam_id64: String,
     pub(crate) challenge: String,
     pub(crate) transport: PeerTransport,
-    pub(crate) udp_fec: Option<UdpFecControl>,
     pub(crate) now: Instant,
 }
 
@@ -77,7 +75,6 @@ pub(crate) struct JoinCompletion {
 struct Peer {
     steam_id64: String,
     display_name: Option<String>,
-    udp_fec: Option<UdpFecControl>,
     transport: PeerTransport,
     last_seen: Instant,
 }
@@ -143,7 +140,6 @@ impl RelayState {
         room: String,
         steam_id64: String,
         display_name: Option<String>,
-        udp_fec: Option<UdpFecControl>,
         now: Instant,
     ) -> ControlMessage {
         if let Err(error) = self.validate_join(peer_id, &room) {
@@ -157,7 +153,6 @@ impl RelayState {
                 room,
                 steam_id64,
                 display_name,
-                udp_fec,
                 token: token.clone(),
                 issued_at: now,
             },
@@ -172,7 +167,6 @@ impl RelayState {
             steam_id64,
             challenge,
             transport,
-            udp_fec,
             now,
         } = completion;
         let Some(pending) = self.pending.remove(&peer_id) else {
@@ -189,17 +183,11 @@ impl RelayState {
         self.peer_rooms.insert(peer_id, pending.room.clone());
         let room = self.rooms.entry(pending.room.clone()).or_default();
         room.last_seen = Some(now);
-        let udp_fec = if transport == PeerTransport::Udp {
-            pending.udp_fec.or(udp_fec)
-        } else {
-            None
-        };
         room.peers.insert(
             peer_id,
             Peer {
                 steam_id64: pending.steam_id64,
                 display_name: pending.display_name,
-                udp_fec,
                 transport,
                 last_seen: now,
             },
@@ -213,7 +201,6 @@ impl RelayState {
         );
         ControlMessage::Ready {
             peer_count: room.peers.len(),
-            udp_fec: room.peers.get(&peer_id).and_then(|peer| peer.udp_fec),
         }
     }
 

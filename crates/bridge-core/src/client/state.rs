@@ -10,7 +10,6 @@ use super::{
     SessionHealthSnapshot, SteamIdentity,
     probe::{HookReceiveProbeReport, ReadinessProbeReport},
 };
-use crate::udp_fec::UdpFecSessionSnapshot;
 
 pub(super) const MAX_IN_MEMORY_LOGS: usize = 2_000;
 const MAX_CLIENT_INCIDENT_SNAPSHOTS: usize = 16;
@@ -271,7 +270,6 @@ pub struct RuntimeState {
     pub latest_hook_receive_probe_warning: Option<String>,
     pub latest_session_health: Option<SessionHealthSnapshot>,
     pub latest_session_health_summary: Option<SessionHealthSnapshot>,
-    pub latest_udp_fec: Option<UdpFecSessionSnapshot>,
     pub hook_launch_parameters_path_written: Option<PathBuf>,
     pub hook_launch_parameters_cleanup: Option<String>,
     pub hook_startup: HookStartupState,
@@ -289,7 +287,6 @@ pub(super) enum RuntimeEvent {
     HookStartup(Box<HookStartupState>),
     SessionHealthSnapshot(Box<SessionHealthSnapshot>),
     SessionHealthSummary(Box<SessionHealthSnapshot>),
-    UdpFecSnapshot(Box<UdpFecSessionSnapshot>),
     SessionEnded(SessionStopReason),
     Stopped,
 }

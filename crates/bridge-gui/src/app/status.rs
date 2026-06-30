@@ -135,7 +135,6 @@ pub(super) fn connection_profile_label(
     match profile {
         ConnectionProfile::Tcp => text(language, Text::Tcp),
         ConnectionProfile::Udp => text(language, Text::Udp),
-        ConnectionProfile::UdpFec => text(language, Text::UdpFecExperimental),
     }
 }
 

@@ -14,13 +14,11 @@ use super::{
     RelayEndpoint, SessionHealthSnapshot, SessionMode, TransportChoice, diagnostics_directory,
     runtime_name, state::unix_seconds,
 };
-use crate::{
-    build_info::{self, BuildInfo},
-    udp_fec::{UdpFecConfig, UdpFecSessionSnapshot},
-};
+use crate::build_info::{self, BuildInfo};
 
 const SHARE_CODE_PREFIX: &str = "BB1.";
-const REPORT_SCHEMA_VERSION: u8 = 3;
+const SHARE_CODE_VERSION: u8 = 2;
+const REPORT_SCHEMA_VERSION: u8 = 4;
 
 #[path = "internal_test_upload.rs"]
 mod upload;
@@ -32,7 +30,6 @@ pub struct InternalTestReportSession {
     pub relay_name: Option<String>,
     pub relay: RelayEndpoint,
     pub transport: TransportChoice,
-    pub udp_fec: UdpFecConfig,
     pub room: String,
     pub mode: SessionMode,
 }
@@ -223,7 +220,6 @@ impl BridgeClient {
                 .latest_session_health_summary
                 .clone()
                 .or_else(|| self.state.latest_session_health.clone()),
-            udp_fec: self.state.latest_udp_fec.clone(),
         }
     }
 }
@@ -235,7 +231,6 @@ struct ShareCodePayload {
     relay_host: String,
     relay_port: u16,
     transport: String,
-    udp_fec: Option<UdpFecConfig>,
     room: String,
     mode: String,
     test_run_id: String,
@@ -244,12 +239,11 @@ struct ShareCodePayload {
 impl From<&InternalTestShareCode> for ShareCodePayload {
     fn from(value: &InternalTestShareCode) -> Self {
         Self {
-            version: 1,
+            version: SHARE_CODE_VERSION,
             relay_name: value.session.relay_name.clone(),
             relay_host: value.session.relay.host.clone(),
             relay_port: value.session.relay.port,
             transport: serialize_transport(value.session.transport).to_owned(),
-            udp_fec: Some(value.session.udp_fec),
             room: value.session.room.clone(),
             mode: serialize_mode(value.session.mode).to_owned(),
             test_run_id: value.test_run_id.clone(),
@@ -261,7 +255,7 @@ impl TryFrom<ShareCodePayload> for InternalTestShareCode {
     type Error = InternalTestReportError;
 
     fn try_from(value: ShareCodePayload) -> Result<Self, Self::Error> {
-        if value.version != 1 {
+        if value.version != SHARE_CODE_VERSION {
             return Err(InternalTestReportError::InvalidShareCode(format!(
                 "unsupported version {}",
                 value.version
@@ -272,10 +266,6 @@ impl TryFrom<ShareCodePayload> for InternalTestShareCode {
             .validate()
             .map_err(|error| InternalTestReportError::InvalidShareCode(error.to_string()))?;
         let transport = parse_transport(&value.transport)?;
-        let mut udp_fec = value.udp_fec.unwrap_or_default();
-        if transport != TransportChoice::Udp {
-            udp_fec.enabled = false;
-        }
         let room = value.room.trim().to_owned();
         if room.is_empty() {
             return Err(InternalTestReportError::InvalidShareCode(
@@ -296,7 +286,6 @@ impl TryFrom<ShareCodePayload> for InternalTestShareCode {
                     .filter(|name| !name.is_empty()),
                 relay,
                 transport,
-                udp_fec,
                 room,
                 mode: parse_mode(&value.mode)?,
             },
@@ -322,7 +311,6 @@ struct ReportMetadata {
     hook_receive: Option<HookReceiveProbeReport>,
     hook_receive_error: Option<String>,
     session_health: Option<SessionHealthSnapshot>,
-    udp_fec: Option<UdpFecSessionSnapshot>,
 }
 
 #[derive(Debug, Serialize)]
@@ -400,12 +388,6 @@ fn write_report_zip(
         "artifacts/session_health.json",
         &metadata.session_health,
     )?;
-    write_optional_json(
-        &mut zip,
-        options,
-        "artifacts/udp_fec.json",
-        &metadata.udp_fec,
-    )?;
     if let Some(path) = process_log_path {
         write_zip_file(&mut zip, options, "logs/process", &path)?;
     }
@@ -451,9 +433,6 @@ fn report_preview_text(metadata: &ReportMetadata, diagnostics_text: &str) -> Str
 fn connection_profile_summary(session: &InternalTestReportSession) -> String {
     match session.transport {
         TransportChoice::Tcp => "tcp".to_owned(),
-        TransportChoice::Udp if session.udp_fec.enabled => {
-            format!("udp+fec:{}", session.udp_fec.profile)
-        }
         TransportChoice::Udp => "udp".to_owned(),
     }
 }
@@ -621,10 +600,6 @@ mod tests {
                 relay_name: Some("Test relay".to_owned()),
                 relay: RelayEndpoint::new("relay.example.test", 25_910),
                 transport: TransportChoice::Udp,
-                udp_fec: UdpFecConfig {
-                    enabled: true,
-                    ..UdpFecConfig::default()
-                },
                 room: "bb-test".to_owned(),
                 mode: SessionMode::Pure,
             },
@@ -641,7 +616,6 @@ mod tests {
         assert_eq!(decoded.test_run_id, "run-123");
         assert_eq!(decoded.session.relay.host, "relay.example.test");
         assert_eq!(decoded.session.transport, TransportChoice::Udp);
-        assert!(decoded.session.udp_fec.enabled);
     }
 
     #[test]

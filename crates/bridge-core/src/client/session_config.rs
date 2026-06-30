@@ -5,8 +5,6 @@ use std::{
 
 use serde::Serialize;
 
-use crate::udp_fec::{UdpFecConfig, UdpFecProfileName};
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum SessionMode {
     Official,
@@ -46,43 +44,17 @@ pub enum ConnectionProfile {
     Udp,
     #[default]
     Tcp,
-    UdpFec,
 }
 
 impl ConnectionProfile {
-    pub const ALL: [Self; 3] = [Self::Tcp, Self::Udp, Self::UdpFec];
-
-    #[must_use]
-    pub fn from_parts(transport: TransportChoice, udp_fec_enabled: bool) -> Self {
-        match (transport, udp_fec_enabled) {
-            (TransportChoice::Tcp, _) => Self::Tcp,
-            (TransportChoice::Udp, true) => Self::UdpFec,
-            (TransportChoice::Udp, false) => Self::Udp,
-        }
-    }
+    pub const ALL: [Self; 2] = [Self::Tcp, Self::Udp];
 
     #[must_use]
     pub const fn transport(self) -> TransportChoice {
         match self {
             Self::Tcp => TransportChoice::Tcp,
-            Self::Udp | Self::UdpFec => TransportChoice::Udp,
+            Self::Udp => TransportChoice::Udp,
         }
-    }
-
-    #[must_use]
-    pub const fn udp_fec_enabled(self) -> bool {
-        matches!(self, Self::UdpFec)
-    }
-
-    #[must_use]
-    pub fn udp_fec_config(self, mut config: UdpFecConfig) -> UdpFecConfig {
-        config.enabled = self.udp_fec_enabled();
-        config
-    }
-
-    #[must_use]
-    pub fn udp_fec_profile(self, config: UdpFecConfig) -> Option<UdpFecProfileName> {
-        self.udp_fec_enabled().then_some(config.profile)
     }
 }
 
@@ -91,7 +63,6 @@ impl Display for ConnectionProfile {
         match self {
             Self::Udp => formatter.write_str("UDP"),
             Self::Tcp => formatter.write_str("TCP"),
-            Self::UdpFec => formatter.write_str("UDP + FEC"),
         }
     }
 }
@@ -192,7 +163,6 @@ pub struct SessionConfig {
     pub steam_id64: String,
     pub display_name: String,
     pub session_health: SessionHealthConfig,
-    pub udp_fec: UdpFecConfig,
     #[cfg(feature = "internal-test")]
     pub test_run_id: Option<String>,
 }

@@ -14,7 +14,7 @@ use super::status::error_message;
 use super::{
     BridgeApp, Page,
     status::{connection_profile_label, quality_label},
-    widgets::{account_label, detail_counters, selected_account_label, udp_fec_summary},
+    widgets::{account_label, detail_counters, selected_account_label},
 };
 
 impl BridgeApp {
@@ -84,7 +84,6 @@ impl BridgeApp {
         detail_counters(ui, self.language, self.client.state());
         ui.add_space(12.0);
         session_health_summary(ui, self.language, self.client.state());
-        udp_fec_summary(ui, self.client.state());
         ui.add_space(12.0);
         ui.heading(self.t(Text::Logs));
         ui.add_space(4.0);
@@ -355,7 +354,6 @@ impl BridgeApp {
         ui.add_space(8.0);
         let tcp = self.t(Text::Tcp);
         let udp = self.t(Text::Udp);
-        let udp_fec = self.t(Text::UdpFecExperimental);
         ui.label(self.t(Text::ConnectionProfile));
         let profile_before = self.current_connection_profile();
         let mut selected_profile = profile_before;
@@ -365,7 +363,6 @@ impl BridgeApp {
             });
             ui.add_enabled_ui(self.preset_supports_transport(TransportChoice::Udp), |ui| {
                 ui.radio_value(&mut selected_profile, ConnectionProfile::Udp, udp);
-                ui.radio_value(&mut selected_profile, ConnectionProfile::UdpFec, udp_fec);
             });
         });
         if selected_profile != profile_before {

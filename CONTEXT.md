@@ -42,11 +42,6 @@ _Avoid_: protocol, Relay Server, session mode
 The single Relay Transport selected by one Bridge Client session.
 _Avoid_: session mode, automatic fallback
 
-**Transport Profile**:
-Optional runtime settings inside one **Transport Choice**, such as enabling an
-experimental FEC profile for UDP.
-_Avoid_: transport, mode, protocol version
-
 **Client Bundle**:
 The versioned player-facing package that ships the Bridge GUI, Bridge Client, Native Hook, and Injector together.
 _Avoid_: hook release, GUI release
@@ -101,14 +96,14 @@ _Avoid_: normal relay mode
 - A **Bridge GUI** controls a **Bridge Client**.
 - A **Bridge Client** joins at most one **Room** on one **Relay Server** per active session.
 - A **Bridge Client** uses one **Transport Choice** to exchange **Protocol** envelopes with a **Relay Server** during an active session.
-- A **Transport Profile** may tune a **Transport Choice** without becoming a
-  separate **Transport Choice** or session mode.
 - A **Relay Server** forwards packets only among **Peers** in the same **Room**.
 - A **Directory Service** publishes metadata about one or more **Relay Servers**.
 - A **Diagnostics Bundle** describes one local **Bridge Client** run.
 - A **Readiness Preflight** runs before a player treats a **Bridge Client**
   session as playable.
 - An **Incident Snapshot** may be included in a **Diagnostics Bundle**.
+- A future FEC or redundancy design would be an **Advanced Transport** and
+  **Transport Choice**, not a UDP profile.
 
 ## Example Dialogue
 

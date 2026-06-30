@@ -171,22 +171,16 @@ def join_peer(
     room: str,
     steam_id64: str,
     timeout: float,
-    *,
-    udp_fec: bool = False,
-    require_udp_fec_ack: bool = True,
 ) -> dict[str, Any]:
-    fec = {"profile": "rs_8_2_4ms"} if udp_fec else None
-    send_join(peer, room, steam_id64, None, fec)
+    send_join(peer, room, steam_id64, None)
     message_type, challenge = recv_control(peer, timeout)
     if message_type != 2 or challenge.get("type") != "challenge":
         raise CompatError(f"expected join challenge, got {challenge}")
 
-    send_join(peer, room, steam_id64, challenge.get("token"), fec)
+    send_join(peer, room, steam_id64, challenge.get("token"))
     message_type, ready = recv_control(peer, timeout)
     if message_type != 3 or ready.get("type") != "ready":
         raise CompatError(f"expected join ready, got {ready}")
-    if udp_fec and require_udp_fec_ack and ready.get("udp_fec") is None:
-        raise CompatError("UDP FEC was requested but not acknowledged")
     return ready
 
 
@@ -195,7 +189,6 @@ def send_join(
     room: str,
     steam_id64: str,
     challenge: str | None,
-    udp_fec: dict[str, str] | None,
 ) -> None:
     peer.send(
         encode_control(
@@ -205,7 +198,6 @@ def send_join(
                 "steam_id64": steam_id64,
                 "display_name": None,
                 "challenge": challenge,
-                "udp_fec": udp_fec,
             },
             MESSAGE_JOIN,
         )
@@ -296,24 +288,6 @@ def case_forwarding(transport: str, address: tuple[str, int], timeout: float) ->
     finally:
         peer_a.close()
         peer_b.close()
-
-
-def case_udp_fec_negotiation(
-    address: tuple[str, int],
-    timeout: float,
-    *,
-    require_ack: bool,
-) -> None:
-    peer = UdpPeer(address)
-    try:
-        ready = join_peer(
-            peer, new_room(), "76561198000000103", timeout, udp_fec=True,
-            require_udp_fec_ack=require_ack,
-        )
-        if not require_ack and ready.get("udp_fec") is None:
-            raise CompatSkip("UDP FEC is not acknowledged by this baseline relay")
-    finally:
-        peer.close()
 
 
 def case_unsupported_major(address: tuple[str, int], timeout: float) -> None:
@@ -475,8 +449,6 @@ def run_relay_suite(
     suite: str,
     relay_binary: Path,
     timeout: float,
-    *,
-    require_udp_fec_ack: bool,
 ) -> None:
     if not relay_binary.exists():
         raise CompatSkip(f"relay binary not found: {relay_binary}")
@@ -506,14 +478,6 @@ def run_relay_suite(
             suite,
             "udp_forwarding",
             lambda: case_forwarding("udp", address, timeout),
-        )
-        run_case(
-            results,
-            suite,
-            "udp_fec_negotiation",
-            lambda: case_udp_fec_negotiation(
-                address, timeout, require_ack=require_udp_fec_ack
-            ),
         )
         run_case(
             results,
@@ -658,7 +622,6 @@ def main() -> int:
     try:
         run_relay_suite(
             results, args.head_label, Path(args.head_relay_binary), args.timeout,
-            require_udp_fec_ack=True,
         )
     except Exception as error:  # noqa: BLE001 - still write the report.
         add_result(results, args.head_label, "relay_startup", "fail", str(error))
@@ -667,7 +630,6 @@ def main() -> int:
         try:
             run_relay_suite(
                 results, args.base_label, base_relay, args.timeout,
-                require_udp_fec_ack=False,
             )
         except Exception as error:  # noqa: BLE001 - previous evidence is optional.
             add_result(

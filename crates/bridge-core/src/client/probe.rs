@@ -9,17 +9,14 @@ use std::{
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver},
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use bytes::Bytes;
 use serde::Serialize;
 use tokio::{runtime::Builder, time};
 
-use crate::{
-    protocol::{Envelope, GamePacket, LocalPacket, MessageType},
-    udp_fec::UdpFecConfig,
-};
+use crate::protocol::{Envelope, GamePacket, LocalPacket, MessageType};
 
 use super::{
     BridgeClient, LogLevel, RelayEndpoint, SessionConfig, SessionMode, TransportChoice,
@@ -246,25 +243,6 @@ impl ProbePeer {
         steam_id64: &'static str,
         display_name: &str,
     ) -> io::Result<Self> {
-        Self::join_with_udp_fec(
-            relay,
-            transport,
-            room,
-            steam_id64,
-            display_name,
-            UdpFecConfig::default(),
-        )
-        .await
-    }
-
-    pub(super) async fn join_with_udp_fec(
-        relay: &RelayEndpoint,
-        transport: TransportChoice,
-        room: &str,
-        steam_id64: &'static str,
-        display_name: &str,
-        udp_fec: UdpFecConfig,
-    ) -> io::Result<Self> {
         let config = SessionConfig {
             relay: relay.clone(),
             relay_name: None,
@@ -274,7 +252,6 @@ impl ProbePeer {
             steam_id64: steam_id64.to_owned(),
             display_name: display_name.to_owned(),
             session_health: super::session_config::SessionHealthConfig::default(),
-            udp_fec,
             #[cfg(feature = "internal-test")]
             test_run_id: None,
         };
@@ -314,10 +291,7 @@ impl ProbePeer {
         let bytes = Envelope::new(MessageType::Data, payload)
             .encode()
             .map_err(io::Error::other)?;
-        self.transport
-            .sender
-            .send_data_datagram(bytes, Instant::now())
-            .await
+        self.transport.sender.send_data_datagram(bytes).await
     }
 
     async fn expect_game(
@@ -616,10 +590,7 @@ mod tests {
                 peers.insert(steam_id64, address);
                 (
                     MessageType::JoinReady,
-                    ControlMessage::Ready {
-                        peer_count: 1,
-                        udp_fec: None,
-                    },
+                    ControlMessage::Ready { peer_count: 1 },
                 )
             }
             _ => return,

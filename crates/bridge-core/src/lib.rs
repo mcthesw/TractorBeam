@@ -5,7 +5,6 @@ pub mod client;
 pub mod diagnostics;
 pub mod protocol;
 pub mod steam;
-pub mod udp_fec;
 
 pub use client::{
     BridgeClient, CLIENT_CONFIG_FILE, ClientConfig, ClientError, ClientIncidentKind,

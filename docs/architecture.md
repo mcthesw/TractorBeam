@@ -54,7 +54,8 @@ The Native Hook is intentionally narrow:
 - x86 only, matching `isaac-ng.exe`.
 - patches the Steam P2P interface used by the Steam friend-lobby path.
 - forwards opaque packet payloads.
-- reads bridge settings from the Isaac online log directory.
+- reads Bridge-managed hook launch parameters from the Native Hook directory;
+  Isaac `online_logs` remains a hook log source, not a user configuration home.
 
 The Rust Bridge Client owns configuration, process launch, Relay Transport
 selection, status, and diagnostics. The Bridge GUI owns presentation and user
@@ -63,8 +64,8 @@ input.
 ## Rust Crate Boundaries
 
 - `bridge-core`: Bridge Client runtime, relay/local protocol, diagnostics,
-  Steam account/path detection, and hook configuration helpers. It owns no GUI
-  presentation and no relay process.
+  Steam account/path detection, and hook launch parameter helpers. It owns no
+  GUI presentation and no relay process.
 - `bridge-gui`: egui desktop presentation for the player-facing app. It
   depends on `bridge-core` and does not own transport behavior.
 - `bridge-relay`: deployable UDP/TCP Relay Server binary and room registry. It

@@ -63,10 +63,63 @@ impl Display for SessionStopReason {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HookStartupPhase {
+    #[default]
+    NotStarted,
+    Configured,
+    WaitingForIsaac,
+    Injecting,
+    WaitingForHookEndpoint,
+    EndpointReady,
+    Ready,
+    Failed,
+    Cancelled,
+}
+
+impl Display for HookStartupPhase {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotStarted => formatter.write_str("not_started"),
+            Self::Configured => formatter.write_str("configured"),
+            Self::WaitingForIsaac => formatter.write_str("waiting_for_isaac"),
+            Self::Injecting => formatter.write_str("injecting"),
+            Self::WaitingForHookEndpoint => formatter.write_str("waiting_for_hook_endpoint"),
+            Self::EndpointReady => formatter.write_str("endpoint_ready"),
+            Self::Ready => formatter.write_str("ready"),
+            Self::Failed => formatter.write_str("failed"),
+            Self::Cancelled => formatter.write_str("cancelled"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct HookStartupState {
+    pub phase: HookStartupPhase,
+    pub process_name: Option<String>,
+    pub pid: Option<u32>,
+    pub injector_path: Option<PathBuf>,
+    pub hook_path: Option<PathBuf>,
+    pub launch_parameters_path: Option<PathBuf>,
+    pub endpoint: Option<String>,
+    pub injected: bool,
+    pub endpoint_ready: bool,
+    pub access_denied: bool,
+    pub message: Option<String>,
+    pub updated_at: u64,
+}
+
+impl HookStartupState {
+    #[must_use]
+    pub fn is_started(&self) -> bool {
+        self.phase != HookStartupPhase::NotStarted
+    }
+}
+
 impl RuntimeState {
     #[must_use]
     pub fn hook_log_path_written(&self) -> Option<PathBuf> {
-        self.hook_config_path_written
+        self.hook_launch_parameters_path_written
             .as_ref()
             .map(|path| path.with_file_name(crate::diagnostics::BRIDGE_HOOK_LOG))
     }
@@ -215,10 +268,13 @@ pub struct RuntimeState {
     pub latest_readiness_probe: Option<ReadinessProbeReport>,
     pub latest_hook_receive_probe: Option<HookReceiveProbeReport>,
     pub latest_hook_receive_probe_error: Option<String>,
+    pub latest_hook_receive_probe_warning: Option<String>,
     pub latest_session_health: Option<SessionHealthSnapshot>,
     pub latest_session_health_summary: Option<SessionHealthSnapshot>,
     pub latest_udp_fec: Option<UdpFecSessionSnapshot>,
-    pub hook_config_path_written: Option<PathBuf>,
+    pub hook_launch_parameters_path_written: Option<PathBuf>,
+    pub hook_launch_parameters_cleanup: Option<String>,
+    pub hook_startup: HookStartupState,
     pub last_stop_reason: Option<SessionStopReason>,
     pub client_incidents: Vec<ClientIncidentSnapshot>,
 }
@@ -229,6 +285,8 @@ pub(super) enum RuntimeEvent {
     CounterDelta(Counters),
     ReadinessProbeFinished(Result<Box<ReadinessProbeReport>, String>),
     HookReceiveProbeFinished(Result<HookReceiveProbeReport, String>),
+    HookReceiveProbeWarning(String),
+    HookStartup(Box<HookStartupState>),
     SessionHealthSnapshot(Box<SessionHealthSnapshot>),
     SessionHealthSummary(Box<SessionHealthSnapshot>),
     UdpFecSnapshot(Box<UdpFecSessionSnapshot>),

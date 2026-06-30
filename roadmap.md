@@ -6,8 +6,8 @@ and security scope.
 
 ## Phase 1: Windows Rust Baseline
 
-Goal: replace the current prototype flow with a Rust baseline and a Rust Native
-Hook path.
+Goal: keep the Windows bridge path on the Rust baseline and Rust Native Hook
+path.
 
 - [x] Support Windows + Steam + *The Binding of Isaac: Repentance+* only.
 - [x] Use the crate layout `bridge-core`, `bridge-gui`, `bridge-relay`, `native-hook`, and `isaac-injector`.

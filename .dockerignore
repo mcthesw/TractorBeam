@@ -1,5 +1,4 @@
 target/
-prototype/native-hook/build*/
 .git/
 .vscode/
 .local/

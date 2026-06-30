@@ -1,8 +1,0 @@
-CompileFlags:
-  CompilationDatabase: prototype/native-hook/build/x86-clang-rel
-  Add:
-    - -Iprototype/native-hook/include
-    - -DWIN32_LEAN_AND_MEAN
-    - -DNOMINMAX
-    - --target=i686-pc-windows-msvc
-    - -std=c++17

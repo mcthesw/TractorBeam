@@ -585,10 +585,16 @@ mod tests {
                 challenge: Some(_),
                 ..
             } => {
-                peers.insert(steam_id64, address);
+                peers.insert(steam_id64.clone(), address);
                 (
                     MessageType::JoinReady,
-                    ControlMessage::Ready { peer_count: 1 },
+                    ControlMessage::Ready {
+                        peers: vec![crate::protocol::PeerInfo {
+                            steam_id64,
+                            display_name: None,
+                            transport: crate::protocol::PeerTransport::Tcp,
+                        }],
+                    },
                 )
             }
             _ => return,

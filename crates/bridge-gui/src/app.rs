@@ -8,11 +8,6 @@ use basement_bridge_core::{
     SessionConfig, SessionMode, SessionStatus, TransportChoice, load_client_config,
     resolve_room_template,
 };
-#[cfg(feature = "internal-test")]
-use basement_bridge_core::{
-    InternalTestReport, InternalTestReportRequest, InternalTestReportSession,
-    InternalTestShareCode, new_internal_test_id,
-};
 use eframe::egui::{self, ScrollArea};
 
 use crate::i18n::{Language, Text, text};
@@ -52,8 +47,6 @@ fn random_room_suffix() -> String {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Page {
     Home,
-    #[cfg(feature = "internal-test")]
-    InternalTest,
     Diagnostics,
     Debug,
 }
@@ -76,24 +69,6 @@ pub struct BridgeApp {
     last_error: Option<String>,
     last_log_directory: Option<String>,
     start_error_dialog_open: bool,
-    #[cfg(feature = "internal-test")]
-    test_run_id: String,
-    #[cfg(feature = "internal-test")]
-    imported_relay_name: Option<String>,
-    #[cfg(feature = "internal-test")]
-    share_code_input: String,
-    #[cfg(feature = "internal-test")]
-    share_code_message: Option<String>,
-    #[cfg(feature = "internal-test")]
-    report_note: String,
-    #[cfg(feature = "internal-test")]
-    prepared_report: Option<InternalTestReport>,
-    #[cfg(feature = "internal-test")]
-    report_preview: String,
-    #[cfg(feature = "internal-test")]
-    report_message: Option<String>,
-    #[cfg(feature = "internal-test")]
-    pending_report_after_self_test: bool,
 }
 
 impl BridgeApp {
@@ -133,24 +108,6 @@ impl BridgeApp {
                 .then(|| text(Language::Chinese, Text::ConfigWarning).to_owned()),
             last_log_directory: None,
             start_error_dialog_open: false,
-            #[cfg(feature = "internal-test")]
-            test_run_id: new_internal_test_id(),
-            #[cfg(feature = "internal-test")]
-            imported_relay_name: None,
-            #[cfg(feature = "internal-test")]
-            share_code_input: String::new(),
-            #[cfg(feature = "internal-test")]
-            share_code_message: None,
-            #[cfg(feature = "internal-test")]
-            report_note: String::new(),
-            #[cfg(feature = "internal-test")]
-            prepared_report: None,
-            #[cfg(feature = "internal-test")]
-            report_preview: String::new(),
-            #[cfg(feature = "internal-test")]
-            report_message: None,
-            #[cfg(feature = "internal-test")]
-            pending_report_after_self_test: false,
         };
         app.apply_selected_relay_defaults();
         app
@@ -185,8 +142,6 @@ impl BridgeApp {
             steam_id64,
             display_name,
             session_health: self.client.loaded_config().config.session_health,
-            #[cfg(feature = "internal-test")]
-            test_run_id: Some(self.test_run_id.clone()),
         }
     }
 
@@ -263,55 +218,6 @@ impl BridgeApp {
         }
     }
 
-    #[cfg(feature = "internal-test")]
-    fn open_report_directory(&mut self) {
-        match self.client.open_internal_test_report_directory() {
-            Ok(Some(path)) => {
-                self.last_error = None;
-                self.report_message = Some(format!(
-                    "{}: {}",
-                    self.t(Text::OpenReportFolder),
-                    path.display()
-                ));
-            }
-            Ok(None) => {}
-            Err(error) => {
-                let message = error.to_string();
-                self.last_error = Some(message.clone());
-                self.report_message = Some(message);
-            }
-        }
-    }
-
-    #[cfg(feature = "internal-test")]
-    fn generate_room(&mut self) {
-        self.room = generate_room_id();
-        self.clear_prepared_report();
-    }
-
-    #[cfg(feature = "internal-test")]
-    fn clear_prepared_report(&mut self) {
-        self.prepared_report = None;
-        self.report_preview.clear();
-    }
-
-    #[cfg(feature = "internal-test")]
-    fn run_self_test(&mut self) {
-        let (readiness_needed, hook_needed) = {
-            let state = self.client.state();
-            (
-                state.latest_readiness_probe.is_none() && !state.readiness_probe_running,
-                state.latest_hook_receive_probe.is_none() && !state.hook_probe_running,
-            )
-        };
-        if readiness_needed {
-            self.start_readiness_probe();
-        }
-        if hook_needed {
-            self.run_hook_receive_probe();
-        }
-    }
-
     fn selected_relay_preset(&self) -> Option<&RelayPreset> {
         self.selected_relay
             .and_then(|index| self.relay_presets.get(index))
@@ -326,148 +232,14 @@ impl BridgeApp {
         let Some(relay) = self.selected_relay_preset().cloned() else {
             return;
         };
-        #[cfg(feature = "internal-test")]
-        {
-            self.imported_relay_name = None;
-        }
         self.transport = relay.preferred_transport(self.transport);
         self.relay_host = relay.endpoint.host;
         self.relay_port = relay.endpoint.port;
-        #[cfg(feature = "internal-test")]
-        self.clear_prepared_report();
     }
 
     fn preset_supports_transport(&self, transport: TransportChoice) -> bool {
         self.selected_relay_preset()
             .is_none_or(|relay| relay.supports(transport))
-    }
-
-    #[cfg(feature = "internal-test")]
-    fn internal_test_session(&self) -> InternalTestReportSession {
-        InternalTestReportSession {
-            relay_name: self
-                .selected_relay_preset()
-                .map(|relay| relay.name.clone())
-                .or_else(|| self.imported_relay_name.clone()),
-            relay: RelayEndpoint::new(self.relay_host.trim(), self.relay_port),
-            transport: self.transport,
-            room: self.room.trim().to_owned(),
-            mode: self.mode,
-        }
-    }
-
-    #[cfg(feature = "internal-test")]
-    fn current_share_code(&self) -> String {
-        InternalTestShareCode {
-            session: self.internal_test_session(),
-            test_run_id: self.test_run_id.clone(),
-        }
-        .encode()
-    }
-
-    #[cfg(feature = "internal-test")]
-    fn import_share_code(&mut self) {
-        match InternalTestShareCode::decode(&self.share_code_input) {
-            Ok(code) => {
-                self.selected_relay = None;
-                self.imported_relay_name = code.session.relay_name;
-                self.relay_host = code.session.relay.host;
-                self.relay_port = code.session.relay.port;
-                self.transport = code.session.transport;
-                self.room = code.session.room;
-                self.mode = code.session.mode;
-                self.test_run_id = code.test_run_id;
-                self.clear_prepared_report();
-                self.share_code_message = Some(self.t(Text::CodeImported).to_owned());
-                self.last_error = None;
-            }
-            Err(error) => {
-                self.share_code_message = Some(format!("{}: {error}", self.t(Text::CodeInvalid)));
-            }
-        }
-    }
-
-    #[cfg(feature = "internal-test")]
-    fn prepare_internal_test_report(&mut self) {
-        let request = InternalTestReportRequest {
-            session: self.internal_test_session(),
-            test_run_id: self.test_run_id.clone(),
-            user_note: self.report_note.trim().to_owned(),
-        };
-        match self.client.prepare_internal_test_report(request) {
-            Ok(report) => {
-                self.report_preview = report.preview_text.clone();
-                self.report_message = Some(format!(
-                    "{}: {}",
-                    self.t(Text::ReportSaved),
-                    report.zip_path.display()
-                ));
-                self.prepared_report = Some(report);
-                self.last_error = None;
-            }
-            Err(error) => {
-                self.report_message = Some(error.to_string());
-                self.last_error = Some(error.to_string());
-            }
-        }
-    }
-
-    #[cfg(feature = "internal-test")]
-    fn upload_internal_test_report(&mut self) {
-        let needs_self_test = {
-            let state = self.client.state();
-            state.latest_readiness_probe.is_none() && !state.readiness_probe_running
-        };
-        if needs_self_test {
-            self.run_self_test();
-            self.pending_report_after_self_test = true;
-            self.report_message = Some(self.t(Text::SelfTestBeforeUpload).to_owned());
-            return;
-        }
-
-        if self.prepared_report.is_none() {
-            self.prepare_internal_test_report();
-            if self.prepared_report.is_some() {
-                self.report_message = Some(self.t(Text::ReviewReportBeforeUpload).to_owned());
-            }
-            return;
-        }
-        if self.report_preview.is_empty() {
-            self.prepare_internal_test_report();
-            self.report_message = Some(self.t(Text::ReviewReportBeforeUpload).to_owned());
-            return;
-        }
-        let Some(report) = self.prepared_report.clone() else {
-            return;
-        };
-        match self.client.upload_internal_test_report(&report) {
-            Ok(receipt) => {
-                self.report_message = Some(if receipt.response_body.is_empty() {
-                    format!(
-                        "{}: HTTP {}",
-                        self.t(Text::UploadResult),
-                        receipt.status_code
-                    )
-                } else {
-                    format!(
-                        "{}: HTTP {} {}",
-                        self.t(Text::UploadResult),
-                        receipt.status_code,
-                        receipt.response_body
-                    )
-                });
-                self.last_error = None;
-            }
-            Err(error) => {
-                self.report_message = Some(format!(
-                    "{}: {error}; {}: {}",
-                    self.t(Text::UploadFailed),
-                    self.t(Text::ReportSaved),
-                    report.zip_path.display()
-                ));
-                self.last_error = Some(error.to_string());
-            }
-        }
     }
 }
 
@@ -479,18 +251,6 @@ impl eframe::App for BridgeApp {
         if self.client.state().status == SessionStatus::Running {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
-        }
-
-        #[cfg(feature = "internal-test")]
-        if self.pending_report_after_self_test
-            && !self.client.state().readiness_probe_running
-            && self.client.state().latest_readiness_probe.is_some()
-        {
-            self.pending_report_after_self_test = false;
-            self.prepare_internal_test_report();
-            if self.prepared_report.is_some() {
-                self.report_message = Some(self.t(Text::ReviewReportBeforeUpload).to_owned());
-            }
         }
 
         egui::Panel::bottom("status_bar")
@@ -513,17 +273,8 @@ impl eframe::App for BridgeApp {
                         .show(ui, |ui| match page {
                             Page::Home => self.home_page(ui),
                             Page::Debug => self.debug_page(ui),
-                            #[cfg(feature = "internal-test")]
-                            Page::InternalTest => unreachable!(),
                             Page::Diagnostics => unreachable!(),
                         });
-                }
-                #[cfg(feature = "internal-test")]
-                Page::InternalTest => {
-                    ScrollArea::vertical()
-                        .id_salt("internal_test_scroll")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| self.internal_test_page(ui));
                 }
                 Page::Diagnostics => self.diagnostics_page(ui),
             }

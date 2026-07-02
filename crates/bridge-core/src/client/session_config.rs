@@ -163,8 +163,6 @@ pub struct SessionConfig {
     pub steam_id64: String,
     pub display_name: String,
     pub session_health: SessionHealthConfig,
-    #[cfg(feature = "internal-test")]
-    pub test_run_id: Option<String>,
 }
 
 impl SessionConfig {

@@ -277,9 +277,15 @@ async fn send_control(peer: &mut TestPeer, message_type: MessageType, message: &
 }
 
 async fn recv_control(peer: &mut TestPeer) -> ControlMessage {
-    let raw = peer.recv_raw().await;
-    let envelope = Envelope::decode(raw).unwrap();
-    ControlMessage::decode(&envelope.payload).unwrap()
+    loop {
+        let raw = peer.recv_raw().await;
+        let envelope = Envelope::decode(raw).unwrap();
+        let message = ControlMessage::decode(&envelope.payload).unwrap();
+        if matches!(message, ControlMessage::RoomUpdate { .. }) {
+            continue;
+        }
+        return message;
+    }
 }
 
 async fn send_game(peer: &mut TestPeer, from_steam_id64: &str, to_steam_id64: u64, payload: Bytes) {
@@ -301,8 +307,13 @@ fn game_datagram(from_steam_id64: &str, to_steam_id64: u64, payload: Bytes) -> B
 }
 
 async fn recv_game(peer: &mut TestPeer) -> GamePacket {
-    let raw = peer.recv_raw().await;
-    let envelope = Envelope::decode(raw).unwrap();
-    assert_eq!(envelope.message_type, MessageType::Data);
-    GamePacket::decode(&envelope.payload).unwrap()
+    loop {
+        let raw = peer.recv_raw().await;
+        let envelope = Envelope::decode(raw).unwrap();
+        match envelope.message_type {
+            MessageType::Data => return GamePacket::decode(&envelope.payload).unwrap(),
+            MessageType::RoomUpdate => continue,
+            other => panic!("expected Data, got {other:?}"),
+        }
+    }
 }

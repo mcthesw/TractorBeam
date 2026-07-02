@@ -72,6 +72,18 @@ pub(crate) struct JoinCompletion {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct RoomBroadcast {
+    pub(crate) recipients: Vec<PeerId>,
+    pub(crate) peers: Vec<basement_bridge_core::protocol::PeerInfo>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct JoinOutcome {
+    pub(crate) response: ControlMessage,
+    pub(crate) broadcast: Option<RoomBroadcast>,
+}
+
+#[derive(Clone, Debug)]
 struct Peer {
     steam_id64: String,
     display_name: Option<String>,
@@ -160,7 +172,7 @@ impl RelayState {
         ControlMessage::Challenge { token }
     }
 
-    pub(crate) fn complete_join(&mut self, completion: JoinCompletion) -> ControlMessage {
+    pub(crate) fn complete_join(&mut self, completion: JoinCompletion) -> JoinOutcome {
         let JoinCompletion {
             peer_id,
             room,
@@ -170,14 +182,23 @@ impl RelayState {
             now,
         } = completion;
         let Some(pending) = self.pending.remove(&peer_id) else {
-            return error_message("missing_challenge", "join challenge was not issued");
+            return JoinOutcome {
+                response: error_message("missing_challenge", "join challenge was not issued"),
+                broadcast: None,
+            };
         };
         if pending.room != room || pending.steam_id64 != steam_id64 || pending.token != challenge {
-            return error_message("bad_challenge", "join challenge did not match");
+            return JoinOutcome {
+                response: error_message("bad_challenge", "join challenge did not match"),
+                broadcast: None,
+            };
         }
         self.remove_duplicate_peer(&pending.room, &pending.steam_id64, peer_id);
         if let Err(error) = self.validate_join(peer_id, &pending.room) {
-            return error;
+            return JoinOutcome {
+                response: error,
+                broadcast: None,
+            };
         }
 
         self.peer_rooms.insert(peer_id, pending.room.clone());
@@ -199,8 +220,13 @@ impl RelayState {
             peers = room.peers.len(),
             "peer joined"
         );
-        ControlMessage::Ready {
+        let response = ControlMessage::Ready {
             peers: self.room_peer_infos(&pending.room),
+        };
+        let broadcast = self.room_broadcast(&pending.room, Some(peer_id));
+        JoinOutcome {
+            response,
+            broadcast,
         }
     }
 
@@ -289,6 +315,31 @@ impl RelayState {
         peers
     }
 
+    fn room_broadcast(
+        &self,
+        room_name: &str,
+        exclude: Option<PeerId>,
+    ) -> Option<RoomBroadcast> {
+        let room = self.rooms.get(room_name)?;
+        let peers = self.room_peer_infos(room_name);
+        if peers.is_empty() {
+            return None;
+        }
+        let recipients: Vec<PeerId> = room
+            .peers
+            .keys()
+            .copied()
+            .filter(|peer_id| Some(*peer_id) != exclude)
+            .collect();
+        if recipients.is_empty() {
+            return None;
+        }
+        Some(RoomBroadcast {
+            recipients,
+            peers,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn peer_ids(&self, room_name: &str) -> Vec<PeerId> {
         self.rooms
@@ -328,18 +379,20 @@ impl RelayState {
         summaries
     }
 
-    pub(crate) fn cleanup(&mut self, now: Instant) {
+    pub(crate) fn cleanup(&mut self, now: Instant) -> Vec<RoomBroadcast> {
         let peer_idle = Duration::from_secs(self.config.peer_idle_seconds);
         let room_idle = Duration::from_secs(self.config.room_idle_seconds);
         self.pending
             .retain(|_, pending| now.duration_since(pending.issued_at) < peer_idle);
 
         let mut removed_peers = Vec::new();
+        let mut changed_rooms: std::collections::HashSet<String> = std::collections::HashSet::new();
         self.rooms.retain(|room_name, room| {
             room.peers.retain(|peer_id, peer| {
                 let active = now.duration_since(peer.last_seen) < peer_idle;
                 if !active {
                     removed_peers.push(*peer_id);
+                    changed_rooms.insert(room_name.clone());
                     info!(
                         %peer_id,
                         room = %room_name,
@@ -360,13 +413,17 @@ impl RelayState {
             self.peer_rooms.remove(&peer_id);
             self.rates.remove(&peer_id);
         }
+        changed_rooms
+            .iter()
+            .filter_map(|room_name| self.room_broadcast(room_name, None))
+            .collect()
     }
 
-    pub(crate) fn remove_peer(&mut self, peer_id: PeerId) {
+    pub(crate) fn remove_peer(&mut self, peer_id: PeerId) -> Option<RoomBroadcast> {
         let Some(room_name) = self.peer_rooms.remove(&peer_id) else {
             self.pending.remove(&peer_id);
             self.rates.remove(&peer_id);
-            return;
+            return None;
         };
         self.pending.remove(&peer_id);
         self.rates.remove(&peer_id);
@@ -383,6 +440,7 @@ impl RelayState {
                 "peer disconnected"
             );
         }
+        self.room_broadcast(&room_name, Some(peer_id))
     }
 
     fn validate_join(&self, peer_id: PeerId, room_name: &str) -> Result<(), ControlMessage> {

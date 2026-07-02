@@ -53,7 +53,7 @@ fn join_peer(
             challenge: token,
             transport,
             now,
-        }),
+        }).response,
         ControlMessage::Ready { .. }
     ));
 }

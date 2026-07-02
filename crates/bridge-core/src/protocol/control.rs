@@ -2,6 +2,20 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerTransport {
+    Udp,
+    Tcp,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PeerInfo {
+    pub steam_id64: String,
+    pub display_name: Option<String>,
+    pub transport: PeerTransport,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ControlMessage {
@@ -16,6 +30,9 @@ pub enum ControlMessage {
     },
     Ready {
         peer_count: usize,
+    },
+    RoomUpdate {
+        peers: Vec<PeerInfo>,
     },
     Error {
         code: String,

@@ -29,7 +29,8 @@ pub enum ControlMessage {
         token: String,
     },
     Ready {
-        peer_count: usize,
+        #[serde(default)]
+        peers: Vec<PeerInfo>,
     },
     RoomUpdate {
         peers: Vec<PeerInfo>,

@@ -200,7 +200,7 @@ impl RelayState {
             "peer joined"
         );
         ControlMessage::Ready {
-            peer_count: room.peers.len(),
+            peers: self.room_peer_infos(&pending.room),
         }
     }
 
@@ -264,6 +264,28 @@ impl RelayState {
                 .cmp(&right.steam_id64)
                 .then_with(|| left.peer_id.0.cmp(&right.peer_id.0))
         });
+        peers
+    }
+
+    pub(crate) fn room_peer_infos(&self, room_name: &str) -> Vec<basement_bridge_core::protocol::PeerInfo> {
+        let mut peers = self
+            .rooms
+            .get(room_name)
+            .map(|room| {
+                room.peers
+                    .iter()
+                    .map(|(_, peer)| basement_bridge_core::protocol::PeerInfo {
+                        steam_id64: peer.steam_id64.clone(),
+                        display_name: peer.display_name.clone(),
+                        transport: match peer.transport {
+                            PeerTransport::Udp => basement_bridge_core::protocol::PeerTransport::Udp,
+                            PeerTransport::Tcp => basement_bridge_core::protocol::PeerTransport::Tcp,
+                        },
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        peers.sort_by(|left, right| left.steam_id64.cmp(&right.steam_id64));
         peers
     }
 

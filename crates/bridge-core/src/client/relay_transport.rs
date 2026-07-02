@@ -8,7 +8,7 @@ use tokio::{
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-use crate::protocol::{ControlMessage, Envelope, MessageType};
+use crate::protocol::{ControlMessage, Envelope, MessageType, PeerInfo};
 
 use super::{RelayEndpoint, SessionConfig, TransportChoice};
 
@@ -93,7 +93,7 @@ pub(super) async fn complete_relay_join(
     sender: &mut RelayTransportSender,
     receiver: &mut RelayTransportReceiver,
     config: &SessionConfig,
-) -> io::Result<usize> {
+) -> io::Result<Vec<PeerInfo>> {
     time::timeout(
         RELAY_JOIN_TIMEOUT,
         complete_relay_join_inner(sender, receiver, config),
@@ -118,7 +118,7 @@ async fn complete_relay_join_inner(
     sender: &mut RelayTransportSender,
     receiver: &mut RelayTransportReceiver,
     config: &SessionConfig,
-) -> io::Result<usize> {
+) -> io::Result<Vec<PeerInfo>> {
     send_join(sender, config, None).await?;
     loop {
         let raw = receiver.recv_datagram().await?;
@@ -126,8 +126,8 @@ async fn complete_relay_join_inner(
         let control = ControlMessage::decode(&envelope.payload).map_err(io::Error::other)?;
         match control {
             ControlMessage::Challenge { token } => send_join(sender, config, Some(token)).await?,
-            ControlMessage::Ready { peer_count } => {
-                return Ok(peer_count);
+            ControlMessage::Ready { peers } => {
+                return Ok(peers);
             }
             ControlMessage::Error { code, message } => {
                 return Err(io::Error::other(format!("{code}: {message}")));

@@ -215,8 +215,6 @@ impl BridgeClient {
                 transport: config.transport,
                 room: config.room.clone(),
                 mode: config.mode,
-                #[cfg(feature = "internal-test")]
-                test_run_id: config.test_run_id.clone(),
             })
             .ok();
 
@@ -300,13 +298,6 @@ impl BridgeClient {
             }
             self.log(LogLevel::Info, format!("Relay endpoint: {}", config.relay));
             self.log(LogLevel::Info, format!("Transport: {}", config.transport));
-        }
-        #[cfg(feature = "internal-test")]
-        if let Some(test_run_id) = &config.test_run_id {
-            self.log(
-                LogLevel::Info,
-                format!("Internal test run id: {test_run_id}"),
-            );
         }
         self.log(
             LogLevel::Info,
@@ -580,8 +571,6 @@ mod tests {
             steam_id64: "76561198000000001".to_owned(),
             display_name: "Alice".to_owned(),
             session_health: SessionHealthConfig::default(),
-            #[cfg(feature = "internal-test")]
-            test_run_id: None,
         };
 
         assert!(config.validate().is_ok());

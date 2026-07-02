@@ -22,7 +22,7 @@ use crate::{
     egress::{EgressTable, PeerOutput},
     metrics::{PacketOutcome, RelayMetrics},
     peer_registry::PeerRegistry,
-    state::{JoinCompletion, PeerId, PeerTransport, RelayState, error_message},
+    state::{JoinCompletion, JoinOutcome, PeerId, PeerTransport, RelayState, RoomBroadcast, error_message},
 };
 
 type SharedState = Arc<Mutex<RelayState>>;
@@ -87,7 +87,12 @@ async fn run_with_listeners(
         ));
     }
 
-    tasks.spawn(run_stats_loop(Arc::clone(&state), Arc::clone(&metrics)));
+    tasks.spawn(run_stats_loop(
+        Arc::clone(&state),
+        Arc::clone(&metrics),
+        Arc::clone(&udp_socket),
+        Arc::clone(&egress),
+    ));
     match tasks.join_next().await {
         Some(Ok(result)) => result,
         Some(Err(error)) => Err(io::Error::other(error)),
@@ -224,19 +229,33 @@ async fn tcp_connection_task(
         }
     }
 
-    runtime.state.lock().await.remove_peer(source.peer_id);
+    let broadcast = runtime.state.lock().await.remove_peer(source.peer_id);
     runtime.egress.lock().await.remove(source.peer_id);
+    if let Some(broadcast) = broadcast {
+        let _ = broadcast_room_update(runtime.udp_socket, runtime.egress, broadcast).await;
+    }
 }
 
-async fn run_stats_loop(state: SharedState, metrics: SharedMetrics) -> io::Result<()> {
+async fn run_stats_loop(
+    state: SharedState,
+    metrics: SharedMetrics,
+    udp_socket: Arc<UdpSocket>,
+    egress: SharedEgress,
+) -> io::Result<()> {
     let mut stats_interval = time::interval(Duration::from_secs(5));
     stats_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         stats_interval.tick().await;
         let now = Instant::now();
-        let mut state = state.lock().await;
-        state.cleanup(now);
-        metrics.lock().await.log_and_reset(&state);
+        let broadcasts = {
+            let mut state = state.lock().await;
+            let broadcasts = state.cleanup(now);
+            metrics.lock().await.log_and_reset(&state);
+            broadcasts
+        };
+        for broadcast in broadcasts {
+            let _ = broadcast_room_update(Arc::clone(&udp_socket), Arc::clone(&egress), broadcast).await;
+        }
     }
 }
 
@@ -396,7 +415,7 @@ async fn handle_join(
 ) -> io::Result<PacketOutcome> {
     let message = ControlMessage::decode(&envelope.payload)
         .unwrap_or_else(|error| error_message("bad_join", error.to_string()));
-    let response = {
+    let outcome = {
         let mut state = state.lock().await;
         match message {
             ControlMessage::Join {
@@ -417,18 +436,43 @@ async fn handle_join(
                 steam_id64,
                 display_name,
                 challenge: None,
-            } => state.challenge_join(source.peer_id, room, steam_id64, display_name, now),
-            _ => error_message("bad_join", "expected join message"),
+            } => JoinOutcome {
+                response: state.challenge_join(source.peer_id, room, steam_id64, display_name, now),
+                broadcast: None,
+            },
+            _ => JoinOutcome {
+                response: error_message("bad_join", "expected join message"),
+                broadcast: None,
+            },
         }
     };
-    let response_type = match response {
+    let response_type = match &outcome.response {
         ControlMessage::Challenge { .. } => MessageType::JoinChallenge,
         ControlMessage::Ready { .. } => MessageType::JoinReady,
         ControlMessage::Error { .. } => MessageType::Error,
         _ => MessageType::Error,
     };
-    send_control(udp_socket, egress, source.peer_id, response_type, &response).await?;
+    send_control(Arc::clone(&udp_socket), Arc::clone(&egress), source.peer_id, response_type, &outcome.response).await?;
+    if let Some(broadcast) = outcome.broadcast {
+        broadcast_room_update(udp_socket, egress, broadcast).await?;
+    }
     Ok(PacketOutcome::default())
+}
+
+async fn broadcast_room_update(
+    udp_socket: Arc<UdpSocket>,
+    egress: SharedEgress,
+    update: RoomBroadcast,
+) -> io::Result<()> {
+    let message = ControlMessage::RoomUpdate { peers: update.peers };
+    let raw = Envelope::new(MessageType::RoomUpdate, message.encode().map_err(io::Error::other)?)
+        .encode()
+        .map_err(io::Error::other)?;
+    for peer_id in update.recipients {
+        send_control_to_peer(Arc::clone(&udp_socket), Arc::clone(&egress), peer_id, raw.clone())
+            .await?;
+    }
+    Ok(())
 }
 
 async fn forward_data(

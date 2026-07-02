@@ -4,7 +4,7 @@ mod control;
 mod envelope;
 mod local;
 
-pub use control::{ControlMessage, ControlMessageError};
+pub use control::{ControlMessage, ControlMessageError, PeerInfo, PeerTransport};
 pub use envelope::{DecodeError, EncodeError, Envelope, MessageType};
 pub use local::{GamePacket, GamePacketError, LocalPacket, LocalPacketError, LocalPacketType};
 
@@ -82,6 +82,51 @@ mod tests {
         let decoded = ControlMessage::decode(&bytes).unwrap();
 
         assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn roundtrips_room_update() {
+        let message = ControlMessage::RoomUpdate {
+            peers: vec![
+                super::PeerInfo {
+                    steam_id64: "76561198000000001".to_owned(),
+                    display_name: Some("Alice".to_owned()),
+                    transport: super::PeerTransport::Tcp,
+                },
+                super::PeerInfo {
+                    steam_id64: "76561198000000002".to_owned(),
+                    display_name: None,
+                    transport: super::PeerTransport::Udp,
+                },
+            ],
+        };
+
+        let bytes = message.encode().unwrap();
+        let decoded = ControlMessage::decode(&bytes).unwrap();
+
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn room_update_uses_snake_case_transport_tag() {
+        let message = ControlMessage::RoomUpdate {
+            peers: vec![super::PeerInfo {
+                steam_id64: "1".to_owned(),
+                display_name: None,
+                transport: super::PeerTransport::Tcp,
+            }],
+        };
+        let json = String::from_utf8(message.encode().unwrap().to_vec()).unwrap();
+        assert!(json.contains("\"type\":\"room_update\""));
+        assert!(json.contains("\"transport\":\"tcp\""));
+    }
+
+    #[test]
+    fn room_update_message_type_round_trips() {
+        let envelope = super::Envelope::new(MessageType::RoomUpdate, Bytes::from_static(b"x"));
+        let encoded = envelope.encode().unwrap();
+        let decoded = super::Envelope::decode(encoded).unwrap();
+        assert_eq!(decoded.message_type, MessageType::RoomUpdate);
     }
 
     #[test]

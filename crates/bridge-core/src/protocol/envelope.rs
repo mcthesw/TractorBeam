@@ -15,6 +15,7 @@ pub enum MessageType {
     Data = 4,
     Heartbeat = 5,
     Error = 6,
+    RoomUpdate = 7,
 }
 
 impl TryFrom<u8> for MessageType {
@@ -28,6 +29,7 @@ impl TryFrom<u8> for MessageType {
             4 => Ok(Self::Data),
             5 => Ok(Self::Heartbeat),
             6 => Ok(Self::Error),
+            7 => Ok(Self::RoomUpdate),
             other => Err(DecodeError::UnknownMessageType(other)),
         }
     }

@@ -130,6 +130,16 @@ mod tests {
     }
 
     #[test]
+    fn legacy_ready_without_peers_decodes_to_empty_vec() {
+        let json = br#"{"type":"ready","peer_count":3}"#;
+        let decoded = ControlMessage::decode(json).unwrap();
+        match decoded {
+            ControlMessage::Ready { peers } => assert!(peers.is_empty()),
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn roundtrips_local_packet() {
         let packet = LocalPacket {
             packet_type: LocalPacketType::Outgoing,

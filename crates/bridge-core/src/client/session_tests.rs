@@ -212,7 +212,13 @@ fn run_test_relay(socket: StdUdpSocket, stop: &AtomicBool) {
                 challenge: Some(_), ..
             } => (
                 MessageType::JoinReady,
-                ControlMessage::Ready { peer_count: 1 },
+                ControlMessage::Ready {
+                    peers: vec![crate::protocol::PeerInfo {
+                        steam_id64: "76561198000000001".to_owned(),
+                        display_name: None,
+                        transport: crate::protocol::PeerTransport::Tcp,
+                    }],
+                },
             ),
             _ => continue,
         };

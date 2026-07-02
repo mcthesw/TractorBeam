@@ -227,12 +227,12 @@ async fn start_runtime_tasks(
     let hook_in_socket = UdpSocket::bind(HOOK_IN).await?;
     let hook_out_socket = UdpSocket::bind("127.0.0.1:0").await?;
     let mut relay = RelayTransport::connect(&config.relay, config.transport).await?;
-    let peer_count = complete_relay_join(&mut relay.sender, &mut relay.receiver, config).await?;
+    let peers = complete_relay_join(&mut relay.sender, &mut relay.receiver, config).await?;
     send_event(
         event_tx,
         log_event(
             LogLevel::Info,
-            format!("Joined relay room with {peer_count} peer(s)"),
+            format!("Joined relay room with {} peer(s)", peers.len()),
         ),
     );
 

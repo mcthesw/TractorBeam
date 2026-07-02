@@ -6,9 +6,6 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-[features]
-internal-test = ["basement-bridge-core/internal-test"]
-
 [[bin]]
 name = "basement-bridge"
 path = "src/main.rs"

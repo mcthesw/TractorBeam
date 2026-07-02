@@ -10,10 +10,6 @@ snapshot_interval_seconds = 5
 runtime_rtt_interval_seconds = 1
 runtime_rtt_timeout_seconds = 3
 
-[internal_test]
-upload_endpoint = "http://upload.example.test:30080/upload"
-upload_token = "replace-with-internal-test-token"
-
 [[relays]]
 id = "beijing"
 name = "Beijing test relay"

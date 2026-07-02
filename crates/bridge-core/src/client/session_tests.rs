@@ -76,8 +76,6 @@ fn runtime_rtt_timeout_is_nonfatal() {
                 runtime_rtt_timeout_seconds: 1,
                 ..super::super::SessionHealthConfig::default()
             },
-            #[cfg(feature = "internal-test")]
-            test_run_id: None,
         },
         test_native_hook_paths(),
     )
@@ -105,8 +103,6 @@ fn test_session_config(port: u16) -> SessionConfig {
         steam_id64: "76561198000000001".to_owned(),
         display_name: "Test".to_owned(),
         session_health: super::super::SessionHealthConfig::default(),
-        #[cfg(feature = "internal-test")]
-        test_run_id: None,
     }
 }
 

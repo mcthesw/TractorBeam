@@ -29,8 +29,6 @@ pub struct ClientConfig {
     pub selected_relay: Option<String>,
     pub relays: Vec<RelayPreset>,
     pub session_health: SessionHealthConfig,
-    #[cfg(feature = "internal-test")]
-    pub internal_test: InternalTestConfig,
 }
 
 impl Default for ClientConfig {
@@ -41,8 +39,6 @@ impl Default for ClientConfig {
             selected_relay: None,
             relays: Vec::new(),
             session_health: SessionHealthConfig::default(),
-            #[cfg(feature = "internal-test")]
-            internal_test: InternalTestConfig::default(),
         }
     }
 }
@@ -81,13 +77,6 @@ pub struct RelayPreset {
     pub supports_udp: bool,
     pub supports_tcp: bool,
     pub default_transport: Option<TransportChoice>,
-}
-
-#[cfg(feature = "internal-test")]
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct InternalTestConfig {
-    pub upload_endpoint: Option<String>,
-    pub upload_token: Option<String>,
 }
 
 impl RelayPreset {
@@ -199,8 +188,6 @@ struct RawClientConfig {
     default_mode: Option<String>,
     selected_relay: Option<String>,
     session_health: Option<RawSessionHealthConfig>,
-    #[cfg(feature = "internal-test")]
-    internal_test: Option<RawInternalTestConfig>,
     #[serde(default)]
     relays: Vec<RawRelayPreset>,
 }
@@ -212,13 +199,6 @@ struct RawSessionHealthConfig {
     snapshot_interval_seconds: Option<u64>,
     runtime_rtt_interval_seconds: Option<u64>,
     runtime_rtt_timeout_seconds: Option<u64>,
-}
-
-#[cfg(feature = "internal-test")]
-#[derive(Debug, Default, Deserialize)]
-struct RawInternalTestConfig {
-    upload_endpoint: Option<String>,
-    upload_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -249,8 +229,6 @@ impl TryFrom<RawClientConfig> for ClientConfig {
                 .map(TryInto::try_into)
                 .collect::<Result<Vec<_>, _>>()?,
             session_health: value.session_health.unwrap_or_default().into(),
-            #[cfg(feature = "internal-test")]
-            internal_test: value.internal_test.unwrap_or_default().into(),
         };
         config.validate()?;
         Ok(config)
@@ -274,16 +252,6 @@ impl From<RawSessionHealthConfig> for SessionHealthConfig {
             runtime_rtt_timeout_seconds: value
                 .runtime_rtt_timeout_seconds
                 .unwrap_or(defaults.runtime_rtt_timeout_seconds),
-        }
-    }
-}
-
-#[cfg(feature = "internal-test")]
-impl From<RawInternalTestConfig> for InternalTestConfig {
-    fn from(value: RawInternalTestConfig) -> Self {
-        Self {
-            upload_endpoint: trimmed_non_empty(value.upload_endpoint),
-            upload_token: trimmed_non_empty(value.upload_token),
         }
     }
 }
@@ -519,26 +487,5 @@ snapshot_interval_seconds = 0
             .unwrap();
 
         assert_eq!(config.default_transport, TransportChoice::Tcp);
-    }
-
-    #[cfg(feature = "internal-test")]
-    #[test]
-    fn parses_internal_test_upload_config() {
-        let raw = r#"
-[internal_test]
-upload_endpoint = "http://upload.example.test:30080/upload"
-upload_token = "secret"
-"#;
-
-        let config: ClientConfig = toml::from_str::<RawClientConfig>(raw)
-            .unwrap()
-            .try_into()
-            .unwrap();
-
-        assert_eq!(
-            config.internal_test.upload_endpoint.as_deref(),
-            Some("http://upload.example.test:30080/upload")
-        );
-        assert_eq!(config.internal_test.upload_token.as_deref(), Some("secret"));
     }
 }

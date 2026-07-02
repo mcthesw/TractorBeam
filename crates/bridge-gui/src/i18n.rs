@@ -17,7 +17,6 @@ impl Language {
 #[derive(Clone, Copy, Debug)]
 pub enum Text {
     Home,
-    InternalTest,
     Diagnostics,
     Debug,
     RelayHost,
@@ -81,36 +80,7 @@ pub enum Text {
     Pure,
     ConfigError,
     ConfigWarning,
-    InviteCode,
-    TestRunId,
-    CopyCode,
-    ImportCode,
-    PasteCode,
-    CodeCopied,
-    CodeImported,
-    CodeInvalid,
-    SelfTest,
-    CheckStatus,
-    ConfigInput,
-    SteamCheck,
-    LaunchAndInjection,
-    NotRun,
-    DataRecorded,
-    NeedsAttention,
-    Report,
-    UserNote,
-    PrepareReport,
-    UploadReport,
-    ReportPreview,
-    ReportSaved,
-    UploadResult,
-    UploadFailed,
-    RunSelfTest,
-    SelfTesting,
-    SelfTestBeforeUpload,
-    ReviewReportBeforeUpload,
     SessionNotStarted,
-    OpenReportFolder,
 }
 
 pub fn text(language: Language, key: Text) -> &'static str {
@@ -123,7 +93,6 @@ pub fn text(language: Language, key: Text) -> &'static str {
 fn zh(key: Text) -> &'static str {
     match key {
         Text::Home => "首页",
-        Text::InternalTest => "测试",
         Text::Diagnostics => "日志",
         Text::Debug => "调试",
         Text::RelayHost => "Relay 地址",
@@ -187,43 +156,13 @@ fn zh(key: Text) -> &'static str {
         Text::Pure => "Pure",
         Text::ConfigError => "配置错误",
         Text::ConfigWarning => "配置文件有误，已使用可手动修改的默认值。",
-        Text::InviteCode => "联机码",
-        Text::TestRunId => "测试 ID",
-        Text::CopyCode => "复制联机码",
-        Text::ImportCode => "导入联机码",
-        Text::PasteCode => "粘贴朋友发来的联机码",
-        Text::CodeCopied => "已复制",
-        Text::CodeImported => "已导入",
-        Text::CodeInvalid => "联机码无效",
-        Text::SelfTest => "自测",
-        Text::CheckStatus => "检查状态",
-        Text::ConfigInput => "配置输入",
-        Text::SteamCheck => "Steam",
-        Text::LaunchAndInjection => "启动 / 注入",
-        Text::NotRun => "未运行",
-        Text::DataRecorded => "已有数据",
-        Text::NeedsAttention => "需查看",
-        Text::Report => "报告",
-        Text::UserNote => "补充说明",
-        Text::PrepareReport => "生成报告",
-        Text::UploadReport => "上传报告",
-        Text::ReportPreview => "预览",
-        Text::ReportSaved => "已保存",
-        Text::UploadResult => "上传结果",
-        Text::UploadFailed => "上传失败",
-        Text::RunSelfTest => "运行自测",
-        Text::SelfTesting => "自测中…",
-        Text::SelfTestBeforeUpload => "未自测，正在运行自测，完成后生成报告",
-        Text::ReviewReportBeforeUpload => "报告已生成，请查看预览后再次点击上传",
         Text::SessionNotStarted => "未开始会话",
-        Text::OpenReportFolder => "打开报告文件夹",
     }
 }
 
 fn en(key: Text) -> &'static str {
     match key {
         Text::Home => "Home",
-        Text::InternalTest => "Test",
         Text::Diagnostics => "Diagnostics",
         Text::Debug => "Debug",
         Text::RelayHost => "Relay host",
@@ -289,39 +228,6 @@ fn en(key: Text) -> &'static str {
         Text::ConfigWarning => {
             "Config could not be applied; editable defaults are still available."
         }
-        Text::InviteCode => "Join code",
-        Text::TestRunId => "Test ID",
-        Text::CopyCode => "Copy join code",
-        Text::ImportCode => "Import join code",
-        Text::PasteCode => "Paste a join code",
-        Text::CodeCopied => "Copied",
-        Text::CodeImported => "Imported",
-        Text::CodeInvalid => "Invalid join code",
-        Text::SelfTest => "Self-test",
-        Text::CheckStatus => "Check status",
-        Text::ConfigInput => "Config input",
-        Text::SteamCheck => "Steam",
-        Text::LaunchAndInjection => "Launch / injection",
-        Text::NotRun => "Not run",
-        Text::DataRecorded => "Data recorded",
-        Text::NeedsAttention => "Needs attention",
-        Text::Report => "Report",
-        Text::UserNote => "Note",
-        Text::PrepareReport => "Prepare report",
-        Text::UploadReport => "Upload report",
-        Text::ReportPreview => "Preview",
-        Text::ReportSaved => "Saved",
-        Text::UploadResult => "Upload result",
-        Text::UploadFailed => "Upload failed",
-        Text::RunSelfTest => "Run self-test",
-        Text::SelfTesting => "Self-testing...",
-        Text::SelfTestBeforeUpload => {
-            "Self-test not run yet; running now, will prepare the report after"
-        }
-        Text::ReviewReportBeforeUpload => {
-            "Report prepared; review the preview, then click upload again"
-        }
         Text::SessionNotStarted => "Session not started",
-        Text::OpenReportFolder => "Open report folder",
     }
 }

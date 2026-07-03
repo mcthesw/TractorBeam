@@ -42,6 +42,7 @@ pub(super) struct InboundGamePacket {
 pub(super) enum InboundRelayDatagram {
     Game(InboundGamePacket),
     HealthPong { id: u64 },
+    RoomUpdate { peers: Vec<crate::protocol::PeerInfo> },
 }
 
 #[derive(Debug, Default)]
@@ -168,6 +169,13 @@ pub(super) fn decode_inbound_relay_datagram(
         MessageType::Heartbeat => match ControlMessage::decode(&envelope.payload) {
             Ok(ControlMessage::HealthPong { id }) => {
                 Ok(Some(InboundRelayDatagram::HealthPong { id }))
+            }
+            Ok(_) => Ok(None),
+            Err(error) => Err(io::Error::other(error)),
+        },
+        MessageType::RoomUpdate => match ControlMessage::decode(&envelope.payload) {
+            Ok(ControlMessage::RoomUpdate { peers }) => {
+                Ok(Some(InboundRelayDatagram::RoomUpdate { peers }))
             }
             Ok(_) => Ok(None),
             Err(error) => Err(io::Error::other(error)),

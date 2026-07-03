@@ -369,6 +369,9 @@ async fn relay_transport_task(
                     Ok(Some(InboundRelayDatagram::HealthPong { id })) => {
                         observe_health(&context.health, |health| health.observe_health_pong(id, Instant::now()));
                     }
+                    Ok(Some(InboundRelayDatagram::RoomUpdate { peers })) => {
+                        send_event(&context.event_tx, RuntimeEvent::RoomPeersUpdated(peers));
+                    }
                     Ok(None) => {}
                     Err(error) => send_error(&context.event_tx, format!("Bad relay packet: {error}")),
                 }

@@ -193,6 +193,9 @@ impl BridgeClient {
                     );
                     self.upsert_light_ping_report(report);
                 }
+                state::RuntimeEvent::RoomPeersUpdated(peers) => {
+                    self.state.room_peers = peers;
+                }
             }
         }
         if should_clear {
@@ -230,6 +233,7 @@ impl BridgeClient {
         self.state.hook_launch_parameters_cleanup = None;
         self.state.hook_startup = state::HookStartupState::default();
         self.state.client_incidents.clear();
+        self.state.room_peers.clear();
         self.active_session_log = self
             .log_sink
             .start_session(ClientSessionLogContext {
@@ -469,7 +473,8 @@ impl BridgeClient {
                 state::RuntimeEvent::Stopped
                 | state::RuntimeEvent::ReadinessProbeFinished(_)
                 | state::RuntimeEvent::HookReceiveProbeFinished(_)
-                | state::RuntimeEvent::LightPingFinished(_) => {}
+                | state::RuntimeEvent::LightPingFinished(_)
+                | state::RuntimeEvent::RoomPeersUpdated(_) => {}
             }
         }
     }

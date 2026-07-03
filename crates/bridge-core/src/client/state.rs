@@ -276,6 +276,7 @@ pub struct RuntimeState {
     pub last_stop_reason: Option<SessionStopReason>,
     pub client_incidents: Vec<ClientIncidentSnapshot>,
     pub light_ping_reports: Vec<super::probe::LightPingReport>,
+    pub room_peers: Vec<crate::protocol::PeerInfo>,
 }
 
 #[derive(Debug)]
@@ -291,6 +292,7 @@ pub(super) enum RuntimeEvent {
     SessionEnded(SessionStopReason),
     Stopped,
     LightPingFinished(Box<super::probe::LightPingReport>),
+    RoomPeersUpdated(Vec<crate::protocol::PeerInfo>),
 }
 
 pub(super) type RuntimeEventSender = Sender<RuntimeEvent>;

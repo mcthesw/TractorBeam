@@ -15,8 +15,9 @@ mod session_health;
 mod state;
 
 pub use config::{
-    CLIENT_CONFIG_FILE, ClientConfig, LoadedClientConfig, LocalDate, RelayPreset,
-    app_data_config_path, bundle_config_path, load_client_config, resolve_room_template,
+    CLIENT_CONFIG_FILE, ClientConfig, ClientConfigSelection, LoadedClientConfig, LocalDate,
+    RelayPreset, app_data_config_path, bundle_config_path, load_client_config,
+    resolve_room_template, save_client_config_selection,
 };
 pub use diagnostics::diagnostics_directory;
 pub use logging::{

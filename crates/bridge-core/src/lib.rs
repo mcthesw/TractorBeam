@@ -7,15 +7,16 @@ pub mod protocol;
 pub mod steam;
 
 pub use client::{
-    BridgeClient, CLIENT_CONFIG_FILE, ClientConfig, ClientError, ClientIncidentKind,
-    ClientIncidentSnapshot, ClientLogSink, ClientSessionLog, ClientSessionLogContext, ConfigError,
-    ConnectionProfile, Counters, DEFAULT_RELAY_PROBE_PAYLOAD_BYTES, HookReceiveProbeReport,
-    HookStartupPhase, HookStartupState, LoadedClientConfig, LocalDate, LogEntry, LogLevel,
-    PRODUCT_NAME, READINESS_PROBE_CONNECTION_PROFILES, READINESS_PROBE_PAYLOAD_BYTES,
+    BridgeClient, CLIENT_CONFIG_FILE, ClientConfig, ClientConfigSelection, ClientError,
+    ClientIncidentKind, ClientIncidentSnapshot, ClientLogSink, ClientSessionLog,
+    ClientSessionLogContext, ConfigError, ConnectionProfile, Counters,
+    DEFAULT_RELAY_PROBE_PAYLOAD_BYTES, HookReceiveProbeReport, HookStartupPhase,
+    HookStartupState, LoadedClientConfig, LocalDate, LogEntry, LogLevel, PRODUCT_NAME,
+    READINESS_PROBE_CONNECTION_PROFILES, READINESS_PROBE_PAYLOAD_BYTES,
     READINESS_PROBE_SAMPLES_PER_CASE, ReadinessProbeCaseReport, ReadinessProbeReport,
     RelayEndpoint, RelayPreset, RelayProbeReport, RuntimeState, SessionConfig,
     SessionHealthSnapshot, SessionHealthSummary, SessionMode, SessionQuality, SessionStatus,
     SessionStopReason, SteamIdentity, TransportChoice, app_data_config_path, bundle_config_path,
     diagnostics_directory, emit_client_log_event, load_client_config, resolve_room_template,
-    runtime_name,
+    runtime_name, save_client_config_selection,
 };

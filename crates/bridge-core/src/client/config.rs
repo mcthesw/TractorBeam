@@ -27,6 +27,8 @@ pub struct ClientConfig {
     pub default_transport: TransportChoice,
     pub default_mode: SessionMode,
     pub selected_relay: Option<String>,
+    pub selected_steam_id64: Option<String>,
+    pub room: Option<String>,
     pub relays: Vec<RelayPreset>,
     pub session_health: SessionHealthConfig,
 }
@@ -37,6 +39,8 @@ impl Default for ClientConfig {
             default_transport: TransportChoice::default(),
             default_mode: SessionMode::Pure,
             selected_relay: None,
+            selected_steam_id64: None,
+            room: None,
             relays: Vec::new(),
             session_health: SessionHealthConfig::default(),
         }
@@ -187,6 +191,8 @@ struct RawClientConfig {
     default_transport: Option<String>,
     default_mode: Option<String>,
     selected_relay: Option<String>,
+    selected_steam_id64: Option<String>,
+    room: Option<String>,
     session_health: Option<RawSessionHealthConfig>,
     #[serde(default)]
     relays: Vec<RawRelayPreset>,
@@ -223,6 +229,8 @@ impl TryFrom<RawClientConfig> for ClientConfig {
                 .unwrap_or_default(),
             default_mode: parse_mode(value.default_mode.as_deref())?.unwrap_or(SessionMode::Pure),
             selected_relay: trimmed_non_empty(value.selected_relay),
+            selected_steam_id64: trimmed_non_empty(value.selected_steam_id64),
+            room: trimmed_non_empty(value.room),
             relays: value
                 .relays
                 .into_iter()
@@ -304,6 +312,68 @@ pub fn load_client_config() -> LoadedClientConfig {
         config: ClientConfig::default(),
         source: None,
         warnings,
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ClientConfigSelection {
+    pub selected_relay: Option<String>,
+    pub room: Option<String>,
+    pub selected_steam_id64: Option<String>,
+}
+
+pub fn save_client_config_selection(
+    selection: &ClientConfigSelection,
+) -> Result<PathBuf, ClientConfigError> {
+    let path = app_data_config_path()
+        .ok_or_else(|| ClientConfigError::InvalidRelay("no app-data config path".to_owned()))?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            ClientConfigError::InvalidRelay(format!("create app-data dir: {error}"))
+        })?;
+    }
+    save_selection_to(&path, selection)?;
+    Ok(path)
+}
+
+fn save_selection_to(
+    path: &Path,
+    selection: &ClientConfigSelection,
+) -> Result<(), ClientConfigError> {
+    let existing = fs::read_to_string(path).unwrap_or_default();
+    let mut doc: toml_edit::DocumentMut = existing
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| ClientConfigError::InvalidRelay(format!("parse app-data config: {error}")))?;
+    set_optional_key(&mut doc, "selected_relay", selection.selected_relay.as_deref());
+    set_optional_key(&mut doc, "room", selection.room.as_deref());
+    set_optional_key(
+        &mut doc,
+        "selected_steam_id64",
+        selection.selected_steam_id64.as_deref(),
+    );
+    fs::write(path, doc.to_string()).map_err(|error| {
+        ClientConfigError::InvalidRelay(format!("write app-data config: {error}"))
+    })?;
+    Ok(())
+}
+
+#[cfg(test)]
+fn save_client_config_selection_to(
+    path: &Path,
+    selection: &ClientConfigSelection,
+) -> Result<(), ClientConfigError> {
+    save_selection_to(path, selection)
+}
+
+fn set_optional_key(doc: &mut toml_edit::DocumentMut, key: &str, value: Option<&str>) {
+    let trimmed = value.map(|v| v.trim()).filter(|v| !v.is_empty());
+    match trimmed {
+        Some(value) => {
+            doc[key] = toml_edit::value(value.to_owned());
+        }
+        None => {
+            doc.remove(key);
+        }
     }
 }
 
@@ -487,5 +557,52 @@ snapshot_interval_seconds = 0
             .unwrap();
 
         assert_eq!(config.default_transport, TransportChoice::Tcp);
+    }
+
+    #[test]
+    fn save_selection_writes_keys_without_clobbering_others() {
+        let dir = std::env::temp_dir().join(format!(
+            "bb-config-test-{}-{}",
+            std::process::id(),
+            unix_seconds()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join(CLIENT_CONFIG_FILE);
+        std::fs::write(
+            &config_path,
+            r#"default_transport = "tcp"
+[[relays]]
+id = "r1"
+name = "Relay 1"
+host = "relay.example.test"
+port = 25910
+"#,
+        )
+        .unwrap();
+
+        let original = std::fs::read_to_string(&config_path).unwrap();
+        assert!(original.contains("[[relays]]"));
+
+        let saved = save_client_config_selection_to(&config_path, &ClientConfigSelection {
+            selected_relay: Some("r1".to_owned()),
+            room: Some("20260703-ab12".to_owned()),
+            selected_steam_id64: Some("76561198000000001".to_owned()),
+        });
+        assert!(saved.is_ok());
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains("selected_relay = \"r1\""));
+        assert!(content.contains("room = \"20260703-ab12\""));
+        assert!(content.contains("selected_steam_id64 = \"76561198000000001\""));
+        assert!(content.contains("[[relays]]"), "relay presets must survive");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn unix_seconds() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
     }
 }

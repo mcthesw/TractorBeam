@@ -17,6 +17,7 @@ pub struct BridgeClient {
     active_session_log: Option<Box<dyn ClientSessionLog>>,
     readiness_probe: Option<probe::ProbeHandle>,
     hook_receive_probe: Option<probe::ProbeHandle>,
+    light_ping_probe: Option<probe::LightPingHandle>,
 }
 
 impl BridgeClient {
@@ -43,6 +44,7 @@ impl BridgeClient {
             active_session_log: None,
             readiness_probe: None,
             hook_receive_probe: None,
+            light_ping_probe: None,
         };
         client.refresh_steam_accounts();
         client.log(
@@ -100,6 +102,11 @@ impl BridgeClient {
             }
         }
         if let Some(handle) = &self.hook_receive_probe {
+            while let Ok(event) = handle.events.try_recv() {
+                events.push(event);
+            }
+        }
+        if let Some(handle) = &self.light_ping_probe {
             while let Ok(event) = handle.events.try_recv() {
                 events.push(event);
             }
@@ -169,6 +176,22 @@ impl BridgeClient {
                     self.state.status = state::SessionStatus::Idle;
                     self.active_session_log = None;
                     should_clear = true;
+                }
+                state::RuntimeEvent::LightPingFinished(report) => {
+                    let report = *report;
+                    self.log(
+                        LogLevel::Info,
+                        format!(
+                            "Light ping {}: relay={} {} received={}/{} median={}ms",
+                            report.target.relay_name.as_deref().unwrap_or(&report.target.endpoint.to_string()),
+                            report.target.endpoint,
+                            report.latency_label(),
+                            report.received,
+                            report.sent,
+                            report.median_rtt_ms.map_or("-".to_owned(), |ms| ms.to_string()),
+                        ),
+                    );
+                    self.upsert_light_ping_report(report);
                 }
             }
         }
@@ -361,6 +384,37 @@ impl BridgeClient {
         Ok(())
     }
 
+    pub fn start_light_ping_probes(
+        &mut self,
+        targets: Vec<probe::LightPingTarget>,
+    ) -> Result<(), ClientError> {
+        if targets.is_empty() {
+            return Ok(());
+        }
+        self.state.light_ping_reports.clear();
+        let handle = probe::spawn_light_ping_probes(targets.clone())?;
+        self.light_ping_probe = Some(handle);
+        self.log(
+            LogLevel::Info,
+            format!("Light ping probes started for {} relay(s)", targets.len()),
+        );
+        Ok(())
+    }
+
+    fn upsert_light_ping_report(&mut self, report: probe::LightPingReport) {
+        let key = report.target.endpoint.clone();
+        if let Some(existing) = self
+            .state
+            .light_ping_reports
+            .iter_mut()
+            .find(|r| r.target.endpoint == key)
+        {
+            *existing = report;
+        } else {
+            self.state.light_ping_reports.push(report);
+        }
+    }
+
     pub(super) fn log(&mut self, level: LogLevel, message: impl Into<String>) {
         self.push_log(level, message);
     }
@@ -414,7 +468,8 @@ impl BridgeClient {
                 }
                 state::RuntimeEvent::Stopped
                 | state::RuntimeEvent::ReadinessProbeFinished(_)
-                | state::RuntimeEvent::HookReceiveProbeFinished(_) => {}
+                | state::RuntimeEvent::HookReceiveProbeFinished(_)
+                | state::RuntimeEvent::LightPingFinished(_) => {}
             }
         }
     }

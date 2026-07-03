@@ -275,6 +275,7 @@ pub struct RuntimeState {
     pub hook_startup: HookStartupState,
     pub last_stop_reason: Option<SessionStopReason>,
     pub client_incidents: Vec<ClientIncidentSnapshot>,
+    pub light_ping_reports: Vec<super::probe::LightPingReport>,
 }
 
 #[derive(Debug)]
@@ -289,6 +290,7 @@ pub(super) enum RuntimeEvent {
     SessionHealthSummary(Box<SessionHealthSnapshot>),
     SessionEnded(SessionStopReason),
     Stopped,
+    LightPingFinished(Box<super::probe::LightPingReport>),
 }
 
 pub(super) type RuntimeEventSender = Sender<RuntimeEvent>;

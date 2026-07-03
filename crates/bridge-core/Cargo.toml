@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 basement-isaac-injector = { path = "../isaac-injector" }
+bs58 = "0.1"
 bytes = "1.11.1"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
 directories = "6.0.0"

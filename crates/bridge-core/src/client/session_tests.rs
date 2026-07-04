@@ -206,6 +206,7 @@ fn run_test_relay(socket: StdUdpSocket, stop: &AtomicBool) {
                 MessageType::JoinChallenge,
                 ControlMessage::Challenge {
                     token: "token".to_owned(),
+                    pow: None,
                 },
             ),
             ControlMessage::Join {

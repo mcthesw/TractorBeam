@@ -17,7 +17,7 @@ const fn peer(value: u64) -> PeerId {
 }
 
 fn challenge_token(message: ControlMessage) -> String {
-    let ControlMessage::Challenge { token } = message else {
+    let ControlMessage::Challenge { token, .. } = message else {
         panic!("expected challenge message");
     };
     token

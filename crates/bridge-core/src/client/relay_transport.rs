@@ -8,7 +8,7 @@ use tokio::{
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-use crate::protocol::{ControlMessage, Envelope, MessageType, PeerInfo};
+use crate::protocol::{ClientMetadata, ControlMessage, Envelope, MessageType, PeerInfo};
 
 use super::{RelayEndpoint, SessionConfig, TransportChoice};
 
@@ -125,7 +125,9 @@ async fn complete_relay_join_inner(
         let envelope = Envelope::decode(raw).map_err(io::Error::other)?;
         let control = ControlMessage::decode(&envelope.payload).map_err(io::Error::other)?;
         match control {
-            ControlMessage::Challenge { token } => send_join(sender, config, Some(token)).await?,
+            ControlMessage::Challenge { token, .. } => {
+                send_join(sender, config, Some(token)).await?
+            }
             ControlMessage::Ready { peers } => {
                 return Ok(peers);
             }
@@ -146,7 +148,10 @@ async fn send_join(
         room: config.room.clone(),
         steam_id64: config.steam_id64.clone(),
         display_name: Some(config.display_name.clone()),
+        client: Some(ClientMetadata::current()),
         challenge,
+        pow_proof: None,
+        admission: None,
     };
     send_control(sender, MessageType::Join, &message).await
 }

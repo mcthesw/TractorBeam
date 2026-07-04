@@ -155,14 +155,13 @@ async fn spawn_test_relay(
         .as_ref()
         .map(|listener| listener.local_addr().unwrap());
     let config = RelayConfig {
-        bind: udp_address.to_string(),
-        tcp_enabled,
+        udp_bind: Some(udp_address.to_string()),
         tcp_bind: tcp_address
             .map(|address| address.to_string())
-            .unwrap_or_else(|| "127.0.0.1:0".to_owned()),
+            .or_else(|| tcp_enabled.then(|| "127.0.0.1:0".to_owned())),
         ..RelayConfig::default()
     };
-    let server = tokio::spawn(run_with_listeners(udp_socket, tcp_listener, config));
+    let server = tokio::spawn(run_with_listeners(Some(udp_socket), tcp_listener, config));
     (server, udp_address, tcp_address)
 }
 
@@ -171,7 +170,7 @@ async fn assert_forwards_to_target_only(
     peer_b: &mut TestPeer,
     peer_c: &mut TestPeer,
 ) {
-    let payload = Bytes::from(vec![7; 2_048]);
+    let payload = Bytes::from(vec![7; 1_024]);
     send_game(
         peer_a,
         "76561198000000101",

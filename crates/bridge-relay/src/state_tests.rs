@@ -93,6 +93,55 @@ fn matches_blocked_cidrs() {
 }
 
 #[test]
+fn packet_rate_limit_caps_packets_per_peer() {
+    let config = RelayConfig {
+        rate_limit_per_second: 2,
+        byte_rate_limit_burst: 1024,
+        ..RelayConfig::default()
+    };
+    let mut state = RelayState::new(config);
+    let now = Instant::now();
+
+    assert!(state.allow_packet(peer(1), 1, now));
+    assert!(state.allow_packet(peer(1), 1, now));
+    assert!(!state.allow_packet(peer(1), 1, now));
+    assert!(state.allow_packet(peer(1), 1, now + Duration::from_secs(1)));
+}
+
+#[test]
+fn byte_token_bucket_caps_sustained_peer_traffic() {
+    let config = RelayConfig {
+        rate_limit_per_second: 100,
+        byte_rate_limit_per_second: 10,
+        byte_rate_limit_burst: 20,
+        ..RelayConfig::default()
+    };
+    let mut state = RelayState::new(config);
+    let now = Instant::now();
+
+    assert!(state.allow_packet(peer(1), 15, now));
+    assert!(state.allow_packet(peer(1), 5, now));
+    assert!(!state.allow_packet(peer(1), 1, now));
+    assert!(state.allow_packet(peer(1), 5, now + Duration::from_millis(500)));
+}
+
+#[test]
+fn health_pong_rate_limit_caps_replies_per_source_ip() {
+    let config = RelayConfig {
+        health_pongs_per_second_per_ip: 2,
+        ..RelayConfig::default()
+    };
+    let mut state = RelayState::new(config);
+    let source = Ipv4Addr::LOCALHOST.into();
+    let now = Instant::now();
+
+    assert!(state.allow_health_pong(source, now));
+    assert!(state.allow_health_pong(source, now));
+    assert!(!state.allow_health_pong(source, now));
+    assert!(state.allow_health_pong(source, now + Duration::from_secs(1)));
+}
+
+#[test]
 fn rejects_room_names_over_limit() {
     let config = RelayConfig {
         max_room_name_len: 4,

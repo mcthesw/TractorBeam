@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.2.0](https://github.com/mcthesw/Basement-Bridge/compare/v0.1.1...v0.2.0) (2026-07-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* removes the internal-test cargo feature and all code gated behind it, including the BB1. join code, self-test workflow, report packaging/upload, and InternalTestConfig. The closed-test report flow is no longer needed; a new join code (relay + room only) will replace it in subsequent commits.
+* remove UDP FEC transport profile
+
+### Features
+
+* **core:** add lightweight relay ping probes ([18781de](https://github.com/mcthesw/Basement-Bridge/commit/18781deb96b9fdbbb83c57df954ef169ab98ad76))
+* **core:** add shareable join codes ([62361aa](https://github.com/mcthesw/Basement-Bridge/commit/62361aaaca136751a18626cff0577454ff87bec1))
+* **core:** persist room and selected steam identity ([5446f5c](https://github.com/mcthesw/Basement-Bridge/commit/5446f5cd18324c0534f3656156573dd4f5357c03))
+* **core:** track room peer view from relay updates ([4f71491](https://github.com/mcthesw/Basement-Bridge/commit/4f714912c38f77f4b7ba6715a6ccdde951b9ab57))
+* **gui:** default to recent Steam identity ([68aa268](https://github.com/mcthesw/Basement-Bridge/commit/68aa268332b498d6f0dc23a314a9795db59a1e86))
+* **gui:** hide release console window ([b57cbc4](https://github.com/mcthesw/Basement-Bridge/commit/b57cbc427e7551e7a043b8d048c41f9a18ea0c14))
+* **gui:** move UI translations to rust-i18n YAML ([ba94b87](https://github.com/mcthesw/Basement-Bridge/commit/ba94b8735afe9f5a873e51e93b11b58bd50894b7))
+* **gui:** remove redundant name field ([254c768](https://github.com/mcthesw/Basement-Bridge/commit/254c7689c13b04ed65fe5e5c6508c73de273b535))
+* **gui:** rewrite to five-page shell with home, settings, stats, log, about ([082c108](https://github.com/mcthesw/Basement-Bridge/commit/082c108f72e579cec56fa7c9321593d57bffa44c))
+* **gui:** show relay latency in selection ([f3d1731](https://github.com/mcthesw/Basement-Bridge/commit/f3d17315673487d6931f5c7aff959e5d395b4f3f))
+* **injector:** retry native hook injection with elevation on access denied ([9b24c4a](https://github.com/mcthesw/Basement-Bridge/commit/9b24c4aff619973ed2cf4ac2b6ca17b354dc1070))
+* **protocol:** add peer metadata and room update control messages ([3f05a32](https://github.com/mcthesw/Basement-Bridge/commit/3f05a32c58100c18fcc1bb305fcf8ed3b2d177f2))
+* **relay:** broadcast room peer updates ([dbd06b0](https://github.com/mcthesw/Basement-Bridge/commit/dbd06b0a29ddc16b01756eca1289d0ee0f0a0bf1))
+* remove UDP FEC transport profile ([f367c23](https://github.com/mcthesw/Basement-Bridge/commit/f367c237a82345b39d19ac010e0a90f62a25e4b8))
+
+
+### Bug Fixes
+
+* **client:** make native hook startup diagnosable ([e581c88](https://github.com/mcthesw/Basement-Bridge/commit/e581c88d9ee97459ad411297078a071e0e2a1881))
+
+
+### Code Refactoring
+
+* **gui:** call rust-i18n translations directly ([5047390](https://github.com/mcthesw/Basement-Bridge/commit/5047390b7089e28a1ebc0953d009c538d69655b0))
+* **injector:** remove prototype fallback artifacts ([985ee14](https://github.com/mcthesw/Basement-Bridge/commit/985ee149460e05e00622904c1089adcce442e0c3))
+
+
+### Miscellaneous
+
+* remove internal-test feature and closed-test report flow ([4299b46](https://github.com/mcthesw/Basement-Bridge/commit/4299b46e49380f333eeee0e92be838a8d731bae8))
+
 ## [0.1.1](https://github.com/mcthesw/Basement-Bridge/compare/v0.1.0...v0.1.1) (2026-06-30)
 
 

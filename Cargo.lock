@@ -482,6 +482,7 @@ dependencies = [
  "directories",
  "eframe",
  "rust-i18n",
+ "serde_yaml",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",

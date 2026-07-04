@@ -24,6 +24,9 @@ tracing = "0.1.44"
 tracing-appender = "0.2.4"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
+[dev-dependencies]
+serde_yaml = "0.9.34"
+
 [package.metadata.i18n]
 available-locales = ["zh_CN", "en_US"]
 default-locale = "zh_CN"

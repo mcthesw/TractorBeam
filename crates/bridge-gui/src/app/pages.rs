@@ -6,8 +6,9 @@ use basement_bridge_core::{
     SessionStatus, TransportChoice, build_info, protocol::PeerTransport,
 };
 use eframe::egui::{self, ComboBox, TextEdit};
+use rust_i18n::t;
 
-use crate::i18n::{Language, Text, text};
+use crate::i18n::Language;
 
 use super::generate_room_id;
 use super::{
@@ -27,12 +28,13 @@ const LOG_LEVELS: [LogLevel; 5] = [
 
 impl BridgeApp {
     pub(super) fn top_bar(&mut self, ui: &mut egui::Ui) {
-        let selected_language = self.language.label();
-        let home = self.t(Text::Home);
-        let settings = self.t(Text::Settings);
-        let stats = self.t(Text::Stats);
-        let log = self.t(Text::Log);
-        let about = self.t(Text::About);
+        let selected_language_label = self.language.label();
+        let mut selected_language = self.language;
+        let home = t!("home");
+        let settings = t!("settings");
+        let stats = t!("stats");
+        let log = t!("log");
+        let about = t!("about");
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.page, Page::Home, home);
@@ -45,26 +47,27 @@ impl BridgeApp {
             ui.horizontal(|ui| {
                 ui.label("🌐");
                 ComboBox::from_id_salt("language")
-                    .selected_text(selected_language)
+                    .selected_text(selected_language_label)
                     .width(112.0)
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
-                            &mut self.language,
+                            &mut selected_language,
                             Language::Chinese,
                             Language::Chinese.label(),
                         );
                         ui.selectable_value(
-                            &mut self.language,
+                            &mut selected_language,
                             Language::English,
                             Language::English.label(),
                         );
                     });
+                self.set_language(selected_language);
             });
         });
     }
 
     pub(super) fn home_page(&mut self, ui: &mut egui::Ui) {
-        ui.heading(self.t(Text::Home));
+        ui.heading(t!("home"));
         ui.add_space(8.0);
 
         self.relay_section(ui);
@@ -89,10 +92,10 @@ impl BridgeApp {
     }
 
     fn relay_section(&mut self, ui: &mut egui::Ui) {
-        let relay_label = self.t(Text::RelayServer);
-        let manual_label = self.t(Text::ManualRelay);
-        let retest_label = self.t(Text::TestLatency);
-        let host_label = self.t(Text::RelayHost);
+        let relay_label = t!("relay.server");
+        let manual_label = t!("relay.manual");
+        let retest_label = t!("probe.test_latency");
+        let host_label = t!("relay.host");
         ui.label(relay_label);
         let mut selected_relay = self.selected_relay;
         let selected_text = selected_relay
@@ -140,21 +143,17 @@ impl BridgeApp {
 
     fn steam_section(&mut self, ui: &mut egui::Ui) {
         let accounts = self.client.state().detected_accounts.clone();
-        let steam_label = self.t(Text::SteamAccount);
-        let refresh_label = self.t(Text::RefreshAccounts);
-        let manual_steam_label = self.t(Text::ManualSteamId);
-        let display_name_label = self.t(Text::DisplayName);
+        let steam_label = t!("steam.account");
+        let refresh_label = t!("steam.refresh_accounts");
+        let manual_steam_label = t!("steam.manual_id");
+        let display_name_label = t!("display_name");
         ui.label(steam_label);
         if accounts.is_empty() {
-            ui.label(self.t(Text::NoSteamAccounts));
+            ui.label(t!("steam.no_accounts"));
         } else {
             let account_before = self.selected_account;
             ComboBox::from_id_salt("home_steam_account")
-                .selected_text(selected_account_label(
-                    self.selected_account,
-                    &accounts,
-                    self.language,
-                ))
+                .selected_text(selected_account_label(self.selected_account, &accounts))
                 .width(400.0)
                 .show_ui(ui, |ui| {
                     for (index, account) in accounts.iter().enumerate() {
@@ -164,11 +163,7 @@ impl BridgeApp {
                             account_label(account),
                         );
                     }
-                    ui.selectable_value(
-                        &mut self.selected_account,
-                        None,
-                        text(self.language, Text::Manual),
-                    );
+                    ui.selectable_value(&mut self.selected_account, None, t!("manual"));
                 });
             if self.selected_account != account_before {
                 self.persist_selection();
@@ -196,14 +191,14 @@ impl BridgeApp {
     }
 
     fn join_code_ui(&mut self, ui: &mut egui::Ui) {
-        let join_code_label = self.t(Text::JoinCode);
-        let copy_label = self.t(Text::CopyCode);
-        let import_label = self.t(Text::ImportCode);
+        let join_code_label = t!("join_code");
+        let copy_label = t!("join_code.copy");
+        let import_label = t!("join_code.import");
         ui.label(join_code_label);
         ui.horizontal(|ui| {
             if ui.button(copy_label).clicked() {
                 ui.ctx().copy_text(self.copy_join_code());
-                self.join_code_message = Some(self.t(Text::CodeCopied).into_owned());
+                self.join_code_message = Some(t!("join_code.copied").into_owned());
             }
             if ui.button(import_label).clicked() {
                 match arboard::Clipboard::new() {
@@ -213,13 +208,12 @@ impl BridgeApp {
                             self.import_join_code();
                         }
                         _ => {
-                            self.join_code_message =
-                                Some(self.t(Text::ClipboardEmpty).into_owned());
+                            self.join_code_message = Some(t!("clipboard.empty").into_owned());
                         }
                     },
                     Err(error) => {
                         self.join_code_message =
-                            Some(format!("{}: {error}", self.t(Text::ClipboardEmpty)));
+                            Some(format!("{}: {error}", t!("clipboard.empty")));
                     }
                 }
             }
@@ -231,8 +225,8 @@ impl BridgeApp {
     }
 
     fn room_ui(&mut self, ui: &mut egui::Ui) {
-        let room_label = self.t(Text::Room);
-        let generate_label = self.t(Text::GenerateRoom);
+        let room_label = t!("room");
+        let generate_label = t!("room.generate");
         ui.label(room_label);
         ui.horizontal(|ui| {
             ui.add(TextEdit::singleline(&mut self.room).desired_width(310.0));
@@ -245,8 +239,8 @@ impl BridgeApp {
 
     fn action_row(&mut self, ui: &mut egui::Ui) {
         let running = self.client.state().status == SessionStatus::Running;
-        let start_label = self.t(Text::Start);
-        let stop_label = self.t(Text::Stop);
+        let start_label = t!("start");
+        let stop_label = t!("stop");
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(!running, egui::Button::new(start_label))
@@ -268,12 +262,12 @@ impl BridgeApp {
         if startup.phase == HookStartupPhase::NotStarted {
             return;
         }
-        let progress_label = self.t(Text::HookProgress);
+        let progress_label = t!("hook.progress");
         ui.separator();
         ui.add_space(4.0);
         ui.heading(progress_label);
         ui.add_space(4.0);
-        let (color, phase_text) = hook_phase_label(self.language, startup.phase);
+        let (color, phase_text) = hook_phase_label(startup.phase);
         ui.horizontal(|ui| {
             ui.colored_label(color, "●");
             ui.label(phase_text);
@@ -301,25 +295,25 @@ impl BridgeApp {
             ui.add_space(2.0);
             ui.monospace(format!(
                 "{}: {}s",
-                self.t(Text::Elapsed),
+                t!("elapsed"),
                 unix_seconds().saturating_sub(startup.updated_at)
             ));
         }
         if startup.access_denied {
             ui.add_space(4.0);
-            ui.colored_label(ui.visuals().error_fg_color, self.t(Text::AccessDeniedHint));
+            ui.colored_label(ui.visuals().error_fg_color, t!("hook.access_denied_hint"));
         }
     }
 
     fn room_members_ui(&self, ui: &mut egui::Ui) {
         let peers = &self.client.state().room_peers;
-        let members_label = self.t(Text::RoomMembers);
+        let members_label = t!("room.members");
         ui.separator();
         ui.add_space(4.0);
         ui.heading(members_label);
         ui.add_space(4.0);
         if peers.is_empty() {
-            ui.label(self.t(Text::RoomEmpty));
+            ui.label(t!("room.empty"));
             return;
         }
         let (my_id, _) = self.current_identity();
@@ -342,21 +336,21 @@ impl BridgeApp {
                         ui.visuals().text_color()
                     };
                     ui.colored_label(color, display);
-                    ui.label(peer_transport_label(self.language, peer.transport));
+                    ui.label(peer_transport_label(peer.transport));
                     ui.end_row();
                 }
             });
     }
 
     pub(super) fn settings_page(&mut self, ui: &mut egui::Ui) {
-        let settings_label = self.t(Text::Settings);
-        let profile_label = self.t(Text::ConnectionProfile);
-        let mode_label = self.t(Text::Mode);
-        let tcp = self.t(Text::Tcp);
-        let udp = self.t(Text::Udp);
-        let official = self.t(Text::Official);
-        let fallback = self.t(Text::Fallback);
-        let pure = self.t(Text::Pure);
+        let settings_label = t!("settings");
+        let profile_label = t!("connection_profile");
+        let mode_label = t!("mode");
+        let tcp = t!("transport.tcp");
+        let udp = t!("transport.udp");
+        let official = t!("mode.official");
+        let fallback = t!("mode.fallback");
+        let pure = t!("mode.pure");
         ui.heading(settings_label);
         ui.add_space(12.0);
 
@@ -390,21 +384,21 @@ impl BridgeApp {
     }
 
     pub(super) fn stats_page(&mut self, ui: &mut egui::Ui) {
-        let stats_label = self.t(Text::Stats);
-        let readiness_label = self.t(Text::RelayReadiness);
-        let hook_recv_label = self.t(Text::HookReceive);
-        let run_hook_label = self.t(Text::RunHookReceiveProbe);
-        let probe_running_label = self.t(Text::ProbeRunning);
-        let run_readiness_label = self.t(Text::RunReadinessProbe);
+        let stats_label = t!("stats");
+        let readiness_label = t!("probe.relay_readiness");
+        let hook_recv_label = t!("probe.hook_receive");
+        let run_hook_label = t!("probe.run_hook_receive");
+        let probe_running_label = t!("probe.running");
+        let run_readiness_label = t!("probe.run_readiness");
         ui.heading(stats_label);
         ui.add_space(8.0);
 
-        session_health_summary(ui, self.language, self.client.state());
+        session_health_summary(ui, self.client.state());
         ui.add_space(12.0);
 
         ui.separator();
         ui.add_space(8.0);
-        detail_counters(ui, self.language, self.client.state());
+        detail_counters(ui, self.client.state());
         ui.add_space(12.0);
 
         ui.separator();
@@ -423,7 +417,7 @@ impl BridgeApp {
         }
         if let Some(report) = &self.client.state().latest_readiness_probe {
             ui.add_space(4.0);
-            readiness_probe_table(ui, self.language, report);
+            readiness_probe_table(ui, report);
         }
 
         ui.add_space(12.0);
@@ -439,16 +433,16 @@ impl BridgeApp {
         }
         if let Some(result) = &self.client.state().latest_hook_receive_probe {
             ui.add_space(4.0);
-            hook_probe_table(ui, self.language, result);
+            hook_probe_table(ui, result);
         }
     }
 
     pub(super) fn log_page(&mut self, ui: &mut egui::Ui) {
-        let log_label = self.t(Text::Log);
-        let clear_label = self.t(Text::ClearLogs);
-        let level_filter_label = self.t(Text::LogLevelFilter);
-        let empty_label = self.t(Text::LogEmpty);
-        let open_log_label = self.t(Text::OpenLogDirectory);
+        let log_label = t!("log");
+        let clear_label = t!("logs.clear");
+        let level_filter_label = t!("logs.level_filter");
+        let empty_label = t!("logs.empty");
+        let open_log_label = t!("logs.open_directory");
         ui.heading(log_label);
         ui.add_space(4.0);
 
@@ -461,15 +455,11 @@ impl BridgeApp {
         ui.horizontal(|ui| {
             ui.label(level_filter_label);
             ComboBox::from_id_salt("log_level_filter")
-                .selected_text(level_name(self.language, u8_to_level(max_level)))
+                .selected_text(level_name(u8_to_level(max_level)))
                 .width(100.0)
                 .show_ui(ui, |ui| {
                     for level in LOG_LEVELS {
-                        ui.selectable_value(
-                            &mut selected_level,
-                            level as u8,
-                            level_name(self.language, level),
-                        );
+                        ui.selectable_value(&mut selected_level, level as u8, level_name(level));
                     }
                 });
             if ui.button(clear_label).clicked() {
@@ -511,10 +501,10 @@ impl BridgeApp {
     }
 
     pub(super) fn about_page(&mut self, ui: &mut egui::Ui) {
-        let about_label = self.t(Text::About);
-        let desc_label = self.t(Text::AboutDesc);
-        let version_label = self.t(Text::Version);
-        let proto_label = self.t(Text::ProtocolVersion);
+        let about_label = t!("about");
+        let desc_label = t!("about.desc");
+        let version_label = t!("version");
+        let proto_label = t!("about.protocol_version");
         ui.heading(about_label);
         ui.add_space(12.0);
         ui.label(desc_label);
@@ -533,7 +523,7 @@ impl BridgeApp {
         ui.add_space(12.0);
         ui.hyperlink_to("GitHub", "https://github.com/mcthesw/Basement-Bridge");
         ui.add_space(2.0);
-        ui.label(format!("{}: GNU AGPL-3.0-or-later", self.t(Text::License)));
+        ui.label(format!("{}: GNU AGPL-3.0-or-later", t!("license")));
     }
 
     fn relay_latency_label(&self, endpoint: &basement_bridge_core::RelayEndpoint) -> String {
@@ -543,12 +533,12 @@ impl BridgeApp {
             .iter()
             .find(|report| &report.target.endpoint == endpoint)
             .map_or_else(
-                || self.t(Text::Probing).into_owned(),
+                || t!("probe.probing").into_owned(),
                 |report| {
                     if let Some(ms) = report.median_rtt_ms {
                         format!("{ms} ms")
                     } else {
-                        self.t(Text::Unreachable).into_owned()
+                        t!("probe.unreachable").into_owned()
                     }
                 },
             )
@@ -563,52 +553,40 @@ impl BridgeApp {
     }
 }
 
-fn hook_phase_label(
-    language: Language,
-    phase: HookStartupPhase,
-) -> (egui::Color32, Cow<'static, str>) {
+fn hook_phase_label(phase: HookStartupPhase) -> (egui::Color32, Cow<'static, str>) {
     match phase {
-        HookStartupPhase::NotStarted => (egui::Color32::GRAY, text(language, Text::HookNotStarted)),
+        HookStartupPhase::NotStarted => (egui::Color32::GRAY, t!("hook.not_started")),
         HookStartupPhase::Configured => (
             egui::Color32::from_rgb(100, 149, 237),
-            text(language, Text::HookConfigured),
+            t!("hook.configured"),
         ),
         HookStartupPhase::WaitingForIsaac => (
             egui::Color32::from_rgb(255, 200, 0),
-            text(language, Text::HookWaitingIsaac),
+            t!("hook.waiting_isaac"),
         ),
-        HookStartupPhase::Injecting => (
-            egui::Color32::from_rgb(255, 200, 0),
-            text(language, Text::HookInjecting),
-        ),
+        HookStartupPhase::Injecting => (egui::Color32::from_rgb(255, 200, 0), t!("hook.injecting")),
         HookStartupPhase::WaitingForHookEndpoint => (
             egui::Color32::from_rgb(255, 200, 0),
-            text(language, Text::HookWaitingEndpoint),
+            t!("hook.waiting_endpoint"),
         ),
         HookStartupPhase::EndpointReady => (
             egui::Color32::from_rgb(100, 200, 100),
-            text(language, Text::HookEndpointReady),
+            t!("hook.endpoint_ready"),
         ),
-        HookStartupPhase::Ready => (
-            egui::Color32::from_rgb(100, 200, 100),
-            text(language, Text::HookReady),
-        ),
-        HookStartupPhase::Failed => (
-            egui::Color32::from_rgb(220, 80, 80),
-            text(language, Text::HookFailed),
-        ),
-        HookStartupPhase::Cancelled => (egui::Color32::GRAY, text(language, Text::HookCancelled)),
+        HookStartupPhase::Ready => (egui::Color32::from_rgb(100, 200, 100), t!("hook.ready")),
+        HookStartupPhase::Failed => (egui::Color32::from_rgb(220, 80, 80), t!("hook.failed")),
+        HookStartupPhase::Cancelled => (egui::Color32::GRAY, t!("hook.cancelled")),
     }
 }
 
-fn peer_transport_label(language: Language, transport: PeerTransport) -> Cow<'static, str> {
+fn peer_transport_label(transport: PeerTransport) -> Cow<'static, str> {
     match transport {
-        PeerTransport::Udp => text(language, Text::Udp),
-        PeerTransport::Tcp => text(language, Text::Tcp),
+        PeerTransport::Udp => t!("transport.udp"),
+        PeerTransport::Tcp => t!("transport.tcp"),
     }
 }
 
-fn readiness_probe_table(ui: &mut egui::Ui, language: Language, report: &ReadinessProbeReport) {
+fn readiness_probe_table(ui: &mut egui::Ui, report: &ReadinessProbeReport) {
     let horizontal_spacing = 12.0;
     let columns = 5.0;
     let col_width =
@@ -619,15 +597,15 @@ fn readiness_probe_table(ui: &mut egui::Ui, language: Language, report: &Readine
         .striped(true)
         .spacing([horizontal_spacing, 4.0])
         .show(ui, |ui| {
-            table_header(ui, text(language, Text::Transport));
-            table_header(ui, text(language, Text::Size));
-            table_header(ui, text(language, Text::Lost));
-            table_header(ui, text(language, Text::Latency));
-            table_header(ui, text(language, Text::Jitter));
+            table_header(ui, t!("transport"));
+            table_header(ui, t!("size"));
+            table_header(ui, t!("lost"));
+            table_header(ui, t!("latency"));
+            table_header(ui, t!("jitter"));
             ui.end_row();
 
             for case in &report.cases {
-                ui.label(connection_profile_label(language, case.connection_profile));
+                ui.label(connection_profile_label(case.connection_profile));
                 ui.label(format!("{} B", case.payload_bytes));
                 ui.label(lost_summary(case));
                 ui.add(egui::Label::new(latency_summary(case)).wrap());
@@ -642,49 +620,49 @@ fn readiness_probe_table(ui: &mut egui::Ui, language: Language, report: &Readine
     for (index, (case, reason)) in failed_cases.enumerate() {
         if index == 0 {
             ui.add_space(4.0);
-            ui.label(text(language, Text::Details));
+            ui.label(t!("details"));
         }
         wrapped_colored_label(
             ui,
             ui.visuals().error_fg_color,
             &format!(
                 "{} {} B: {reason}",
-                connection_profile_label(language, case.connection_profile),
+                connection_profile_label(case.connection_profile),
                 case.payload_bytes
             ),
         );
     }
     if report.cases.is_empty() {
         ui.add_space(4.0);
-        ui.label(text(language, Text::NoProbeData));
+        ui.label(t!("probe.no_data"));
     }
 }
 
-fn hook_probe_table(ui: &mut egui::Ui, language: Language, report: &HookReceiveProbeReport) {
+fn hook_probe_table(ui: &mut egui::Ui, report: &HookReceiveProbeReport) {
     egui::Grid::new("hook_probe_table")
         .num_columns(4)
         .striped(true)
         .spacing([12.0, 4.0])
         .show(ui, |ui| {
-            table_header(ui, text(language, Text::Bytes));
-            table_header(ui, text(language, Text::HookInput));
-            table_header(ui, text(language, Text::HookAvailable));
-            table_header(ui, text(language, Text::HookRead));
+            table_header(ui, t!("bytes"));
+            table_header(ui, t!("hook.input"));
+            table_header(ui, t!("hook.available"));
+            table_header(ui, t!("hook.read"));
             ui.end_row();
 
             ui.label(format!("{} B", report.sent_bytes));
-            probe_bool_cell(ui, language, report.local_in);
-            probe_bool_cell(ui, language, report.available_hit);
-            probe_bool_cell(ui, language, report.read_hit);
+            probe_bool_cell(ui, report.local_in);
+            probe_bool_cell(ui, report.available_hit);
+            probe_bool_cell(ui, report.read_hit);
             ui.end_row();
         });
 }
 
-fn session_health_summary(ui: &mut egui::Ui, language: Language, state: &RuntimeState) {
-    ui.heading(text(language, Text::SessionQuality));
+fn session_health_summary(ui: &mut egui::Ui, state: &RuntimeState) {
+    ui.heading(t!("session_quality"));
     ui.add_space(6.0);
     let Some(snapshot) = &state.latest_session_health else {
-        ui.label(text(language, Text::SessionNotStarted));
+        ui.label(t!("session.not_started"));
         return;
     };
     let quality_color = match snapshot.quality {
@@ -694,26 +672,26 @@ fn session_health_summary(ui: &mut egui::Ui, language: Language, state: &Runtime
     };
     ui.horizontal(|ui| {
         ui.colored_label(quality_color, "●");
-        ui.label(quality_label(language, snapshot.quality));
+        ui.label(quality_label(snapshot.quality));
     });
     ui.add_space(4.0);
     egui::Grid::new("session_health_summary")
         .num_columns(2)
         .spacing([24.0, 4.0])
         .show(ui, |ui| {
-            ui.label(text(language, Text::RuntimeRtt));
+            ui.label(t!("health.runtime_rtt"));
             ui.monospace(display_latency_ms(snapshot.runtime_rtt.latency.p95_ms));
             ui.end_row();
 
-            ui.label(text(language, Text::QueueDrops));
+            ui.label(t!("health.queue_drops"));
             ui.monospace(snapshot.queues.total_dropped().to_string());
             ui.end_row();
 
-            ui.label(text(language, Text::SequenceGaps));
+            ui.label(t!("health.sequence_gaps"));
             ui.monospace(snapshot.source_sequence.gaps.to_string());
             ui.end_row();
 
-            ui.label(text(language, Text::PacketGaps));
+            ui.label(t!("health.packet_gaps"));
             ui.monospace(display_latency_ms(snapshot.relay_recv.gap.p95_ms));
             ui.end_row();
         });
@@ -727,17 +705,13 @@ fn wrapped_colored_label(ui: &mut egui::Ui, color: egui::Color32, value: &str) {
     ui.add(egui::Label::new(egui::RichText::new(value).color(color)).wrap());
 }
 
-fn probe_bool_cell(ui: &mut egui::Ui, language: Language, value: bool) {
+fn probe_bool_cell(ui: &mut egui::Ui, value: bool) {
     let color = if value {
         ui.visuals().strong_text_color()
     } else {
         ui.visuals().error_fg_color
     };
-    let label = if value {
-        text(language, Text::Yes)
-    } else {
-        text(language, Text::No)
-    };
+    let label = if value { t!("yes") } else { t!("no") };
     ui.colored_label(color, label);
 }
 
@@ -810,12 +784,12 @@ fn u8_to_level(value: u8) -> LogLevel {
     }
 }
 
-fn level_name(language: Language, level: LogLevel) -> Cow<'static, str> {
+fn level_name(level: LogLevel) -> Cow<'static, str> {
     match level {
-        LogLevel::Error => text(language, Text::LogLevelError),
-        LogLevel::Warn => text(language, Text::LogLevelWarn),
-        LogLevel::Info => text(language, Text::LogLevelInfo),
-        LogLevel::Debug => text(language, Text::LogLevelDebug),
-        LogLevel::Trace => text(language, Text::LogLevelTrace),
+        LogLevel::Error => t!("log_level.error"),
+        LogLevel::Warn => t!("log_level.warn"),
+        LogLevel::Info => t!("log_level.info"),
+        LogLevel::Debug => t!("log_level.debug"),
+        LogLevel::Trace => t!("log_level.trace"),
     }
 }

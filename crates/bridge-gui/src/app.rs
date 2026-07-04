@@ -1,5 +1,3 @@
-use std::borrow::Cow;
-
 mod fonts;
 mod pages;
 mod status;
@@ -12,8 +10,9 @@ use basement_bridge_core::{
     save_client_config_selection,
 };
 use eframe::egui::{self, ScrollArea};
+use rust_i18n::t;
 
-use crate::i18n::{Language, Text, text};
+use crate::i18n::{Language, set_language};
 
 use status::StatusMessage;
 
@@ -106,9 +105,12 @@ impl BridgeApp {
             .clone()
             .unwrap_or_else(generate_room_id);
 
+        let language = Language::Chinese;
+        set_language(language);
+
         let mut app = Self {
             client,
-            language: Language::Chinese,
+            language,
             page: Page::Home,
             relay_presets: loaded_config.config.relays.clone(),
             selected_relay: loaded_config.config.selected_relay_index(),
@@ -133,8 +135,11 @@ impl BridgeApp {
         app
     }
 
-    fn t(&self, key: Text) -> Cow<'static, str> {
-        text(self.language, key)
+    fn set_language(&mut self, language: Language) {
+        if self.language != language {
+            self.language = language;
+            set_language(language);
+        }
     }
 
     fn selected_steam_account(&self) -> Option<&SteamIdentity> {
@@ -310,12 +315,12 @@ impl BridgeApp {
                     self.relay_port = code.relay_port;
                 }
                 self.room = code.room.clone();
-                self.join_code_message = Some(self.t(Text::CodeImported).into_owned());
+                self.join_code_message = Some(t!("join_code.imported").into_owned());
                 self.status_message = None;
                 self.persist_selection();
             }
             Err(error) => {
-                self.join_code_message = Some(format!("{}: {error}", self.t(Text::CodeInvalid)));
+                self.join_code_message = Some(format!("{}: {error}", t!("join_code.invalid")));
             }
         }
     }

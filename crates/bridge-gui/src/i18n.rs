@@ -1,6 +1,4 @@
-use std::borrow::Cow;
-
-use rust_i18n::t;
+use rust_i18n::set_locale;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Language {
@@ -26,390 +24,118 @@ impl Language {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug)]
-pub enum Text {
-    Home,
-    Settings,
-    Stats,
-    About,
-    AboutDesc,
-    ProtocolVersion,
-    RelayHost,
-    RelayServer,
-    ManualRelay,
-    RelayPort,
-    Transport,
-    ConnectionProfile,
-    Udp,
-    Tcp,
-    Room,
-    Mode,
-    SteamAccount,
-    ManualSteamId,
-    DisplayName,
-    RefreshAccounts,
-    Manual,
-    Start,
-    Stop,
-    StartFailed,
-    Close,
-    Status,
-    Version,
-    Idle,
-    Running,
-    Counters,
-    HookToRelay,
-    RelayToHook,
-    SentBytes,
-    ReceivedBytes,
-    Errors,
-    SessionQuality,
-    RuntimeRtt,
-    QueueDrops,
-    SequenceGaps,
-    PacketGaps,
-    Logs,
-    OpenLogDirectory,
-    LogDirectory,
-    RunReadinessProbe,
-    ProbeRunning,
-    Probing,
-    Unreachable,
-    TestLatency,
-    RelayReadiness,
-    RunHookReceiveProbe,
-    HookReceive,
-    Details,
-    NoProbeData,
-    Size,
-    Lost,
-    Latency,
-    Jitter,
-    Bytes,
-    HookInput,
-    HookAvailable,
-    HookRead,
-    Yes,
-    No,
-    NoSteamAccounts,
-    Official,
-    Fallback,
-    Pure,
-    ConfigError,
-    ConfigWarning,
-    ConfigMissingRelayHost,
-    ConfigInvalidRelayPort,
-    ConfigMissingRoom,
-    ConfigMissingSteamId,
-    ConfigInvalidSteamId,
-    ConfigInvalidSessionHealth,
-    SessionNotStarted,
-    JoinCode,
-    CopyCode,
-    ImportCode,
-    PasteCode,
-    CodeCopied,
-    CodeImported,
-    CodeInvalid,
-    ClipboardEmpty,
-    GenerateRoom,
-    HookProgress,
-    HookNotStarted,
-    HookConfigured,
-    HookWaitingIsaac,
-    HookInjecting,
-    HookWaitingEndpoint,
-    HookEndpointReady,
-    HookReady,
-    HookFailed,
-    HookCancelled,
-    AccessDeniedHint,
-    Elapsed,
-    RoomMembers,
-    RoomEmpty,
-    Log,
-    ClearLogs,
-    LogLevelFilter,
-    LogEmpty,
-    LogLevelError,
-    LogLevelWarn,
-    LogLevelInfo,
-    LogLevelDebug,
-    LogLevelTrace,
-    StopReasonUserStopped,
-    StopReasonGameExited,
-    StopReasonRuntimeEnded,
-    QualityUnavailable,
-    QualityGood,
-    QualityWatch,
-    QualityPoor,
-    License,
+pub fn set_language(language: Language) {
+    set_locale(language.locale());
 }
 
-impl Text {
-    #[must_use]
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::Home => "home",
-            Self::Settings => "settings",
-            Self::Stats => "stats",
-            Self::About => "about",
-            Self::AboutDesc => "about.desc",
-            Self::ProtocolVersion => "about.protocol_version",
-            Self::RelayHost => "relay.host",
-            Self::RelayServer => "relay.server",
-            Self::ManualRelay => "relay.manual",
-            Self::RelayPort => "relay.port",
-            Self::Transport => "transport",
-            Self::ConnectionProfile => "connection_profile",
-            Self::Udp => "transport.udp",
-            Self::Tcp => "transport.tcp",
-            Self::Room => "room",
-            Self::Mode => "mode",
-            Self::SteamAccount => "steam.account",
-            Self::ManualSteamId => "steam.manual_id",
-            Self::DisplayName => "display_name",
-            Self::RefreshAccounts => "steam.refresh_accounts",
-            Self::Manual => "manual",
-            Self::Start => "start",
-            Self::Stop => "stop",
-            Self::StartFailed => "start.failed",
-            Self::Close => "close",
-            Self::Status => "status",
-            Self::Version => "version",
-            Self::Idle => "status.idle",
-            Self::Running => "status.running",
-            Self::Counters => "counters",
-            Self::HookToRelay => "counters.hook_to_relay",
-            Self::RelayToHook => "counters.relay_to_hook",
-            Self::SentBytes => "counters.sent_bytes",
-            Self::ReceivedBytes => "counters.received_bytes",
-            Self::Errors => "errors",
-            Self::SessionQuality => "session_quality",
-            Self::RuntimeRtt => "health.runtime_rtt",
-            Self::QueueDrops => "health.queue_drops",
-            Self::SequenceGaps => "health.sequence_gaps",
-            Self::PacketGaps => "health.packet_gaps",
-            Self::Logs => "logs",
-            Self::OpenLogDirectory => "logs.open_directory",
-            Self::LogDirectory => "logs.directory",
-            Self::RunReadinessProbe => "probe.run_readiness",
-            Self::ProbeRunning => "probe.running",
-            Self::Probing => "probe.probing",
-            Self::Unreachable => "probe.unreachable",
-            Self::TestLatency => "probe.test_latency",
-            Self::RelayReadiness => "probe.relay_readiness",
-            Self::RunHookReceiveProbe => "probe.run_hook_receive",
-            Self::HookReceive => "probe.hook_receive",
-            Self::Details => "details",
-            Self::NoProbeData => "probe.no_data",
-            Self::Size => "size",
-            Self::Lost => "lost",
-            Self::Latency => "latency",
-            Self::Jitter => "jitter",
-            Self::Bytes => "bytes",
-            Self::HookInput => "hook.input",
-            Self::HookAvailable => "hook.available",
-            Self::HookRead => "hook.read",
-            Self::Yes => "yes",
-            Self::No => "no",
-            Self::NoSteamAccounts => "steam.no_accounts",
-            Self::Official => "mode.official",
-            Self::Fallback => "mode.fallback",
-            Self::Pure => "mode.pure",
-            Self::ConfigError => "config.error",
-            Self::ConfigWarning => "config.warning",
-            Self::ConfigMissingRelayHost => "config.missing_relay_host",
-            Self::ConfigInvalidRelayPort => "config.invalid_relay_port",
-            Self::ConfigMissingRoom => "config.missing_room",
-            Self::ConfigMissingSteamId => "config.missing_steam_id",
-            Self::ConfigInvalidSteamId => "config.invalid_steam_id",
-            Self::ConfigInvalidSessionHealth => "config.invalid_session_health",
-            Self::SessionNotStarted => "session.not_started",
-            Self::JoinCode => "join_code",
-            Self::CopyCode => "join_code.copy",
-            Self::ImportCode => "join_code.import",
-            Self::PasteCode => "join_code.paste",
-            Self::CodeCopied => "join_code.copied",
-            Self::CodeImported => "join_code.imported",
-            Self::CodeInvalid => "join_code.invalid",
-            Self::ClipboardEmpty => "clipboard.empty",
-            Self::GenerateRoom => "room.generate",
-            Self::HookProgress => "hook.progress",
-            Self::HookNotStarted => "hook.not_started",
-            Self::HookConfigured => "hook.configured",
-            Self::HookWaitingIsaac => "hook.waiting_isaac",
-            Self::HookInjecting => "hook.injecting",
-            Self::HookWaitingEndpoint => "hook.waiting_endpoint",
-            Self::HookEndpointReady => "hook.endpoint_ready",
-            Self::HookReady => "hook.ready",
-            Self::HookFailed => "hook.failed",
-            Self::HookCancelled => "hook.cancelled",
-            Self::AccessDeniedHint => "hook.access_denied_hint",
-            Self::Elapsed => "elapsed",
-            Self::RoomMembers => "room.members",
-            Self::RoomEmpty => "room.empty",
-            Self::Log => "log",
-            Self::ClearLogs => "logs.clear",
-            Self::LogLevelFilter => "logs.level_filter",
-            Self::LogEmpty => "logs.empty",
-            Self::LogLevelError => "log_level.error",
-            Self::LogLevelWarn => "log_level.warn",
-            Self::LogLevelInfo => "log_level.info",
-            Self::LogLevelDebug => "log_level.debug",
-            Self::LogLevelTrace => "log_level.trace",
-            Self::StopReasonUserStopped => "stop_reason.user_stopped",
-            Self::StopReasonGameExited => "stop_reason.game_exited",
-            Self::StopReasonRuntimeEnded => "stop_reason.runtime_ended",
-            Self::QualityUnavailable => "quality.unavailable",
-            Self::QualityGood => "quality.good",
-            Self::QualityWatch => "quality.watch",
-            Self::QualityPoor => "quality.poor",
-            Self::License => "license",
-        }
-    }
-}
-
-#[must_use]
-pub fn text(language: Language, key: Text) -> Cow<'static, str> {
-    t!(key.key(), locale = language.locale())
+#[cfg(test)]
+pub(crate) fn with_locale_lock<T>(run: impl FnOnce() -> T) -> T {
+    static LOCALE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCALE_LOCK.lock().expect("locale test lock poisoned");
+    run()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Language, Text, text};
+    use std::collections::BTreeSet;
 
-    const ALL_TEXTS: &[Text] = &[
-        Text::Home,
-        Text::Settings,
-        Text::Stats,
-        Text::About,
-        Text::AboutDesc,
-        Text::ProtocolVersion,
-        Text::RelayHost,
-        Text::RelayServer,
-        Text::ManualRelay,
-        Text::RelayPort,
-        Text::Transport,
-        Text::ConnectionProfile,
-        Text::Udp,
-        Text::Tcp,
-        Text::Room,
-        Text::Mode,
-        Text::SteamAccount,
-        Text::ManualSteamId,
-        Text::DisplayName,
-        Text::RefreshAccounts,
-        Text::Manual,
-        Text::Start,
-        Text::Stop,
-        Text::StartFailed,
-        Text::Close,
-        Text::Status,
-        Text::Version,
-        Text::Idle,
-        Text::Running,
-        Text::Counters,
-        Text::HookToRelay,
-        Text::RelayToHook,
-        Text::SentBytes,
-        Text::ReceivedBytes,
-        Text::Errors,
-        Text::SessionQuality,
-        Text::RuntimeRtt,
-        Text::QueueDrops,
-        Text::SequenceGaps,
-        Text::PacketGaps,
-        Text::Logs,
-        Text::OpenLogDirectory,
-        Text::LogDirectory,
-        Text::RunReadinessProbe,
-        Text::ProbeRunning,
-        Text::Probing,
-        Text::Unreachable,
-        Text::TestLatency,
-        Text::RelayReadiness,
-        Text::RunHookReceiveProbe,
-        Text::HookReceive,
-        Text::Details,
-        Text::NoProbeData,
-        Text::Size,
-        Text::Lost,
-        Text::Latency,
-        Text::Jitter,
-        Text::Bytes,
-        Text::HookInput,
-        Text::HookAvailable,
-        Text::HookRead,
-        Text::Yes,
-        Text::No,
-        Text::NoSteamAccounts,
-        Text::Official,
-        Text::Fallback,
-        Text::Pure,
-        Text::ConfigError,
-        Text::ConfigWarning,
-        Text::ConfigMissingRelayHost,
-        Text::ConfigInvalidRelayPort,
-        Text::ConfigMissingRoom,
-        Text::ConfigMissingSteamId,
-        Text::ConfigInvalidSteamId,
-        Text::ConfigInvalidSessionHealth,
-        Text::SessionNotStarted,
-        Text::JoinCode,
-        Text::CopyCode,
-        Text::ImportCode,
-        Text::PasteCode,
-        Text::CodeCopied,
-        Text::CodeImported,
-        Text::CodeInvalid,
-        Text::ClipboardEmpty,
-        Text::GenerateRoom,
-        Text::HookProgress,
-        Text::HookNotStarted,
-        Text::HookConfigured,
-        Text::HookWaitingIsaac,
-        Text::HookInjecting,
-        Text::HookWaitingEndpoint,
-        Text::HookEndpointReady,
-        Text::HookReady,
-        Text::HookFailed,
-        Text::HookCancelled,
-        Text::AccessDeniedHint,
-        Text::Elapsed,
-        Text::RoomMembers,
-        Text::RoomEmpty,
-        Text::Log,
-        Text::ClearLogs,
-        Text::LogLevelFilter,
-        Text::LogEmpty,
-        Text::LogLevelError,
-        Text::LogLevelWarn,
-        Text::LogLevelInfo,
-        Text::LogLevelDebug,
-        Text::LogLevelTrace,
-        Text::StopReasonUserStopped,
-        Text::StopReasonGameExited,
-        Text::StopReasonRuntimeEnded,
-        Text::QualityUnavailable,
-        Text::QualityGood,
-        Text::QualityWatch,
-        Text::QualityPoor,
-        Text::License,
-    ];
+    use rust_i18n::t;
+    use serde_yaml::Value;
 
-    #[test]
-    fn translates_basic_gui_text_by_language() {
-        assert_eq!(text(Language::Chinese, Text::Start), "启动");
-        assert_eq!(text(Language::English, Text::Start), "Start");
+    use super::{Language, set_language, with_locale_lock};
+
+    const LOCALES: &[&str] = &["zh_CN", "en_US"];
+
+    fn locale_keys() -> BTreeSet<String> {
+        let Value::Mapping(document) =
+            serde_yaml::from_str(include_str!("../locales/app.yml")).expect("valid locale YAML")
+        else {
+            panic!("locale YAML must be a mapping");
+        };
+
+        let mut keys = BTreeSet::new();
+        for (key, value) in document {
+            let Some(key) = key.as_str() else {
+                panic!("locale key must be a string");
+            };
+            if key == "_version" {
+                continue;
+            }
+
+            let Value::Mapping(translations) = value else {
+                panic!("translation `{key}` must be a locale mapping");
+            };
+            for locale in LOCALES {
+                let locale_key = Value::String((*locale).to_owned());
+                let Some(value) = translations.get(&locale_key) else {
+                    panic!("translation `{key}` must define `{locale}`");
+                };
+                let Some(value) = value.as_str() else {
+                    panic!("translation `{key}` `{locale}` value must be a string");
+                };
+                assert!(
+                    !value.trim().is_empty(),
+                    "translation `{key}` `{locale}` must not be empty"
+                );
+            }
+            keys.insert(key.to_owned());
+        }
+
+        keys
+    }
+
+    fn source_t_macro_keys() -> BTreeSet<String> {
+        let sources = [
+            include_str!("app.rs"),
+            include_str!("app/pages.rs"),
+            include_str!("app/status.rs"),
+            include_str!("app/widgets.rs"),
+        ];
+        let mut keys = BTreeSet::new();
+        for source in sources {
+            let mut rest = source;
+            while let Some(index) = rest.find("t!(\"") {
+                let previous = rest[..index].chars().next_back();
+                if previous.is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+                    rest = &rest[index + 4..];
+                    continue;
+                }
+                let after_open_quote = &rest[index + 4..];
+                let Some(end) = after_open_quote.find('"') else {
+                    panic!("unterminated t! key in GUI source");
+                };
+                keys.insert(after_open_quote[..end].to_owned());
+                rest = &after_open_quote[end + 1..];
+            }
+        }
+        keys
     }
 
     #[test]
-    fn all_text_keys_have_configured_locales() {
-        for key in ALL_TEXTS {
-            assert_ne!(text(Language::Chinese, *key), key.key());
-            assert_ne!(text(Language::English, *key), key.key());
+    fn rust_i18n_uses_current_locale_for_t_macro() {
+        with_locale_lock(|| {
+            set_language(Language::Chinese);
+            assert_eq!(t!("start"), "启动");
+            set_language(Language::English);
+            assert_eq!(t!("start"), "Start");
+        });
+    }
+
+    #[test]
+    fn locale_file_has_supported_locales_for_each_key() {
+        let keys = locale_keys();
+
+        assert!(keys.contains("start"));
+        assert!(keys.contains("config.warning"));
+        assert!(keys.len() > 100);
+    }
+
+    #[test]
+    fn source_t_macro_keys_exist_in_locale_file() {
+        let locale_keys = locale_keys();
+
+        for key in source_t_macro_keys() {
+            assert!(locale_keys.contains(&key), "missing locale key `{key}`");
         }
     }
 }

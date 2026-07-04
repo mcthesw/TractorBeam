@@ -77,9 +77,6 @@ impl BridgeApp {
         self.room_ui(ui);
         ui.add_space(8.0);
 
-        self.display_name_ui(ui);
-        ui.add_space(12.0);
-
         self.action_row(ui);
         ui.add_space(8.0);
 
@@ -239,19 +236,6 @@ impl BridgeApp {
                 self.persist_selection();
             }
         });
-    }
-
-    fn display_name_ui(&mut self, ui: &mut egui::Ui) {
-        let Some(account) = self.selected_steam_account() else {
-            return;
-        };
-        let name_label = self.t(Text::YourName);
-        let mut display_name = account.display_name.clone();
-        ui.label(name_label);
-        ui.add_enabled(
-            false,
-            TextEdit::singleline(&mut display_name).desired_width(400.0),
-        );
     }
 
     fn action_row(&mut self, ui: &mut egui::Ui) {

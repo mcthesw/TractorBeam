@@ -30,8 +30,8 @@ env:
   HEAD_REF: ${{ github.event.pull_request.head.sha || github.event.inputs.head_ref || github.sha }}
 
 jobs:
-  relay-compat:
-    name: Relay protocol compatibility
+  client-server-compat:
+    name: Client/server compatibility
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -73,8 +73,14 @@ jobs:
         run: |
           set -euo pipefail
           uv run --project head/scripts/compat python head/scripts/compat/check_compat.py \
+            --base-client-script base/scripts/compat/check_compat.py \
+            --head-client-script head/scripts/compat/check_compat.py \
             --base-relay-binary base/target/release/basement-bridge-relay \
             --head-relay-binary head/target/release/basement-bridge-relay \
+            --base-client-label old-client \
+            --head-client-label new-client \
+            --base-label old-server \
+            --head-label new-server \
             --json-out head/.local/compat/compat-report.json
 
       - uses: actions/upload-artifact@v7.0.1

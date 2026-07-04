@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import json
 import os
 import shutil
@@ -15,6 +14,16 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from compat_matrix import (
+    CaseResult,
+    add_result,
+    run_matrix,
+    should_run_matrix,
+    split_pair_label,
+    summarize,
+    write_report,
+    write_step_summary,
+)
 
 ENVELOPE_MAGIC = b"BBR1"
 GAME_PACKET_MAGIC = b"BBG1"
@@ -36,15 +45,6 @@ class CompatError(RuntimeError):
 
 class CompatSkip(RuntimeError):
     pass
-
-
-@dataclasses.dataclass
-class CaseResult:
-    suite: str
-    name: str
-    status: str
-    message: str
-    duration_ms: int
 
 
 class Peer:
@@ -367,20 +367,10 @@ def wait_for_relay(address: tuple[str, int], timeout: float) -> None:
     raise CompatError(f"relay did not open TCP listener at {address[0]}:{address[1]}")
 
 
-def add_result(
-    results: list[CaseResult],
-    suite: str,
-    name: str,
-    status: str,
-    message: str,
-    duration_ms: int = 0,
-) -> None:
-    results.append(CaseResult(suite, name, status, message, duration_ms))
-
-
 def run_case(
     results: list[CaseResult],
-    suite: str,
+    client: str,
+    server: str,
     name: str,
     func: Callable[[], None],
 ) -> None:
@@ -397,7 +387,13 @@ def run_case(
         status = "pass"
         message = "ok"
     add_result(
-        results, suite, name, status, message, int((time.monotonic() - started) * 1000)
+        results,
+        client,
+        server,
+        name,
+        status,
+        message,
+        int((time.monotonic() - started) * 1000),
     )
 
 
@@ -446,7 +442,8 @@ def stop_process(process: subprocess.Popen[str]) -> None:
 
 def run_relay_suite(
     results: list[CaseResult],
-    suite: str,
+    client: str,
+    server: str,
     relay_binary: Path,
     timeout: float,
 ) -> None:
@@ -455,54 +452,21 @@ def run_relay_suite(
     process, address = launch_relay(relay_binary, timeout)
     try:
         wait_for_relay(address, timeout)
-        run_case(
-            results,
-            suite,
-            "tcp_join_heartbeat",
-            lambda: case_join_heartbeat("tcp", address, timeout),
-        )
-        run_case(
-            results,
-            suite,
-            "udp_join_heartbeat",
-            lambda: case_join_heartbeat("udp", address, timeout),
-        )
-        run_case(
-            results,
-            suite,
-            "tcp_forwarding",
-            lambda: case_forwarding("tcp", address, timeout),
-        )
-        run_case(
-            results,
-            suite,
-            "udp_forwarding",
-            lambda: case_forwarding("udp", address, timeout),
-        )
-        run_case(
-            results,
-            suite,
-            "unsupported_protocol_major",
-            lambda: case_unsupported_major(address, timeout),
-        )
-        run_case(
-            results,
-            suite,
-            "unknown_message_type",
-            lambda: case_unknown_message_type(address, timeout),
-        )
-        run_case(
-            results,
-            suite,
-            "oversize_tcp_frame",
-            lambda: case_oversize_tcp_frame(address, timeout),
-        )
-        run_case(
-            results,
-            suite,
-            "join_before_forwarding_guard",
-            lambda: case_join_before_forwarding_guard(address, timeout),
-        )
+        cases: list[tuple[str, Callable[[], None]]] = [
+            ("tcp_join_heartbeat", lambda: case_join_heartbeat("tcp", address, timeout)),
+            ("udp_join_heartbeat", lambda: case_join_heartbeat("udp", address, timeout)),
+            ("tcp_forwarding", lambda: case_forwarding("tcp", address, timeout)),
+            ("udp_forwarding", lambda: case_forwarding("udp", address, timeout)),
+            ("unsupported_protocol_major", lambda: case_unsupported_major(address, timeout)),
+            ("unknown_message_type", lambda: case_unknown_message_type(address, timeout)),
+            ("oversize_tcp_frame", lambda: case_oversize_tcp_frame(address, timeout)),
+            (
+                "join_before_forwarding_guard",
+                lambda: case_join_before_forwarding_guard(address, timeout),
+            ),
+        ]
+        for name, func in cases:
+            run_case(results, client, server, name, func)
     finally:
         stop_process(process)
 
@@ -515,24 +479,27 @@ def acquire_base_relay(
     if not args.previous_tag:
         run_case(
             results,
-            args.base_label,
-            "base_relay_acquisition",
+            args.current_client_label,
+            args.base_server_label,
+            "base_server_acquisition",
             lambda: (_ for _ in ()).throw(CompatSkip("no base relay configured")),
         )
         return None, False
     if not args.github_repository:
         run_case(
             results,
-            args.base_label,
-            "base_relay_acquisition",
+            args.current_client_label,
+            args.base_server_label,
+            "base_server_acquisition",
             lambda: (_ for _ in ()).throw(CompatSkip("github repository is not configured")),
         )
         return None, False
     if shutil.which("gh") is None:
         run_case(
             results,
-            args.base_label,
-            "base_relay_acquisition",
+            args.current_client_label,
+            args.base_server_label,
+            "base_server_acquisition",
             lambda: (_ for _ in ()).throw(CompatSkip("gh CLI is unavailable")),
         )
         return None, False
@@ -557,8 +524,9 @@ def acquire_base_relay(
         message = (completed.stderr or completed.stdout).strip() or "gh release download failed"
         run_case(
             results,
-            args.base_label,
-            "base_relay_acquisition",
+            args.current_client_label,
+            args.base_server_label,
+            "base_server_acquisition",
             lambda: (_ for _ in ()).throw(CompatSkip(message)),
         )
         return None, False
@@ -566,37 +534,76 @@ def acquire_base_relay(
     relay = downloads / "basement-bridge-relay-linux-x86_64"
     if os.name != "nt":
         relay.chmod(relay.stat().st_mode | 0o111)
-    run_case(results, args.base_label, "base_relay_acquisition", lambda: None)
+    run_case(
+        results,
+        args.current_client_label,
+        args.base_server_label,
+        "base_server_acquisition",
+        lambda: None,
+    )
     return relay, False
 
 
-def summarize(results: list[CaseResult]) -> dict[str, int]:
-    summary = {"pass": 0, "fail": 0, "skip": 0}
-    for result in results:
-        summary[result.status] = summary.get(result.status, 0) + 1
-    return summary
-
-
-def write_report(path: Path, results: list[CaseResult]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    report = {
-        "schema_version": 1,
-        "generated_at_unix": int(time.time()),
-        "summary": summarize(results),
-        "cases": [dataclasses.asdict(result) for result in results],
-    }
-    path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+def run_current_client_suites(args: argparse.Namespace) -> list[CaseResult]:
+    results: list[CaseResult] = []
+    try:
+        run_relay_suite(
+            results,
+            args.current_client_label,
+            args.head_server_label,
+            Path(args.head_relay_binary),
+            args.timeout,
+        )
+    except Exception as error:  # noqa: BLE001 - still write the report.
+        add_result(
+            results,
+            args.current_client_label,
+            args.head_server_label,
+            "server_suite",
+            "fail",
+            str(error),
+        )
+    base_relay, base_required = acquire_base_relay(args, results)
+    if base_relay is not None:
+        try:
+            run_relay_suite(
+                results,
+                args.current_client_label,
+                args.base_server_label,
+                base_relay,
+                args.timeout,
+            )
+        except Exception as error:  # noqa: BLE001 - previous evidence is optional.
+            add_result(
+                results,
+                args.current_client_label,
+                args.base_server_label,
+                "base_server_suite",
+                "fail" if base_required else "skip",
+                str(error),
+            )
+    return results
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run Basement Bridge compatibility probes.")
+    parser = argparse.ArgumentParser(
+        description="Run Basement Bridge client/server compatibility probes."
+    )
     parser.add_argument(
         "--head-relay-binary", "--relay-binary", dest="head_relay_binary",
-        help="Head/current relay binary to test.",
+        help="Head/current Relay Server binary to test.",
     )
     parser.add_argument(
         "--base-relay-binary", "--previous-relay-binary", dest="base_relay_binary",
-        help="Base/merge-target relay binary to test.",
+        help="Base/merge-target Relay Server binary to test.",
+    )
+    parser.add_argument(
+        "--head-client-script",
+        help="Head/current compatibility client script. Defaults to this script.",
+    )
+    parser.add_argument(
+        "--base-client-script",
+        help="Base/merge-target compatibility client script for matrix mode.",
     )
     parser.add_argument("--previous-tag", help="Optional previous GitHub Release tag to download.")
     parser.add_argument(
@@ -604,46 +611,61 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("GITHUB_REPOSITORY"),
         help="GitHub repository for previous release downloads, owner/name.",
     )
-    parser.add_argument("--head-label", default="head-relay")
-    parser.add_argument("--base-label", default="base-relay")
+    parser.add_argument("--head-client-label", default="new-client")
+    parser.add_argument("--base-client-label", default="old-client")
+    parser.add_argument("--client-label", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--head-label", "--head-server-label", dest="head_server_label",
+        default="new-server",
+    )
+    parser.add_argument(
+        "--base-label", "--base-server-label", dest="base_server_label",
+        default="old-server",
+    )
     parser.add_argument("--downloads-dir", default=".local/compat/downloads")
     parser.add_argument("--json-out", default=".local/compat/compat-report.json")
     parser.add_argument("--timeout", type=float, default=2.0)
+    parser.add_argument("--client-only", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if not args.head_relay_binary:
         parser.error("--head-relay-binary is required")
+    args.current_client_label = args.client_label or args.head_client_label
+    head_client, head_server = split_pair_label(args.head_server_label, args.current_client_label)
+    args.current_client_label = head_client
+    base_client, base_server = split_pair_label(args.base_server_label, args.current_client_label)
+    if base_client != args.current_client_label:
+        parser.error("--head-label and --base-label must use the same client prefix")
+    args.head_server_label = head_server
+    args.base_server_label = base_server
+    args.default_head_client_script = Path(__file__)
     return args
 
 
 def main() -> int:
     args = parse_args()
-    results: list[CaseResult] = []
+    results = run_matrix(args) if should_run_matrix(args) else run_current_client_suites(args)
 
-    try:
-        run_relay_suite(
-            results, args.head_label, Path(args.head_relay_binary), args.timeout,
+    client_order = (
+        [args.base_client_label, args.head_client_label]
+        if should_run_matrix(args)
+        else [args.current_client_label]
+    )
+    write_report(
+        Path(args.json_out),
+        results,
+        client_order=client_order,
+        server_order=[args.base_server_label, args.head_server_label],
+    )
+    if step_summary := os.environ.get("GITHUB_STEP_SUMMARY"):
+        write_step_summary(
+            Path(step_summary),
+            results,
+            client_order=client_order,
+            server_order=[args.base_server_label, args.head_server_label],
         )
-    except Exception as error:  # noqa: BLE001 - still write the report.
-        add_result(results, args.head_label, "relay_startup", "fail", str(error))
-    base_relay, base_required = acquire_base_relay(args, results)
-    if base_relay is not None:
-        try:
-            run_relay_suite(
-                results, args.base_label, base_relay, args.timeout,
-            )
-        except Exception as error:  # noqa: BLE001 - previous evidence is optional.
-            add_result(
-                results,
-                args.base_label,
-                "base_relay_suite",
-                "fail" if base_required else "skip",
-                str(error),
-            )
-
-    write_report(Path(args.json_out), results)
     summary = summarize(results)
     print(
-        f"compat: pass={summary.get('pass', 0)} fail={summary.get('fail', 0)} "
+        f"compat matrix: pass={summary.get('pass', 0)} fail={summary.get('fail', 0)} "
         f"skip={summary.get('skip', 0)} report={args.json_out}"
     )
     for result in results:

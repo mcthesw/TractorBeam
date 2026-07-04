@@ -1,9 +1,12 @@
 use bs58::{FromBase58, ToBase58};
+use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
 
 use super::RelayEndpoint;
 
-const JOIN_CODE_VERSION: u8 = 3;
+const JOIN_CODE_VERSION: u8 = 4;
+const ADMISSION_LEN: usize = 16;
+const ADMISSION_CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JoinCode {
@@ -11,6 +14,7 @@ pub struct JoinCode {
     pub relay_host: String,
     pub relay_port: u16,
     pub room: String,
+    pub admission: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -29,6 +33,8 @@ pub enum JoinCodeError {
     MissingRoom,
     #[error("invalid join code: relay host is required")]
     MissingRelayHost,
+    #[error("invalid join code: admission is required")]
+    MissingAdmission,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -38,9 +44,25 @@ struct JoinCodePayload {
     relay_host: String,
     relay_port: u16,
     room: String,
+    admission: Option<String>,
 }
 
 impl JoinCode {
+    #[must_use]
+    pub fn generate_admission() -> String {
+        let mut rng = rand::rng();
+        let mut value = String::with_capacity(ADMISSION_LEN);
+        while value.len() < ADMISSION_LEN {
+            let byte: u8 = rng.random();
+            if usize::from(byte) >= ADMISSION_CHARSET.len() * 4 {
+                continue;
+            }
+            let index = usize::from(byte) % ADMISSION_CHARSET.len();
+            value.push(char::from(ADMISSION_CHARSET[index]));
+        }
+        value
+    }
+
     #[must_use]
     pub fn encode(&self) -> String {
         let payload = JoinCodePayload {
@@ -49,6 +71,7 @@ impl JoinCode {
             relay_host: self.relay_host.clone(),
             relay_port: self.relay_port,
             room: self.room.clone(),
+            admission: Some(self.admission.clone()),
         };
         let json = serde_json::to_vec(&payload).unwrap_or_default();
         format!("B{}B", json.to_base58())
@@ -77,6 +100,11 @@ impl JoinCode {
         if host.is_empty() {
             return Err(JoinCodeError::MissingRelayHost);
         }
+        let admission = payload
+            .admission
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .ok_or(JoinCodeError::MissingAdmission)?;
         Ok(Self {
             relay_id: payload
                 .relay_id
@@ -85,6 +113,7 @@ impl JoinCode {
             relay_host: host,
             relay_port: payload.relay_port,
             room,
+            admission,
         })
     }
 
@@ -105,6 +134,7 @@ mod tests {
             relay_host: "relay.example.test".to_owned(),
             relay_port: 25_910,
             room: "20260703-ab12".to_owned(),
+            admission: "AbCdEfGhIjKlMn12".to_owned(),
         };
         let encoded = code.encode();
         assert!(encoded.starts_with('B'));
@@ -122,6 +152,7 @@ mod tests {
             relay_host: "1.2.3.4".to_owned(),
             relay_port: 25_910,
             room: "test".to_owned(),
+            admission: "AbCdEfGhIjKlMn12".to_owned(),
         };
         let encoded = code.encode();
         let decoded = JoinCode::decode(&encoded).unwrap();
@@ -151,13 +182,40 @@ mod tests {
             "relay_id": null,
             "relay_host": "h",
             "relay_port": 25910,
-            "room": "r"
+            "room": "r",
+            "admission": "AbCdEfGhIjKlMn12"
         });
         let json = serde_json::to_vec(&payload).unwrap();
         let encoded = format!("B{}B", json.to_base58());
         assert!(matches!(
             JoinCode::decode(&encoded),
             Err(JoinCodeError::UnsupportedVersion(99))
+        ));
+    }
+
+    #[test]
+    fn generates_sixteen_alphanumeric_admission() {
+        let admission = JoinCode::generate_admission();
+
+        assert_eq!(admission.len(), 16);
+        assert!(admission.bytes().all(|byte| byte.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn rejects_missing_admission() {
+        let payload = serde_json::json!({
+            "version": JOIN_CODE_VERSION,
+            "relay_id": null,
+            "relay_host": "h",
+            "relay_port": 25910,
+            "room": "r"
+        });
+        let json = serde_json::to_vec(&payload).unwrap();
+        let encoded = format!("B{}B", json.to_base58());
+
+        assert!(matches!(
+            JoinCode::decode(&encoded),
+            Err(JoinCodeError::MissingAdmission)
         ));
     }
 }

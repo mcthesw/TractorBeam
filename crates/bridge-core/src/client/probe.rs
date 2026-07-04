@@ -251,6 +251,7 @@ impl ProbePeer {
             relay_name: None,
             transport,
             room: room.to_owned(),
+            admission: crate::JoinCode::generate_admission(),
             mode: SessionMode::Pure,
             steam_id64: steam_id64.to_owned(),
             display_name: display_name.to_owned(),

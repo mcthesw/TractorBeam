@@ -151,7 +151,7 @@ async fn send_join(
         client: Some(ClientMetadata::current()),
         challenge,
         pow_proof: None,
-        admission: None,
+        admission: Some(config.admission.clone()),
     };
     send_control(sender, MessageType::Join, &message).await
 }

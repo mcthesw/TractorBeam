@@ -24,6 +24,9 @@ const PROCESS_WATCH_INTERVAL: Duration = Duration::from_secs(1);
 const HOOK_ENDPOINT_WAIT_TIMEOUT: Duration = Duration::from_secs(35);
 const HOOK_ENDPOINT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const HOOK_ENDPOINT_WAIT_NOTICE_INTERVAL: Duration = Duration::from_secs(5);
+const ADMIN_PERMISSION_REQUEST_MESSAGE: &str = "Requesting admin permission...";
+const ADMIN_PERMISSION_CANCELLED_MESSAGE: &str = "Admin permission was cancelled";
+const ELEVATED_INJECTOR_RETRY_SUCCEEDED_MESSAGE: &str = "Elevated Injector retry succeeded";
 
 enum HookEndpointWaitError {
     Cancelled,
@@ -104,8 +107,23 @@ pub(super) async fn injector_task(
         ),
     );
     let injection_paths = paths.clone();
+    let retry_event_tx = event_tx.clone();
+    let retry_paths = paths.clone();
+    let retry_process_name = process_name.clone();
     let injection = tokio::task::spawn_blocking(move || {
-        basement_isaac_injector::run_injector(&injection_paths, process_id)
+        basement_isaac_injector::run_injector_with_elevated_retry(
+            &injection_paths,
+            process_id,
+            |event| {
+                send_injector_launch_event(
+                    &retry_event_tx,
+                    &retry_paths,
+                    &retry_process_name,
+                    process_id,
+                    event,
+                );
+            },
+        )
     });
 
     tokio::select! {
@@ -509,6 +527,9 @@ async fn wait_for_isaac_process(
 }
 
 fn injection_support_message(error: &basement_isaac_injector::InjectorError) -> String {
+    if error.is_admin_permission_cancelled() {
+        return ADMIN_PERMISSION_CANCELLED_MESSAGE.to_owned();
+    }
     let message = error.to_string();
     if error.is_access_denied() {
         format!(
@@ -516,6 +537,38 @@ fn injection_support_message(error: &basement_isaac_injector::InjectorError) -> 
         )
     } else {
         message
+    }
+}
+
+fn send_injector_launch_event(
+    event_tx: &RuntimeEventSender,
+    paths: &basement_isaac_injector::NativeHookPaths,
+    process_name: &str,
+    process_id: u32,
+    event: basement_isaac_injector::InjectorLaunchEvent,
+) {
+    match event {
+        basement_isaac_injector::InjectorLaunchEvent::ElevatedRetryStarting => {
+            let mut state = hook_startup_state(
+                HookStartupPhase::Injecting,
+                paths,
+                Some(process_name),
+                Some(process_id),
+                ADMIN_PERMISSION_REQUEST_MESSAGE,
+            );
+            state.access_denied = true;
+            send_event(event_tx, RuntimeEvent::HookStartup(Box::new(state)));
+            send_event(
+                event_tx,
+                log_event(LogLevel::Info, ADMIN_PERMISSION_REQUEST_MESSAGE),
+            );
+        }
+        basement_isaac_injector::InjectorLaunchEvent::ElevatedRetrySucceeded => {
+            send_event(
+                event_tx,
+                log_event(LogLevel::Info, ELEVATED_INJECTOR_RETRY_SUCCEEDED_MESSAGE),
+            );
+        }
     }
 }
 
@@ -559,6 +612,44 @@ mod tests {
 
         assert!(message.contains("access denied"));
         assert!(message.contains("matching privilege levels"));
+    }
+
+    #[test]
+    fn admin_permission_cancelled_support_message_is_short() {
+        let message = injection_support_message(&InjectorError::AdminPermissionCancelled);
+
+        assert_eq!(message, ADMIN_PERMISSION_CANCELLED_MESSAGE);
+    }
+
+    #[test]
+    fn elevated_retry_start_event_marks_access_denied() {
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(4);
+        let paths = NativeHookPaths {
+            injector: PathBuf::from("bundle/basement-isaac-injector.exe"),
+            hook: PathBuf::from("bundle/native-hook/basement_native_hook.dll"),
+        };
+
+        send_injector_launch_event(
+            &event_tx,
+            &paths,
+            "isaac-ng.exe",
+            42,
+            basement_isaac_injector::InjectorLaunchEvent::ElevatedRetryStarting,
+        );
+
+        let Some(RuntimeEvent::HookStartup(startup)) = event_rx.blocking_recv() else {
+            panic!("expected hook startup event");
+        };
+        assert_eq!(startup.phase, HookStartupPhase::Injecting);
+        assert!(startup.access_denied);
+        assert_eq!(
+            startup.message.as_deref(),
+            Some(ADMIN_PERMISSION_REQUEST_MESSAGE)
+        );
+        let Some(RuntimeEvent::Log(LogLevel::Info, message)) = event_rx.blocking_recv() else {
+            panic!("expected log event");
+        };
+        assert_eq!(message, ADMIN_PERMISSION_REQUEST_MESSAGE);
     }
 
     #[test]

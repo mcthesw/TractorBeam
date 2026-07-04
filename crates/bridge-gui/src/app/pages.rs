@@ -172,9 +172,6 @@ impl BridgeApp {
             if self.selected_account != account_before {
                 self.persist_selection();
             }
-            if self.selected_account.is_some() {
-                ui.add_space(2.0);
-            }
         }
         ui.add_space(2.0);
         if ui.button(refresh_label).clicked() {
@@ -245,9 +242,16 @@ impl BridgeApp {
     }
 
     fn display_name_ui(&mut self, ui: &mut egui::Ui) {
+        let Some(account) = self.selected_steam_account() else {
+            return;
+        };
         let name_label = self.t(Text::YourName);
+        let mut display_name = account.display_name.clone();
         ui.label(name_label);
-        ui.add(TextEdit::singleline(&mut self.display_name).desired_width(400.0));
+        ui.add_enabled(
+            false,
+            TextEdit::singleline(&mut display_name).desired_width(400.0),
+        );
     }
 
     fn action_row(&mut self, ui: &mut egui::Ui) {

@@ -2,30 +2,20 @@ use std::borrow::Cow;
 
 use basement_bridge_core::{RuntimeState, SteamIdentity};
 use eframe::egui;
+use rust_i18n::t;
 
-use crate::i18n::{Language, Text, text};
-
-pub(super) fn detail_counters(ui: &mut egui::Ui, language: Language, state: &RuntimeState) {
-    ui.heading(text(language, Text::Counters));
+pub(super) fn detail_counters(ui: &mut egui::Ui, state: &RuntimeState) {
+    ui.heading(t!("counters"));
     ui.add_space(6.0);
     counter_grid(
         ui,
         "detail_counters",
         &[
-            (
-                text(language, Text::HookToRelay),
-                state.counters.hook_to_relay,
-            ),
-            (
-                text(language, Text::RelayToHook),
-                state.counters.relay_to_hook,
-            ),
-            (text(language, Text::SentBytes), state.counters.sent_bytes),
-            (
-                text(language, Text::ReceivedBytes),
-                state.counters.received_bytes,
-            ),
-            (text(language, Text::Errors), state.counters.errors),
+            (t!("counters.hook_to_relay"), state.counters.hook_to_relay),
+            (t!("counters.relay_to_hook"), state.counters.relay_to_hook),
+            (t!("counters.sent_bytes"), state.counters.sent_bytes),
+            (t!("counters.received_bytes"), state.counters.received_bytes),
+            (t!("errors"), state.counters.errors),
         ],
     );
 }
@@ -33,11 +23,10 @@ pub(super) fn detail_counters(ui: &mut egui::Ui, language: Language, state: &Run
 pub(super) fn selected_account_label(
     selected_account: Option<usize>,
     accounts: &[SteamIdentity],
-    language: Language,
 ) -> String {
     selected_account
         .and_then(|index| accounts.get(index))
-        .map_or_else(|| text(language, Text::Manual).into_owned(), account_label)
+        .map_or_else(|| t!("manual").into_owned(), account_label)
 }
 
 pub(super) fn account_label(account: &SteamIdentity) -> String {

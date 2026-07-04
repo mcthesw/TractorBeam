@@ -1,7 +1,4 @@
-use basement_bridge_core::{
-    ClientError, ConfigError, ConnectionProfile, SessionMode, SessionQuality, SessionStatus,
-    SessionStopReason,
-};
+use basement_bridge_core::{ClientError, ConfigError, ConnectionProfile, SessionQuality, SessionStatus, SessionStopReason};
 use eframe::egui;
 
 use crate::i18n::{Language, Text, text};
@@ -53,31 +50,6 @@ impl BridgeApp {
                 ui.monospace(stop_reason_label(self.language, reason));
             }
             ui.separator();
-            ui.label(format!(
-                "{}: {}",
-                self.t(Text::Mode),
-                mode_label(self.language, self.mode)
-            ));
-            ui.separator();
-            ui.label(format!(
-                "{}: {}",
-                self.t(Text::ConnectionProfile),
-                connection_profile_label(self.language, self.current_connection_profile())
-            ));
-            if self.connection_profile_pending() {
-                ui.monospace(self.t(Text::ReconnectRequired));
-            }
-            ui.separator();
-            ui.monospace(format!(
-                "{} {}",
-                self.t(Text::HookToRelay),
-                state.counters.hook_to_relay
-            ));
-            ui.monospace(format!(
-                "{} {}",
-                self.t(Text::RelayToHook),
-                state.counters.relay_to_hook
-            ));
             ui.monospace(format!(
                 "{} {}",
                 self.t(Text::Errors),
@@ -93,14 +65,6 @@ impl BridgeApp {
                 if let Some(p95) = health.runtime_rtt.latency.p95_ms {
                     ui.monospace(format!("RTT p95 {p95} ms"));
                 }
-            }
-            if let Some(error) = &state.latest_hook_receive_probe_error {
-                ui.separator();
-                ui.colored_label(
-                    ui.visuals().error_fg_color,
-                    hook_preflight_error_label(self.language),
-                )
-                .on_hover_text(error);
             }
             if let Some(error) = &self.last_error {
                 ui.separator();
@@ -121,13 +85,6 @@ fn stop_reason_label(language: Language, reason: &SessionStopReason) -> String {
     }
 }
 
-fn hook_preflight_error_label(language: Language) -> &'static str {
-    match language {
-        Language::Chinese => "Hook 预检异常",
-        Language::English => "Hook preflight issue",
-    }
-}
-
 pub(super) fn connection_profile_label(
     language: Language,
     profile: ConnectionProfile,
@@ -142,14 +99,6 @@ pub(super) fn status_label(language: Language, status: SessionStatus) -> &'stati
     match status {
         SessionStatus::Idle => text(language, Text::Idle),
         SessionStatus::Running => text(language, Text::Running),
-    }
-}
-
-pub(super) fn mode_label(language: Language, mode: SessionMode) -> &'static str {
-    match mode {
-        SessionMode::Official => text(language, Text::Official),
-        SessionMode::Fallback => text(language, Text::Fallback),
-        SessionMode::Pure => text(language, Text::Pure),
     }
 }
 

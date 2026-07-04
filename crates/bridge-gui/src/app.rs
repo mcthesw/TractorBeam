@@ -4,9 +4,10 @@ mod status;
 mod widgets;
 
 use basement_bridge_core::{
-    BridgeClient, ClientLogSink, ConnectionProfile, LocalDate, RelayEndpoint, RelayPreset,
-    SessionConfig, SessionMode, SessionStatus, TransportChoice, load_client_config,
-    resolve_room_template,
+    BridgeClient, ClientConfigSelection, ClientLogSink, ConnectionProfile,
+    LocalDate, LightPingTarget, RelayEndpoint, RelayPreset, SessionConfig, SessionMode,
+    SessionStatus, TransportChoice, load_client_config, resolve_room_template,
+    save_client_config_selection,
 };
 use eframe::egui::{self, ScrollArea};
 
@@ -14,9 +15,6 @@ use crate::i18n::{Language, Text, text};
 
 use status::error_message;
 
-/// Build a test room id of the form `YYYYMMDD-XXXX` (today + 4 random lowercase
-/// alphanumerics). Used as the editable default room so testers do not have to
-/// invent one, and so two independent test pairs on the same day do not collide.
 fn generate_room_id() -> String {
     let date = resolve_room_template("{date:%Y%m%d}", LocalDate::today())
         .unwrap_or_else(|_| "20260101".to_owned());
@@ -47,8 +45,10 @@ fn random_room_suffix() -> String {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Page {
     Home,
-    Diagnostics,
-    Debug,
+    Settings,
+    Stats,
+    Log,
+    About,
 }
 
 pub struct BridgeApp {
@@ -66,9 +66,12 @@ pub struct BridgeApp {
     selected_account: Option<usize>,
     manual_steam_id: String,
     manual_display_name: String,
+    display_name: String,
     last_error: Option<String>,
     last_log_directory: Option<String>,
     start_error_dialog_open: bool,
+    join_code_input: String,
+    join_code_message: Option<String>,
 }
 
 impl BridgeApp {
@@ -80,14 +83,29 @@ impl BridgeApp {
 
         let loaded_config = load_client_config();
         let client = BridgeClient::with_config_and_log_sink(loaded_config.clone(), log_sink);
+
         let selected_account = client
             .state()
             .detected_accounts
             .iter()
-            .position(|account| account.most_recent)
-            .or_else(|| (!client.state().detected_accounts.is_empty()).then_some(0));
+            .position(|account| {
+                loaded_config
+                    .config
+                    .selected_steam_id64
+                    .as_deref()
+                    .is_some_and(|id| id == account.steam_id64)
+            });
 
-        let startup_room = generate_room_id();
+        let startup_room = loaded_config
+            .config
+            .room
+            .clone()
+            .unwrap_or_else(generate_room_id);
+
+        let initial_display_name = selected_account
+            .and_then(|index| client.state().detected_accounts.get(index))
+            .map(|account| account.display_name.clone())
+            .unwrap_or_default();
 
         let mut app = Self {
             client,
@@ -104,12 +122,16 @@ impl BridgeApp {
             selected_account,
             manual_steam_id: String::new(),
             manual_display_name: String::new(),
+            display_name: initial_display_name,
             last_error: (!loaded_config.warnings.is_empty())
                 .then(|| text(Language::Chinese, Text::ConfigWarning).to_owned()),
             last_log_directory: None,
             start_error_dialog_open: false,
+            join_code_input: String::new(),
+            join_code_message: None,
         };
         app.apply_selected_relay_defaults();
+        app.startup_light_ping();
         app
     }
 
@@ -132,7 +154,7 @@ impl BridgeApp {
     }
 
     fn session_config(&self) -> SessionConfig {
-        let (steam_id64, display_name) = self.current_identity();
+        let (steam_id64, _) = self.current_identity();
         SessionConfig {
             relay: RelayEndpoint::new(self.relay_host.trim(), self.relay_port),
             relay_name: self.selected_relay_preset().map(|relay| relay.name.clone()),
@@ -140,7 +162,7 @@ impl BridgeApp {
             room: self.room.trim().to_owned(),
             mode: self.mode,
             steam_id64,
-            display_name,
+            display_name: self.display_name.trim().to_owned(),
             session_health: self.client.loaded_config().config.session_health,
         }
     }
@@ -152,29 +174,33 @@ impl BridgeApp {
         }
     }
 
-    fn set_connection_profile(&mut self, profile: ConnectionProfile) {
-        self.transport = profile.transport();
-    }
-
-    fn connection_profile_pending(&self) -> bool {
-        self.client.state().status == SessionStatus::Running
-            && self
-                .active_connection_profile
-                .is_some_and(|active| active != self.current_connection_profile())
-    }
-
     fn start(&mut self) {
         match self.client.start_session(&self.session_config()) {
             Ok(()) => {
                 self.active_connection_profile = Some(self.current_connection_profile());
                 self.last_error = None;
                 self.start_error_dialog_open = false;
+                self.persist_selection();
             }
             Err(error) => {
                 self.last_error = Some(error_message(self.language, &error));
                 self.start_error_dialog_open = true;
             }
         }
+    }
+
+    fn persist_selection(&self) {
+        let selection = ClientConfigSelection {
+            selected_relay: self
+                .selected_relay_preset()
+                .map(|relay| relay.id.clone()),
+            room: Some(self.room.clone()),
+            selected_steam_id64: {
+                let (id, _) = self.current_identity();
+                if id.is_empty() { None } else { Some(id) }
+            },
+        };
+        let _ = save_client_config_selection(&selection);
     }
 
     fn refresh_accounts(&mut self) {
@@ -200,13 +226,10 @@ impl BridgeApp {
 
     fn start_readiness_probe(&mut self) {
         let relay = RelayEndpoint::new(self.relay_host.trim(), self.relay_port);
-        match self.client.start_readiness_probe(relay) {
-            Ok(()) => {
-                self.last_error = None;
-            }
-            Err(error) => {
-                self.last_error = Some(error_message(self.language, &error));
-            }
+        if let Err(error) = self.client.start_readiness_probe(relay) {
+            self.last_error = Some(error_message(self.language, &error));
+        } else {
+            self.last_error = None;
         }
     }
 
@@ -216,6 +239,24 @@ impl BridgeApp {
         } else {
             self.last_error = None;
         }
+    }
+
+    fn startup_light_ping(&mut self) {
+        let targets: Vec<LightPingTarget> = self
+            .relay_presets
+            .iter()
+            .map(|relay| LightPingTarget {
+                relay_id: Some(relay.id.clone()),
+                relay_name: Some(relay.name.clone()),
+                endpoint: relay.endpoint.clone(),
+                transport: relay.preferred_transport(self.transport),
+            })
+            .collect();
+        let _ = self.client.start_light_ping_probes(targets);
+    }
+
+    fn retest_relays(&mut self) {
+        self.startup_light_ping();
     }
 
     fn selected_relay_preset(&self) -> Option<&RelayPreset> {
@@ -241,6 +282,54 @@ impl BridgeApp {
         self.selected_relay_preset()
             .is_none_or(|relay| relay.supports(transport))
     }
+
+    fn copy_join_code(&self) -> String {
+        let relay_id = self.selected_relay_preset().map(|relay| relay.id.clone());
+        basement_bridge_core::JoinCode {
+            relay_id,
+            relay_host: self.relay_host.trim().to_owned(),
+            relay_port: self.relay_port,
+            room: self.room.trim().to_owned(),
+        }
+        .encode()
+    }
+
+    fn import_join_code(&mut self) {
+        let input = if self.join_code_input.trim().is_empty() {
+            return;
+        } else {
+            self.join_code_input.trim().to_owned()
+        };
+        match basement_bridge_core::JoinCode::decode(&input) {
+            Ok(code) => {
+                if let Some(ref relay_id) = code.relay_id {
+                    if let Some(index) = self
+                        .relay_presets
+                        .iter()
+                        .position(|relay| &relay.id == relay_id)
+                    {
+                        self.selected_relay = Some(index);
+                        self.apply_selected_relay_defaults();
+                    } else {
+                        self.selected_relay = None;
+                        self.relay_host = code.relay_host.clone();
+                        self.relay_port = code.relay_port;
+                    }
+                } else {
+                    self.selected_relay = None;
+                    self.relay_host = code.relay_host.clone();
+                    self.relay_port = code.relay_port;
+                }
+                self.room = code.room.clone();
+                self.join_code_message = Some(self.t(Text::CodeImported).to_owned());
+                self.last_error = None;
+                self.persist_selection();
+            }
+            Err(error) => {
+                self.join_code_message = Some(format!("{}: {error}", self.t(Text::CodeInvalid)));
+            }
+        }
+    }
 }
 
 impl eframe::App for BridgeApp {
@@ -264,19 +353,19 @@ impl eframe::App for BridgeApp {
             self.top_bar(ui);
             ui.separator();
             ui.add_space(8.0);
-            let page = self.page;
-            match page {
-                Page::Home | Page::Debug => {
-                    ScrollArea::vertical()
-                        .id_salt("page_scroll")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| match page {
-                            Page::Home => self.home_page(ui),
-                            Page::Debug => self.debug_page(ui),
-                            Page::Diagnostics => unreachable!(),
-                        });
-                }
-                Page::Diagnostics => self.diagnostics_page(ui),
+            if self.page == Page::Log {
+                self.log_page(ui);
+            } else {
+                ScrollArea::vertical()
+                    .id_salt("page_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| match self.page {
+                        Page::Home => self.home_page(ui),
+                        Page::Settings => self.settings_page(ui),
+                        Page::Stats => self.stats_page(ui),
+                        Page::About => self.about_page(ui),
+                        Page::Log => unreachable!(),
+                    });
             }
         });
 

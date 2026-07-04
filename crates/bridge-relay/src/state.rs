@@ -299,8 +299,8 @@ impl RelayState {
             .get(room_name)
             .map(|room| {
                 room.peers
-                    .iter()
-                    .map(|(_, peer)| basement_bridge_core::protocol::PeerInfo {
+                    .values()
+                    .map(|peer| basement_bridge_core::protocol::PeerInfo {
                         steam_id64: peer.steam_id64.clone(),
                         display_name: peer.display_name.clone(),
                         transport: match peer.transport {

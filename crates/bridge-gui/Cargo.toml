@@ -11,6 +11,7 @@ name = "basement-bridge"
 path = "src/main.rs"
 
 [dependencies]
+arboard = "3"
 basement-bridge-core = { path = "../bridge-core" }
 directories = "6.0.0"
 eframe = { version = "0.35.0", default-features = false, features = [

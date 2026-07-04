@@ -5,7 +5,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use basement_bridge_core::protocol::{ControlMessage, PowChallenge, PowProof};
+use basement_bridge_core::protocol::{
+    ClientMetadata, ControlMessage, PROTOCOL_MAJOR, PROTOCOL_MINOR, PowChallenge, PowProof,
+};
 use rand::RngExt as _;
 use tracing::info;
 
@@ -64,10 +66,22 @@ struct PendingJoin {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct JoinRequest {
+    pub(crate) peer_id: PeerId,
+    pub(crate) room: String,
+    pub(crate) steam_id64: String,
+    pub(crate) display_name: Option<String>,
+    pub(crate) client: Option<ClientMetadata>,
+    pub(crate) admission: Option<String>,
+    pub(crate) now: Instant,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct JoinCompletion {
     pub(crate) peer_id: PeerId,
     pub(crate) room: String,
     pub(crate) steam_id64: String,
+    pub(crate) client: Option<ClientMetadata>,
     pub(crate) challenge: String,
     pub(crate) pow_proof: Option<PowProof>,
     pub(crate) transport: PeerTransport,
@@ -160,15 +174,19 @@ impl RelayState {
             .any(|network| network.contains(&address.ip()))
     }
 
-    pub(crate) fn challenge_join(
-        &mut self,
-        peer_id: PeerId,
-        room: String,
-        steam_id64: String,
-        display_name: Option<String>,
-        admission: Option<String>,
-        now: Instant,
-    ) -> ControlMessage {
+    pub(crate) fn challenge_join(&mut self, request: JoinRequest) -> ControlMessage {
+        let JoinRequest {
+            peer_id,
+            room,
+            steam_id64,
+            display_name,
+            client,
+            admission,
+            now,
+        } = request;
+        if let Err(error) = validate_client_metadata(client.as_ref()) {
+            return *error;
+        }
         let Some(admission) = admission.filter(|value| !value.is_empty()) else {
             return error_message("admission_required", "room admission material is required");
         };
@@ -199,11 +217,18 @@ impl RelayState {
             peer_id,
             room,
             steam_id64,
+            client,
             challenge,
             pow_proof,
             transport,
             now,
         } = completion;
+        if let Err(error) = validate_client_metadata(client.as_ref()) {
+            return JoinOutcome {
+                response: *error,
+                broadcast: None,
+            };
+        }
         let Some(pending) = self.pending.remove(&peer_id) else {
             return JoinOutcome {
                 response: error_message("missing_challenge", "join challenge was not issued"),
@@ -588,6 +613,25 @@ fn validate_pow(
         return Err(Box::new(error_message(
             "pow_failed",
             "proof of work did not satisfy the challenge",
+        )));
+    }
+    Ok(())
+}
+
+fn validate_client_metadata(client: Option<&ClientMetadata>) -> Result<(), Box<ControlMessage>> {
+    let Some(client) = client else {
+        return Err(Box::new(error_message(
+            "client_metadata_required",
+            "client metadata is required for room admission",
+        )));
+    };
+    if client.protocol_major != PROTOCOL_MAJOR || client.protocol_minor != PROTOCOL_MINOR {
+        return Err(Box::new(error_message(
+            "unsupported_protocol",
+            format!(
+                "client protocol {}.{} is not supported by relay protocol {}.{}",
+                client.protocol_major, client.protocol_minor, PROTOCOL_MAJOR, PROTOCOL_MINOR
+            ),
         )));
     }
     Ok(())

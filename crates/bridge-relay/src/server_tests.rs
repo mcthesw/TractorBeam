@@ -1,6 +1,8 @@
 use std::{io, net::SocketAddr, time::Duration};
 
-use basement_bridge_core::protocol::{ControlMessage, Envelope, GamePacket, MessageType};
+use basement_bridge_core::protocol::{
+    ClientMetadata, ControlMessage, Envelope, GamePacket, MessageType,
+};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use tokio::{
@@ -265,7 +267,7 @@ async fn send_join(peer: &mut TestPeer, room: &str, steam_id64: &str, challenge:
         room: room.to_owned(),
         steam_id64: steam_id64.to_owned(),
         display_name: None,
-        client: None,
+        client: Some(ClientMetadata::current()),
         challenge,
         pow_proof: None,
         admission: Some("AbCdEfGhIjKlMn12".to_owned()),

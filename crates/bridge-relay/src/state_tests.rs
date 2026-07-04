@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use basement_bridge_core::protocol::{ControlMessage, PowChallenge, PowProof};
+use basement_bridge_core::protocol::{ClientMetadata, ControlMessage, PowChallenge, PowProof};
 
 use super::*;
 use crate::incident::{MISSING_TARGET_INITIAL_LOGS, MISSING_TARGET_LOG_INTERVAL};
@@ -18,6 +18,22 @@ const fn peer(value: u64) -> PeerId {
 
 fn admission() -> Option<String> {
     Some("AbCdEfGhIjKlMn12".to_owned())
+}
+
+fn client() -> Option<ClientMetadata> {
+    Some(ClientMetadata::current())
+}
+
+fn join_request(peer_id: PeerId, room: &str, steam_id64: &str, now: Instant) -> JoinRequest {
+    JoinRequest {
+        peer_id,
+        room: room.to_owned(),
+        steam_id64: steam_id64.to_owned(),
+        display_name: None,
+        client: client(),
+        admission: admission(),
+        now,
+    }
 }
 
 fn challenge(message: ControlMessage) -> (String, Option<PowChallenge>) {
@@ -42,14 +58,8 @@ fn join_peer(
     transport: PeerTransport,
     now: Instant,
 ) {
-    let (token, pow) = challenge(state.challenge_join(
-        peer_id,
-        room.to_owned(),
-        steam_id64.to_owned(),
-        None,
-        admission(),
-        now,
-    ));
+    let (token, pow) =
+        challenge(state.challenge_join(join_request(peer_id, room, steam_id64, now)));
     let pow_proof = pow
         .as_ref()
         .and_then(|pow| PowProof::solve(pow, &token, room, steam_id64));
@@ -59,6 +69,7 @@ fn join_peer(
                 peer_id,
                 room: room.to_owned(),
                 steam_id64: steam_id64.to_owned(),
+                client: client(),
                 challenge: token,
                 pow_proof,
                 transport,
@@ -89,16 +100,59 @@ fn rejects_room_names_over_limit() {
     };
     let mut state = RelayState::new(config);
 
-    let response = state.challenge_join(
+    let response = state.challenge_join(join_request(
         peer(1),
-        "abcde".to_owned(),
-        "76561198000000001".to_owned(),
-        None,
-        admission(),
+        "abcde",
+        "76561198000000001",
         Instant::now(),
-    );
+    ));
 
     assert_eq!(error_code(response), "room_name_too_long");
+}
+
+#[test]
+fn rejects_missing_client_metadata() {
+    let mut state = RelayState::new(RelayConfig::default());
+    let mut request = join_request(peer(1), "room", "76561198000000001", Instant::now());
+    request.client = None;
+
+    let response = state.challenge_join(request);
+
+    assert_eq!(error_code(response), "client_metadata_required");
+}
+
+#[test]
+fn rejects_unsupported_client_protocol() {
+    let mut state = RelayState::new(RelayConfig::default());
+    let mut metadata = ClientMetadata::current();
+    metadata.protocol_major = metadata.protocol_major.saturating_add(1);
+    let mut request = join_request(peer(1), "room", "76561198000000001", Instant::now());
+    request.client = Some(metadata);
+
+    let response = state.challenge_join(request);
+
+    assert_eq!(error_code(response), "unsupported_protocol");
+}
+
+#[test]
+fn rejects_missing_client_metadata_on_challenge_completion() {
+    let mut state = RelayState::new(RelayConfig::default());
+    let now = Instant::now();
+    let (token, _pow) =
+        challenge(state.challenge_join(join_request(peer(1), "room", "76561198000000001", now)));
+
+    let outcome = state.complete_join(JoinCompletion {
+        peer_id: peer(1),
+        room: "room".to_owned(),
+        steam_id64: "76561198000000001".to_owned(),
+        client: None,
+        challenge: token,
+        pow_proof: None,
+        transport: PeerTransport::Udp,
+        now,
+    });
+
+    assert_eq!(error_code(outcome.response), "client_metadata_required");
 }
 
 #[test]
@@ -119,14 +173,7 @@ fn rejects_new_rooms_over_limit() {
         now,
     );
 
-    let response = state.challenge_join(
-        peer(2),
-        "two".to_owned(),
-        "76561198000000002".to_owned(),
-        None,
-        admission(),
-        now,
-    );
+    let response = state.challenge_join(join_request(peer(2), "two", "76561198000000002", now));
 
     assert_eq!(error_code(response), "too_many_rooms");
 }
@@ -149,14 +196,7 @@ fn rejects_new_peers_over_room_limit() {
         now,
     );
 
-    let response = state.challenge_join(
-        peer(2),
-        "room".to_owned(),
-        "76561198000000002".to_owned(),
-        None,
-        admission(),
-        now,
-    );
+    let response = state.challenge_join(join_request(peer(2), "room", "76561198000000002", now));
 
     assert_eq!(error_code(response), "room_full");
 }
@@ -306,15 +346,10 @@ fn missing_target_incidents_snapshot_room_peers_and_are_sampled() {
 #[test]
 fn rejects_missing_admission_material() {
     let mut state = RelayState::new(RelayConfig::default());
+    let mut request = join_request(peer(1), "room", "76561198000000001", Instant::now());
+    request.admission = None;
 
-    let response = state.challenge_join(
-        peer(1),
-        "room".to_owned(),
-        "76561198000000001".to_owned(),
-        None,
-        None,
-        Instant::now(),
-    );
+    let response = state.challenge_join(request);
 
     assert_eq!(error_code(response), "admission_required");
 }
@@ -333,14 +368,9 @@ fn rejects_mismatched_room_admission_material() {
         now,
     );
 
-    let response = state.challenge_join(
-        peer(2),
-        "room".to_owned(),
-        "76561198000000002".to_owned(),
-        None,
-        Some("DifferentAdmission".to_owned()),
-        now,
-    );
+    let mut request = join_request(peer(2), "room", "76561198000000002", now);
+    request.admission = Some("DifferentAdmission".to_owned());
+    let response = state.challenge_join(request);
 
     assert_eq!(error_code(response), "room_admission_mismatch");
 }
@@ -353,19 +383,14 @@ fn rejects_missing_pow_proof_when_required() {
     };
     let mut state = RelayState::new(config);
     let now = Instant::now();
-    let (token, _pow) = challenge(state.challenge_join(
-        peer(1),
-        "room".to_owned(),
-        "76561198000000001".to_owned(),
-        None,
-        admission(),
-        now,
-    ));
+    let (token, _pow) =
+        challenge(state.challenge_join(join_request(peer(1), "room", "76561198000000001", now)));
 
     let outcome = state.complete_join(JoinCompletion {
         peer_id: peer(1),
         room: "room".to_owned(),
         steam_id64: "76561198000000001".to_owned(),
+        client: client(),
         challenge: token,
         pow_proof: None,
         transport: PeerTransport::Udp,
@@ -383,19 +408,14 @@ fn rejects_bad_pow_proof() {
     };
     let mut state = RelayState::new(config);
     let now = Instant::now();
-    let (token, _pow) = challenge(state.challenge_join(
-        peer(1),
-        "room".to_owned(),
-        "76561198000000001".to_owned(),
-        None,
-        admission(),
-        now,
-    ));
+    let (token, _pow) =
+        challenge(state.challenge_join(join_request(peer(1), "room", "76561198000000001", now)));
 
     let outcome = state.complete_join(JoinCompletion {
         peer_id: peer(1),
         room: "room".to_owned(),
         steam_id64: "76561198000000001".to_owned(),
+        client: client(),
         challenge: token,
         pow_proof: Some(PowProof {
             nonce: "bad".to_owned(),

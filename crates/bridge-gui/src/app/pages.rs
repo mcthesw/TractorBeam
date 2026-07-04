@@ -89,21 +89,23 @@ impl BridgeApp {
     fn relay_section(&mut self, ui: &mut egui::Ui) {
         let relay_label = self.t(Text::RelayServer);
         let manual_label = self.t(Text::ManualRelay);
-        let retest_label = self.t(Text::RetestRelays);
+        let retest_label = self.t(Text::TestLatency);
         let host_label = self.t(Text::RelayHost);
         ui.label(relay_label);
         let mut selected_relay = self.selected_relay;
+        let selected_text = selected_relay
+            .and_then(|index| self.relay_presets.get(index))
+            .map_or_else(
+                || manual_label.to_owned(),
+                |relay| self.relay_option_label(relay),
+            );
         ComboBox::from_id_salt("home_relay")
-            .selected_text(self.relay_selection_label())
+            .selected_text(selected_text)
             .width(400.0)
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut selected_relay, None, manual_label);
                 for (index, relay) in self.relay_presets.iter().enumerate() {
-                    let label = format!(
-                        "{} ({})",
-                        relay.name,
-                        self.relay_latency_label(&relay.endpoint)
-                    );
+                    let label = self.relay_option_label(relay);
                     ui.selectable_value(&mut selected_relay, Some(index), label);
                 }
             });
@@ -130,7 +132,7 @@ impl BridgeApp {
         }
         ui.add_space(4.0);
         if ui.button(retest_label).clicked() {
-            self.retest_relays();
+            self.test_relay_latency();
         }
     }
 
@@ -547,6 +549,14 @@ impl BridgeApp {
                     }
                 },
             )
+    }
+
+    fn relay_option_label(&self, relay: &basement_bridge_core::RelayPreset) -> String {
+        format!(
+            "{} ({})",
+            relay.name,
+            self.relay_latency_label(&relay.endpoint)
+        )
     }
 }
 

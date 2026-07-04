@@ -46,14 +46,16 @@ fn join_peer(
         now,
     ));
     assert!(matches!(
-        state.complete_join(JoinCompletion {
-            peer_id,
-            room: room.to_owned(),
-            steam_id64: steam_id64.to_owned(),
-            challenge: token,
-            transport,
-            now,
-        }).response,
+        state
+            .complete_join(JoinCompletion {
+                peer_id,
+                room: room.to_owned(),
+                steam_id64: steam_id64.to_owned(),
+                challenge: token,
+                transport,
+                now,
+            })
+            .response,
         ControlMessage::Ready { .. }
     ));
 }

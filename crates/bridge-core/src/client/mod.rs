@@ -26,8 +26,8 @@ pub use logging::{
     ClientLogSink, ClientSessionLog, ClientSessionLogContext, emit_client_log_event,
 };
 pub use probe::{
-    DEFAULT_RELAY_PROBE_PAYLOAD_BYTES, HookReceiveProbeReport, LightPingReport,
-    LightPingTarget, READINESS_PROBE_CONNECTION_PROFILES, READINESS_PROBE_PAYLOAD_BYTES,
+    DEFAULT_RELAY_PROBE_PAYLOAD_BYTES, HookReceiveProbeReport, LightPingReport, LightPingTarget,
+    READINESS_PROBE_CONNECTION_PROFILES, READINESS_PROBE_PAYLOAD_BYTES,
     READINESS_PROBE_SAMPLES_PER_CASE, ReadinessProbeCaseReport, ReadinessProbeReport,
     RelayProbeReport,
 };

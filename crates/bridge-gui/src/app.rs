@@ -4,10 +4,9 @@ mod status;
 mod widgets;
 
 use basement_bridge_core::{
-    BridgeClient, ClientConfigSelection, ClientLogSink, ConnectionProfile,
-    LocalDate, LightPingTarget, RelayEndpoint, RelayPreset, SessionConfig, SessionMode,
-    SessionStatus, TransportChoice, load_client_config, resolve_room_template,
-    save_client_config_selection,
+    BridgeClient, ClientConfigSelection, ClientLogSink, ConnectionProfile, LightPingTarget,
+    LocalDate, RelayEndpoint, RelayPreset, SessionConfig, SessionMode, SessionStatus,
+    TransportChoice, load_client_config, resolve_room_template, save_client_config_selection,
 };
 use eframe::egui::{self, ScrollArea};
 
@@ -84,17 +83,13 @@ impl BridgeApp {
         let loaded_config = load_client_config();
         let client = BridgeClient::with_config_and_log_sink(loaded_config.clone(), log_sink);
 
-        let selected_account = client
-            .state()
-            .detected_accounts
-            .iter()
-            .position(|account| {
-                loaded_config
-                    .config
-                    .selected_steam_id64
-                    .as_deref()
-                    .is_some_and(|id| id == account.steam_id64)
-            });
+        let selected_account = client.state().detected_accounts.iter().position(|account| {
+            loaded_config
+                .config
+                .selected_steam_id64
+                .as_deref()
+                .is_some_and(|id| id == account.steam_id64)
+        });
 
         let startup_room = loaded_config
             .config
@@ -191,9 +186,7 @@ impl BridgeApp {
 
     fn persist_selection(&self) {
         let selection = ClientConfigSelection {
-            selected_relay: self
-                .selected_relay_preset()
-                .map(|relay| relay.id.clone()),
+            selected_relay: self.selected_relay_preset().map(|relay| relay.id.clone()),
             room: Some(self.room.clone()),
             selected_steam_id64: {
                 let (id, _) = self.current_identity();

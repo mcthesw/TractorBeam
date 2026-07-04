@@ -297,7 +297,9 @@ fn en(key: Text) -> &'static str {
         Text::Fallback => "Fallback",
         Text::Pure => "Pure",
         Text::ConfigError => "Configuration error",
-        Text::ConfigWarning => "Config could not be applied; editable defaults are still available.",
+        Text::ConfigWarning => {
+            "Config could not be applied; editable defaults are still available."
+        }
         Text::SessionNotStarted => "Session not started",
         Text::JoinCode => "Join code",
         Text::CopyCode => "Copy join code",
@@ -318,7 +320,9 @@ fn en(key: Text) -> &'static str {
         Text::HookReady => "Hook ready",
         Text::HookFailed => "Injection failed",
         Text::HookCancelled => "Cancelled",
-        Text::AccessDeniedHint => "Run Bridge/Steam/Isaac as administrator, or allow the helper in your antivirus.",
+        Text::AccessDeniedHint => {
+            "Run Bridge/Steam/Isaac as administrator, or allow the helper in your antivirus."
+        }
         Text::Elapsed => "Elapsed",
         Text::RoomMembers => "Room members",
         Text::RoomEmpty => "No members (not joined)",

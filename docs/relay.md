@@ -62,10 +62,10 @@ blocked_cidrs = []
   `["203.0.113.10/32", "2001:db8::/32"]`.
 
 Other relay safety limits are shared built-in defaults. Public relay datagrams
-are capped at 2048 bytes on the wire, per-peer packet rate is capped so a peer
-cannot sustain more than about 200 KB/s before the byte-token-bucket hardening
-lands, rooms hold at most four peers, inactive peers expire after 30 seconds,
-and empty rooms expire after 120 seconds.
+are capped at 2048 bytes on the wire, each peer is capped at 100 packets/s plus
+a 256 KiB/s byte-token bucket with a 512 KiB burst, HealthPing replies are
+capped per source IP, rooms hold at most four peers, inactive peers expire after
+30 seconds, and empty rooms expire after 120 seconds.
 
 Restart the Relay Server after config changes.
 

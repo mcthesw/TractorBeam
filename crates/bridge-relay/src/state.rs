@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fmt::{self, Display},
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     time::{Duration, Instant},
 };
 
@@ -131,13 +131,67 @@ struct RateWindow {
     packets: u32,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ByteBucket {
+    updated_at: Instant,
+    tokens: usize,
+}
+
+impl ByteBucket {
+    fn full(now: Instant, capacity: usize) -> Self {
+        Self {
+            updated_at: now,
+            tokens: capacity,
+        }
+    }
+
+    fn allow(
+        &mut self,
+        bytes: usize,
+        now: Instant,
+        refill_per_second: usize,
+        capacity: usize,
+    ) -> bool {
+        let elapsed = now.duration_since(self.updated_at);
+        let refill = (elapsed.as_secs_f64() * refill_per_second as f64) as usize;
+        if refill > 0 {
+            self.tokens = self.tokens.saturating_add(refill).min(capacity);
+            self.updated_at = now;
+        }
+        if bytes > self.tokens {
+            return false;
+        }
+        self.tokens -= bytes;
+        true
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PeerRateLimit {
+    packet_window: RateWindow,
+    byte_bucket: ByteBucket,
+}
+
+impl PeerRateLimit {
+    fn new(now: Instant, byte_burst: usize) -> Self {
+        Self {
+            packet_window: RateWindow {
+                started_at: now,
+                packets: 0,
+            },
+            byte_bucket: ByteBucket::full(now, byte_burst),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct RelayState {
     config: RelayConfig,
     pending: HashMap<PeerId, PendingJoin>,
     rooms: HashMap<String, Room>,
     peer_rooms: HashMap<PeerId, String>,
-    rates: HashMap<PeerId, RateWindow>,
+    rates: HashMap<PeerId, PeerRateLimit>,
+    health_pong_rates: HashMap<IpAddr, RateWindow>,
     missing_target_logs: HashMap<String, MissingTargetLogBudget>,
 }
 
@@ -149,13 +203,35 @@ impl RelayState {
             rooms: HashMap::new(),
             peer_rooms: HashMap::new(),
             rates: HashMap::new(),
+            health_pong_rates: HashMap::new(),
             missing_target_logs: HashMap::new(),
         }
     }
 
-    pub(crate) fn allow_packet(&mut self, peer_id: PeerId, now: Instant) -> bool {
-        let limit = self.config.rate_limit_per_second;
-        let window = self.rates.entry(peer_id).or_insert(RateWindow {
+    pub(crate) fn allow_packet(&mut self, peer_id: PeerId, bytes: usize, now: Instant) -> bool {
+        let byte_burst = self.config.byte_rate_limit_burst;
+        let rate_limit = self
+            .rates
+            .entry(peer_id)
+            .or_insert_with(|| PeerRateLimit::new(now, byte_burst));
+        if now.duration_since(rate_limit.packet_window.started_at) >= Duration::from_secs(1) {
+            rate_limit.packet_window.started_at = now;
+            rate_limit.packet_window.packets = 0;
+        }
+        rate_limit.packet_window.packets = rate_limit.packet_window.packets.saturating_add(1);
+        if rate_limit.packet_window.packets > self.config.rate_limit_per_second {
+            return false;
+        }
+        rate_limit.byte_bucket.allow(
+            bytes,
+            now,
+            self.config.byte_rate_limit_per_second,
+            self.config.byte_rate_limit_burst,
+        )
+    }
+
+    pub(crate) fn allow_health_pong(&mut self, source: IpAddr, now: Instant) -> bool {
+        let window = self.health_pong_rates.entry(source).or_insert(RateWindow {
             started_at: now,
             packets: 0,
         });
@@ -164,7 +240,7 @@ impl RelayState {
             window.packets = 0;
         }
         window.packets = window.packets.saturating_add(1);
-        window.packets <= limit
+        window.packets <= self.config.health_pongs_per_second_per_ip
     }
 
     pub(crate) fn is_blocked(&self, address: SocketAddr) -> bool {
@@ -441,6 +517,8 @@ impl RelayState {
         let room_idle = Duration::from_secs(self.config.room_idle_seconds);
         self.pending
             .retain(|_, pending| now.duration_since(pending.issued_at) < peer_idle);
+        self.health_pong_rates
+            .retain(|_, window| now.duration_since(window.started_at) < Duration::from_secs(60));
 
         let mut removed_peers = Vec::new();
         let mut changed_rooms: std::collections::HashSet<String> = std::collections::HashSet::new();

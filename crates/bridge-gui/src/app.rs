@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 mod fonts;
 mod pages;
 mod status;
@@ -13,7 +15,7 @@ use eframe::egui::{self, ScrollArea};
 
 use crate::i18n::{Language, Text, text};
 
-use status::error_message;
+use status::StatusMessage;
 
 fn generate_room_id() -> String {
     let date = resolve_room_template("{date:%Y%m%d}", LocalDate::today())
@@ -76,7 +78,7 @@ pub struct BridgeApp {
     selected_account: Option<usize>,
     manual_steam_id: String,
     manual_display_name: String,
-    last_error: Option<String>,
+    status_message: Option<StatusMessage>,
     last_log_directory: Option<String>,
     start_error_dialog_open: bool,
     join_code_input: String,
@@ -119,8 +121,8 @@ impl BridgeApp {
             selected_account,
             manual_steam_id: String::new(),
             manual_display_name: String::new(),
-            last_error: (!loaded_config.warnings.is_empty())
-                .then(|| text(Language::Chinese, Text::ConfigWarning).to_owned()),
+            status_message: (!loaded_config.warnings.is_empty())
+                .then_some(StatusMessage::ConfigWarning),
             last_log_directory: None,
             start_error_dialog_open: false,
             join_code_input: String::new(),
@@ -131,7 +133,7 @@ impl BridgeApp {
         app
     }
 
-    fn t(&self, key: Text) -> &'static str {
+    fn t(&self, key: Text) -> Cow<'static, str> {
         text(self.language, key)
     }
 
@@ -177,12 +179,12 @@ impl BridgeApp {
         match self.client.start_session(&self.session_config()) {
             Ok(()) => {
                 self.active_connection_profile = Some(self.current_connection_profile());
-                self.last_error = None;
+                self.status_message = None;
                 self.start_error_dialog_open = false;
                 self.persist_selection();
             }
             Err(error) => {
-                self.last_error = Some(error_message(self.language, &error));
+                self.status_message = Some(StatusMessage::from_client_error(&error));
                 self.start_error_dialog_open = true;
             }
         }
@@ -209,27 +211,27 @@ impl BridgeApp {
     fn open_log_directory(&mut self) {
         match self.client.open_log_directory() {
             Ok(path) => {
-                self.last_error = None;
+                self.status_message = None;
                 self.last_log_directory = Some(path.display().to_string());
             }
-            Err(error) => self.last_error = Some(error.to_string()),
+            Err(error) => self.status_message = Some(StatusMessage::Text(error.to_string())),
         }
     }
 
     fn start_readiness_probe(&mut self) {
         let relay = RelayEndpoint::new(self.relay_host.trim(), self.relay_port);
         if let Err(error) = self.client.start_readiness_probe(relay) {
-            self.last_error = Some(error_message(self.language, &error));
+            self.status_message = Some(StatusMessage::from_client_error(&error));
         } else {
-            self.last_error = None;
+            self.status_message = None;
         }
     }
 
     fn run_hook_receive_probe(&mut self) {
         if let Err(error) = self.client.start_hook_receive_probe() {
-            self.last_error = Some(error_message(self.language, &error));
+            self.status_message = Some(StatusMessage::from_client_error(&error));
         } else {
-            self.last_error = None;
+            self.status_message = None;
         }
     }
 
@@ -308,8 +310,8 @@ impl BridgeApp {
                     self.relay_port = code.relay_port;
                 }
                 self.room = code.room.clone();
-                self.join_code_message = Some(self.t(Text::CodeImported).to_owned());
-                self.last_error = None;
+                self.join_code_message = Some(self.t(Text::CodeImported).into_owned());
+                self.status_message = None;
                 self.persist_selection();
             }
             Err(error) => {

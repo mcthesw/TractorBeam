@@ -131,6 +131,7 @@ fn config_error_message(config_error: ConfigError) -> String {
         ConfigError::MissingRelayHost => t!("config.missing_relay_host"),
         ConfigError::InvalidRelayPort => t!("config.invalid_relay_port"),
         ConfigError::MissingRoom => t!("config.missing_room"),
+        ConfigError::MissingAdmission => t!("config.missing_admission"),
         ConfigError::MissingSteamId => t!("config.missing_steam_id"),
         ConfigError::InvalidSteamId => t!("config.invalid_steam_id"),
         ConfigError::InvalidSessionHealth => t!("config.invalid_session_health"),

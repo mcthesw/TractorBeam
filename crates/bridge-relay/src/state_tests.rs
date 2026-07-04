@@ -16,6 +16,10 @@ const fn peer(value: u64) -> PeerId {
     PeerId::new(value)
 }
 
+fn admission() -> Option<String> {
+    Some("AbCdEfGhIjKlMn12".to_owned())
+}
+
 fn challenge_token(message: ControlMessage) -> String {
     let ControlMessage::Challenge { token, .. } = message else {
         panic!("expected challenge message");
@@ -43,6 +47,7 @@ fn join_peer(
         room.to_owned(),
         steam_id64.to_owned(),
         None,
+        admission(),
         now,
     ));
     assert!(matches!(
@@ -85,6 +90,7 @@ fn rejects_room_names_over_limit() {
         "abcde".to_owned(),
         "76561198000000001".to_owned(),
         None,
+        admission(),
         Instant::now(),
     );
 
@@ -114,6 +120,7 @@ fn rejects_new_rooms_over_limit() {
         "two".to_owned(),
         "76561198000000002".to_owned(),
         None,
+        admission(),
         now,
     );
 
@@ -143,6 +150,7 @@ fn rejects_new_peers_over_room_limit() {
         "room".to_owned(),
         "76561198000000002".to_owned(),
         None,
+        admission(),
         now,
     );
 
@@ -289,4 +297,46 @@ fn missing_target_incidents_snapshot_room_peers_and_are_sampled() {
             )
             .is_some()
     );
+}
+
+#[test]
+fn rejects_missing_admission_material() {
+    let mut state = RelayState::new(RelayConfig::default());
+
+    let response = state.challenge_join(
+        peer(1),
+        "room".to_owned(),
+        "76561198000000001".to_owned(),
+        None,
+        None,
+        Instant::now(),
+    );
+
+    assert_eq!(error_code(response), "admission_required");
+}
+
+#[test]
+fn rejects_mismatched_room_admission_material() {
+    let mut state = RelayState::new(RelayConfig::default());
+    let now = Instant::now();
+
+    join_peer(
+        &mut state,
+        peer(1),
+        "room",
+        "76561198000000001",
+        PeerTransport::Udp,
+        now,
+    );
+
+    let response = state.challenge_join(
+        peer(2),
+        "room".to_owned(),
+        "76561198000000002".to_owned(),
+        None,
+        Some("DifferentAdmission".to_owned()),
+        now,
+    );
+
+    assert_eq!(error_code(response), "room_admission_mismatch");
 }

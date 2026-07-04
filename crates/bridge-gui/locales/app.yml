@@ -1,0 +1,349 @@
+_version: 2
+home:
+  zh_CN: "首页"
+  en_US: "Home"
+settings:
+  zh_CN: "设置"
+  en_US: "Settings"
+stats:
+  zh_CN: "统计"
+  en_US: "Stats"
+about:
+  zh_CN: "关于"
+  en_US: "About"
+about.desc:
+  zh_CN: "给以撒的结合：忏悔+ 远程联机用的中继传输工具。"
+  en_US: "Relay transport for The Binding of Isaac: Repentance+ remote co-op."
+about.protocol_version:
+  zh_CN: "协议版本"
+  en_US: "Protocol"
+relay.host:
+  zh_CN: "Relay 地址"
+  en_US: "Relay host"
+relay.server:
+  zh_CN: "Relay 服务器"
+  en_US: "Relay server"
+relay.manual:
+  zh_CN: "手动填写"
+  en_US: "Manual relay"
+relay.port:
+  zh_CN: "端口"
+  en_US: "Port"
+transport:
+  zh_CN: "传输"
+  en_US: "Transport"
+connection_profile:
+  zh_CN: "连接档位"
+  en_US: "Connection profile"
+transport.udp:
+  zh_CN: "UDP"
+  en_US: "UDP"
+transport.tcp:
+  zh_CN: "TCP"
+  en_US: "TCP"
+room:
+  zh_CN: "房间"
+  en_US: "Room"
+mode:
+  zh_CN: "模式"
+  en_US: "Mode"
+steam.account:
+  zh_CN: "Steam 账号"
+  en_US: "Steam account"
+steam.manual_id:
+  zh_CN: "SteamID64"
+  en_US: "SteamID64"
+display_name:
+  zh_CN: "用户名"
+  en_US: "Display name"
+steam.refresh_accounts:
+  zh_CN: "刷新账号"
+  en_US: "Refresh accounts"
+manual:
+  zh_CN: "手动填写"
+  en_US: "Manual"
+start:
+  zh_CN: "启动"
+  en_US: "Start"
+stop:
+  zh_CN: "停止"
+  en_US: "Stop"
+start.failed:
+  zh_CN: "启动失败"
+  en_US: "Start failed"
+close:
+  zh_CN: "关闭"
+  en_US: "Close"
+status:
+  zh_CN: "状态"
+  en_US: "Status"
+version:
+  zh_CN: "版本"
+  en_US: "Version"
+status.idle:
+  zh_CN: "未启动"
+  en_US: "Idle"
+status.running:
+  zh_CN: "运行中"
+  en_US: "Running"
+counters:
+  zh_CN: "计数器"
+  en_US: "Counters"
+counters.hook_to_relay:
+  zh_CN: "Hook 到 Relay"
+  en_US: "Hook to relay"
+counters.relay_to_hook:
+  zh_CN: "Relay 到 Hook"
+  en_US: "Relay to hook"
+counters.sent_bytes:
+  zh_CN: "发送字节"
+  en_US: "Sent bytes"
+counters.received_bytes:
+  zh_CN: "接收字节"
+  en_US: "Received bytes"
+errors:
+  zh_CN: "错误"
+  en_US: "Errors"
+session_quality:
+  zh_CN: "会话质量"
+  en_US: "Session quality"
+health.runtime_rtt:
+  zh_CN: "链路 RTT"
+  en_US: "Runtime RTT"
+health.queue_drops:
+  zh_CN: "队列丢包"
+  en_US: "Queue drops"
+health.sequence_gaps:
+  zh_CN: "序列跳变"
+  en_US: "Sequence gaps"
+health.packet_gaps:
+  zh_CN: "收包间隔"
+  en_US: "Packet gaps"
+logs:
+  zh_CN: "日志"
+  en_US: "Logs"
+logs.open_directory:
+  zh_CN: "打开日志文件夹"
+  en_US: "Open log folder"
+logs.directory:
+  zh_CN: "日志文件夹"
+  en_US: "Log folder"
+probe.run_readiness:
+  zh_CN: "测试连接"
+  en_US: "Test connection"
+probe.running:
+  zh_CN: "测试中…"
+  en_US: "Testing..."
+probe.probing:
+  zh_CN: "探测中…"
+  en_US: "Probing..."
+probe.unreachable:
+  zh_CN: "不可达"
+  en_US: "Unreachable"
+probe.test_latency:
+  zh_CN: "测试延迟"
+  en_US: "Test latency"
+probe.relay_readiness:
+  zh_CN: "连接测试"
+  en_US: "Connection test"
+probe.run_hook_receive:
+  zh_CN: "运行 Hook 收包探针"
+  en_US: "Run hook receive probe"
+probe.hook_receive:
+  zh_CN: "Hook 收包探针"
+  en_US: "Hook receive probe"
+details:
+  zh_CN: "详情"
+  en_US: "Details"
+probe.no_data:
+  zh_CN: "无测试数据"
+  en_US: "No probe data"
+size:
+  zh_CN: "大小"
+  en_US: "Size"
+lost:
+  zh_CN: "丢包"
+  en_US: "Lost"
+latency:
+  zh_CN: "延迟"
+  en_US: "Latency"
+jitter:
+  zh_CN: "抖动"
+  en_US: "Jitter"
+bytes:
+  zh_CN: "字节"
+  en_US: "Bytes"
+hook.input:
+  zh_CN: "接收"
+  en_US: "Input"
+hook.available:
+  zh_CN: "可用"
+  en_US: "Available"
+hook.read:
+  zh_CN: "读取"
+  en_US: "Read"
+yes:
+  zh_CN: "是"
+  en_US: "Yes"
+no:
+  zh_CN: "否"
+  en_US: "No"
+steam.no_accounts:
+  zh_CN: "未自动识别到 Steam 账号，可以手动填写。"
+  en_US: "No Steam account was detected. You can enter it manually."
+mode.official:
+  zh_CN: "Official"
+  en_US: "Official"
+mode.fallback:
+  zh_CN: "Fallback"
+  en_US: "Fallback"
+mode.pure:
+  zh_CN: "Pure"
+  en_US: "Pure"
+config.error:
+  zh_CN: "配置错误"
+  en_US: "Configuration error"
+config.warning:
+  zh_CN: "配置文件有误，已使用可手动修改的默认值。"
+  en_US: "Config not applied; defaults loaded."
+config.missing_relay_host:
+  zh_CN: "需要填写 Relay 地址"
+  en_US: "Relay host is required"
+config.invalid_relay_port:
+  zh_CN: "Relay 端口无效"
+  en_US: "Relay port is invalid"
+config.missing_room:
+  zh_CN: "需要填写房间"
+  en_US: "Room is required"
+config.missing_steam_id:
+  zh_CN: "需要填写 SteamID64"
+  en_US: "SteamID64 is required"
+config.invalid_steam_id:
+  zh_CN: "SteamID64 只能包含数字"
+  en_US: "SteamID64 must contain digits only"
+config.invalid_session_health:
+  zh_CN: "会话健康配置无效"
+  en_US: "Session health config is invalid"
+session.not_started:
+  zh_CN: "未开始会话"
+  en_US: "Session not started"
+join_code:
+  zh_CN: "联机码"
+  en_US: "Join code"
+join_code.copy:
+  zh_CN: "复制联机码"
+  en_US: "Copy join code"
+join_code.import:
+  zh_CN: "导入联机码"
+  en_US: "Import join code"
+join_code.paste:
+  zh_CN: "粘贴朋友发来的联机码"
+  en_US: "Paste a join code"
+join_code.copied:
+  zh_CN: "已复制"
+  en_US: "Copied"
+join_code.imported:
+  zh_CN: "已导入"
+  en_US: "Imported"
+join_code.invalid:
+  zh_CN: "联机码无效"
+  en_US: "Invalid join code"
+clipboard.empty:
+  zh_CN: "剪切板为空"
+  en_US: "Clipboard empty"
+room.generate:
+  zh_CN: "生成新房间"
+  en_US: "New room"
+hook.progress:
+  zh_CN: "注入进度"
+  en_US: "Injection progress"
+hook.not_started:
+  zh_CN: "未开始"
+  en_US: "Not started"
+hook.configured:
+  zh_CN: "已配置"
+  en_US: "Configured"
+hook.waiting_isaac:
+  zh_CN: "等待以撒启动…"
+  en_US: "Waiting for Isaac..."
+hook.injecting:
+  zh_CN: "正在注入 Hook…"
+  en_US: "Injecting hook..."
+hook.waiting_endpoint:
+  zh_CN: "等待 Hook 就绪…"
+  en_US: "Waiting for hook endpoint..."
+hook.endpoint_ready:
+  zh_CN: "Hook 端点已就绪"
+  en_US: "Hook endpoint ready"
+hook.ready:
+  zh_CN: "Hook 已就绪"
+  en_US: "Hook ready"
+hook.failed:
+  zh_CN: "注入失败"
+  en_US: "Injection failed"
+hook.cancelled:
+  zh_CN: "已取消"
+  en_US: "Cancelled"
+hook.access_denied_hint:
+  zh_CN: "请用管理员身份运行 Bridge/Steam/以撒，或检查杀软是否放行。"
+  en_US: "Run Bridge/Steam/Isaac as administrator, or allow the helper in your antivirus."
+elapsed:
+  zh_CN: "已等待"
+  en_US: "Elapsed"
+room.members:
+  zh_CN: "房间成员"
+  en_US: "Room members"
+room.empty:
+  zh_CN: "暂无成员(未加入房间)"
+  en_US: "No members (not joined)"
+log:
+  zh_CN: "日志"
+  en_US: "Log"
+logs.clear:
+  zh_CN: "清空"
+  en_US: "Clear"
+logs.level_filter:
+  zh_CN: "等级"
+  en_US: "Level"
+logs.empty:
+  zh_CN: "暂无日志"
+  en_US: "No logs yet"
+log_level.error:
+  zh_CN: "错误"
+  en_US: "ERROR"
+log_level.warn:
+  zh_CN: "警告"
+  en_US: "WARN"
+log_level.info:
+  zh_CN: "信息"
+  en_US: "INFO"
+log_level.debug:
+  zh_CN: "调试"
+  en_US: "DEBUG"
+log_level.trace:
+  zh_CN: "跟踪"
+  en_US: "TRACE"
+stop_reason.user_stopped:
+  zh_CN: "用户停止"
+  en_US: "Stopped"
+stop_reason.game_exited:
+  zh_CN: "游戏已关闭"
+  en_US: "Game closed"
+stop_reason.runtime_ended:
+  zh_CN: "会话已结束"
+  en_US: "Session ended"
+quality.unavailable:
+  zh_CN: "暂无数据"
+  en_US: "Unavailable"
+quality.good:
+  zh_CN: "良好"
+  en_US: "Good"
+quality.watch:
+  zh_CN: "注意"
+  en_US: "Watch"
+quality.poor:
+  zh_CN: "较差"
+  en_US: "Poor"
+license:
+  zh_CN: "许可证"
+  en_US: "License"

@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+rust_i18n::i18n!("locales", fallback = "en_US");
+
 mod app;
 mod i18n;
 mod logging;

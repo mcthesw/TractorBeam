@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use basement_bridge_core::{
     ConnectionProfile, HookReceiveProbeReport, HookStartupPhase, LogLevel,
     ReadinessProbeCaseReport, ReadinessProbeReport, RuntimeState, SessionMode, SessionQuality,
@@ -96,8 +98,8 @@ impl BridgeApp {
         let selected_text = selected_relay
             .and_then(|index| self.relay_presets.get(index))
             .map_or_else(
-                || manual_label.to_owned(),
-                |relay| self.relay_option_label(relay),
+                || manual_label.clone(),
+                |relay| Cow::Owned(self.relay_option_label(relay)),
             );
         ComboBox::from_id_salt("home_relay")
             .selected_text(selected_text)
@@ -201,7 +203,7 @@ impl BridgeApp {
         ui.horizontal(|ui| {
             if ui.button(copy_label).clicked() {
                 ui.ctx().copy_text(self.copy_join_code());
-                self.join_code_message = Some(self.t(Text::CodeCopied).to_owned());
+                self.join_code_message = Some(self.t(Text::CodeCopied).into_owned());
             }
             if ui.button(import_label).clicked() {
                 match arboard::Clipboard::new() {
@@ -211,7 +213,8 @@ impl BridgeApp {
                             self.import_join_code();
                         }
                         _ => {
-                            self.join_code_message = Some(self.t(Text::ClipboardEmpty).to_owned());
+                            self.join_code_message =
+                                Some(self.t(Text::ClipboardEmpty).into_owned());
                         }
                     },
                     Err(error) => {
@@ -416,7 +419,7 @@ impl BridgeApp {
         }
         if running {
             ui.add_space(4.0);
-            ui.label(probe_running_label);
+            ui.label(probe_running_label.as_ref());
         }
         if let Some(report) = &self.client.state().latest_readiness_probe {
             ui.add_space(4.0);
@@ -432,7 +435,7 @@ impl BridgeApp {
         }
         if self.client.state().hook_probe_running {
             ui.add_space(4.0);
-            ui.label(probe_running_label);
+            ui.label(probe_running_label.as_ref());
         }
         if let Some(result) = &self.client.state().latest_hook_receive_probe {
             ui.add_space(4.0);
@@ -530,7 +533,7 @@ impl BridgeApp {
         ui.add_space(12.0);
         ui.hyperlink_to("GitHub", "https://github.com/mcthesw/Basement-Bridge");
         ui.add_space(2.0);
-        ui.label("License: GNU AGPL-3.0-or-later");
+        ui.label(format!("{}: GNU AGPL-3.0-or-later", self.t(Text::License)));
     }
 
     fn relay_latency_label(&self, endpoint: &basement_bridge_core::RelayEndpoint) -> String {
@@ -540,12 +543,12 @@ impl BridgeApp {
             .iter()
             .find(|report| &report.target.endpoint == endpoint)
             .map_or_else(
-                || self.t(Text::Probing).to_owned(),
+                || self.t(Text::Probing).into_owned(),
                 |report| {
                     if let Some(ms) = report.median_rtt_ms {
                         format!("{ms} ms")
                     } else {
-                        self.t(Text::Unreachable).to_owned()
+                        self.t(Text::Unreachable).into_owned()
                     }
                 },
             )
@@ -560,7 +563,10 @@ impl BridgeApp {
     }
 }
 
-fn hook_phase_label(language: Language, phase: HookStartupPhase) -> (egui::Color32, &'static str) {
+fn hook_phase_label(
+    language: Language,
+    phase: HookStartupPhase,
+) -> (egui::Color32, Cow<'static, str>) {
     match phase {
         HookStartupPhase::NotStarted => (egui::Color32::GRAY, text(language, Text::HookNotStarted)),
         HookStartupPhase::Configured => (
@@ -595,7 +601,7 @@ fn hook_phase_label(language: Language, phase: HookStartupPhase) -> (egui::Color
     }
 }
 
-fn peer_transport_label(language: Language, transport: PeerTransport) -> &'static str {
+fn peer_transport_label(language: Language, transport: PeerTransport) -> Cow<'static, str> {
     match transport {
         PeerTransport::Udp => text(language, Text::Udp),
         PeerTransport::Tcp => text(language, Text::Tcp),
@@ -713,7 +719,7 @@ fn session_health_summary(ui: &mut egui::Ui, language: Language, state: &Runtime
         });
 }
 
-fn table_header(ui: &mut egui::Ui, value: &str) {
+fn table_header(ui: &mut egui::Ui, value: Cow<'static, str>) {
     ui.label(egui::RichText::new(value).strong());
 }
 
@@ -804,17 +810,12 @@ fn u8_to_level(value: u8) -> LogLevel {
     }
 }
 
-fn level_name(language: Language, level: LogLevel) -> &'static str {
-    match (language, level) {
-        (Language::Chinese, LogLevel::Error) => "错误",
-        (Language::Chinese, LogLevel::Warn) => "警告",
-        (Language::Chinese, LogLevel::Info) => "信息",
-        (Language::Chinese, LogLevel::Debug) => "调试",
-        (Language::Chinese, LogLevel::Trace) => "跟踪",
-        (_, LogLevel::Error) => "ERROR",
-        (_, LogLevel::Warn) => "WARN",
-        (_, LogLevel::Info) => "INFO",
-        (_, LogLevel::Debug) => "DEBUG",
-        (_, LogLevel::Trace) => "TRACE",
+fn level_name(language: Language, level: LogLevel) -> Cow<'static, str> {
+    match level {
+        LogLevel::Error => text(language, Text::LogLevelError),
+        LogLevel::Warn => text(language, Text::LogLevelWarn),
+        LogLevel::Info => text(language, Text::LogLevelInfo),
+        LogLevel::Debug => text(language, Text::LogLevelDebug),
+        LogLevel::Trace => text(language, Text::LogLevelTrace),
     }
 }

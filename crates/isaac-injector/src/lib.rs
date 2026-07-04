@@ -7,8 +7,8 @@ mod process;
 
 pub use error::{InjectionStep, InjectorError};
 pub use paths::{
-    NATIVE_HOOK_DLL, NATIVE_INJECTOR_EXE, NativeHookPaths, injector_args,
-    resolve_native_hook_paths, run_injector,
+    InjectorLaunchEvent, NATIVE_HOOK_DLL, NATIVE_INJECTOR_EXE, NativeHookPaths, injector_args,
+    resolve_native_hook_paths, run_injector, run_injector_with_elevated_retry,
 };
 pub use platform::inject;
 pub use process::{

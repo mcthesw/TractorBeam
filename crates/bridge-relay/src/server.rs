@@ -32,22 +32,26 @@ type SharedState = Arc<Mutex<RelayState>>;
 type SharedEgress = Arc<Mutex<EgressTable>>;
 type SharedMetrics = Arc<Mutex<RelayMetrics>>;
 type SharedPeerRegistry = Arc<Mutex<PeerRegistry>>;
+type SharedUdpSocket = Option<Arc<UdpSocket>>;
 
 pub(crate) async fn run(config: RelayConfig) -> io::Result<()> {
-    let udp_socket = UdpSocket::bind(&config.bind).await?;
-    let tcp_listener = if config.tcp_enabled {
-        Some(TcpListener::bind(&config.tcp_bind).await?)
-    } else {
-        None
+    let udp_socket = match &config.udp_bind {
+        Some(bind) => Some(UdpSocket::bind(bind).await?),
+        None => None,
+    };
+    let tcp_listener = match &config.tcp_bind {
+        Some(bind) => Some(TcpListener::bind(bind).await?),
+        None => None,
     };
     info!(
-        udp_bind = %config.bind,
-        tcp_bind = if config.tcp_enabled { config.tcp_bind.as_str() } else { "disabled" },
+        udp_bind = config.udp_bind.as_deref().unwrap_or("disabled"),
+        tcp_bind = config.tcp_bind.as_deref().unwrap_or("disabled"),
         tcp_egress_queue_capacity = config.tcp_egress_queue_capacity,
         max_packet_size = config.max_packet_size,
         rate_limit_per_second = config.rate_limit_per_second,
         max_rooms = config.max_rooms,
         max_peers_per_room = config.max_peers_per_room,
+        pow_difficulty_bits = config.pow_difficulty_bits,
         blocked_cidrs = config.blocked_cidrs.len(),
         "relay listening"
     );
@@ -56,11 +60,11 @@ pub(crate) async fn run(config: RelayConfig) -> io::Result<()> {
 }
 
 async fn run_with_listeners(
-    udp_socket: UdpSocket,
+    udp_socket: Option<UdpSocket>,
     tcp_listener: Option<TcpListener>,
     config: RelayConfig,
 ) -> io::Result<()> {
-    let udp_socket = Arc::new(udp_socket);
+    let udp_socket = udp_socket.map(Arc::new);
     let state = Arc::new(Mutex::new(RelayState::new(config.clone())));
     let egress = Arc::new(Mutex::new(EgressTable::default()));
     let metrics = Arc::new(Mutex::new(RelayMetrics::new(
@@ -69,19 +73,21 @@ async fn run_with_listeners(
     let peer_registry = Arc::new(Mutex::new(PeerRegistry::default()));
     let mut tasks = JoinSet::new();
 
-    tasks.spawn(run_udp_listener(
-        Arc::clone(&udp_socket),
-        Arc::clone(&state),
-        Arc::clone(&egress),
-        Arc::clone(&metrics),
-        Arc::clone(&peer_registry),
-        config.clone(),
-    ));
+    if let Some(socket) = &udp_socket {
+        tasks.spawn(run_udp_listener(
+            Arc::clone(socket),
+            Arc::clone(&state),
+            Arc::clone(&egress),
+            Arc::clone(&metrics),
+            Arc::clone(&peer_registry),
+            config.clone(),
+        ));
+    }
 
     if let Some(listener) = tcp_listener {
         tasks.spawn(run_tcp_listener(
             listener,
-            Arc::clone(&udp_socket),
+            udp_socket.clone(),
             Arc::clone(&state),
             Arc::clone(&egress),
             Arc::clone(&metrics),
@@ -93,7 +99,7 @@ async fn run_with_listeners(
     tasks.spawn(run_stats_loop(
         Arc::clone(&state),
         Arc::clone(&metrics),
-        Arc::clone(&udp_socket),
+        udp_socket.clone(),
         Arc::clone(&egress),
     ));
     match tasks.join_next().await {
@@ -117,7 +123,7 @@ async fn run_udp_listener(
         let peer_id = peer_registry.lock().await.udp_peer(address);
         egress.lock().await.upsert_udp(peer_id, address);
         handle_datagram(
-            Arc::clone(&socket),
+            Some(Arc::clone(&socket)),
             Arc::clone(&state),
             Arc::clone(&egress),
             Arc::clone(&metrics),
@@ -134,7 +140,7 @@ async fn run_udp_listener(
 
 async fn run_tcp_listener(
     listener: TcpListener,
-    udp_socket: Arc<UdpSocket>,
+    udp_socket: SharedUdpSocket,
     state: SharedState,
     egress: SharedEgress,
     metrics: SharedMetrics,
@@ -148,7 +154,7 @@ async fn run_tcp_listener(
         let (tx, rx) = tcp_egress_channel(config.tcp_egress_queue_capacity);
         egress.lock().await.insert_tcp(peer_id, tx);
         let runtime = TcpConnectionRuntime {
-            udp_socket: Arc::clone(&udp_socket),
+            udp_socket: udp_socket.clone(),
             state: Arc::clone(&state),
             egress: Arc::clone(&egress),
             metrics: Arc::clone(&metrics),
@@ -188,7 +194,7 @@ async fn tcp_connection_task(
                 match frame {
                     Ok(bytes) => {
                         if let Err(error) = handle_datagram(
-                            Arc::clone(&runtime.udp_socket),
+                            runtime.udp_socket.clone(),
                             Arc::clone(&runtime.state),
                             Arc::clone(&runtime.egress),
                             Arc::clone(&runtime.metrics),
@@ -242,7 +248,7 @@ async fn tcp_connection_task(
 async fn run_stats_loop(
     state: SharedState,
     metrics: SharedMetrics,
-    udp_socket: Arc<UdpSocket>,
+    udp_socket: SharedUdpSocket,
     egress: SharedEgress,
 ) -> io::Result<()> {
     let mut stats_interval = time::interval(Duration::from_secs(5));
@@ -257,8 +263,7 @@ async fn run_stats_loop(
             broadcasts
         };
         for broadcast in broadcasts {
-            let _ = broadcast_room_update(Arc::clone(&udp_socket), Arc::clone(&egress), broadcast)
-                .await;
+            let _ = broadcast_room_update(udp_socket.clone(), Arc::clone(&egress), broadcast).await;
         }
     }
 }
@@ -272,7 +277,7 @@ struct DatagramSource {
 
 #[derive(Clone)]
 struct TcpConnectionRuntime {
-    udp_socket: Arc<UdpSocket>,
+    udp_socket: SharedUdpSocket,
     state: SharedState,
     egress: SharedEgress,
     metrics: SharedMetrics,
@@ -280,7 +285,7 @@ struct TcpConnectionRuntime {
 }
 
 async fn handle_datagram(
-    udp_socket: Arc<UdpSocket>,
+    udp_socket: SharedUdpSocket,
     state: SharedState,
     egress: SharedEgress,
     metrics: SharedMetrics,
@@ -323,7 +328,7 @@ async fn handle_datagram(
     }
 
     match handle_packet(
-        Arc::clone(&udp_socket),
+        udp_socket.clone(),
         Arc::clone(&state),
         Arc::clone(&egress),
         source,
@@ -349,14 +354,13 @@ async fn handle_datagram(
     }
     let broadcasts = state.lock().await.cleanup(now);
     for broadcast in broadcasts {
-        let _ =
-            broadcast_room_update(Arc::clone(&udp_socket), Arc::clone(&egress), broadcast).await;
+        let _ = broadcast_room_update(udp_socket.clone(), Arc::clone(&egress), broadcast).await;
     }
     Ok(())
 }
 
 async fn handle_packet(
-    udp_socket: Arc<UdpSocket>,
+    udp_socket: SharedUdpSocket,
     state: SharedState,
     egress: SharedEgress,
     source: DatagramSource,
@@ -392,7 +396,7 @@ async fn handle_packet(
 }
 
 async fn handle_heartbeat(
-    udp_socket: Arc<UdpSocket>,
+    udp_socket: SharedUdpSocket,
     state: SharedState,
     egress: SharedEgress,
     source: DatagramSource,
@@ -414,7 +418,7 @@ async fn handle_heartbeat(
 }
 
 async fn handle_join(
-    udp_socket: Arc<UdpSocket>,
+    udp_socket: SharedUdpSocket,
     state: SharedState,
     egress: SharedEgress,
     source: DatagramSource,
@@ -461,7 +465,7 @@ async fn handle_join(
         _ => MessageType::Error,
     };
     send_control(
-        Arc::clone(&udp_socket),
+        udp_socket.clone(),
         Arc::clone(&egress),
         source.peer_id,
         response_type,
@@ -475,7 +479,7 @@ async fn handle_join(
 }
 
 async fn broadcast_room_update(
-    udp_socket: Arc<UdpSocket>,
+    udp_socket: SharedUdpSocket,
     egress: SharedEgress,
     update: RoomBroadcast,
 ) -> io::Result<()> {
@@ -490,7 +494,7 @@ async fn broadcast_room_update(
     .map_err(io::Error::other)?;
     for peer_id in update.recipients {
         send_control_to_peer(
-            Arc::clone(&udp_socket),
+            udp_socket.clone(),
             Arc::clone(&egress),
             peer_id,
             raw.clone(),
@@ -501,7 +505,7 @@ async fn broadcast_room_update(
 }
 
 async fn forward_data(
-    udp_socket: Arc<UdpSocket>,
+    udp_socket: SharedUdpSocket,
     state: SharedState,
     egress: SharedEgress,
     source: DatagramSource,
@@ -632,7 +636,7 @@ fn tcp_egress_channel(capacity: usize) -> (mpsc::Sender<Bytes>, mpsc::Receiver<B
 }
 
 async fn send_control(
-    udp_socket: Arc<UdpSocket>,
+    udp_socket: SharedUdpSocket,
     egress: SharedEgress,
     peer_id: PeerId,
     message_type: MessageType,
@@ -646,7 +650,7 @@ async fn send_control(
 }
 
 async fn send_control_to_peer(
-    udp_socket: Arc<UdpSocket>,
+    udp_socket: SharedUdpSocket,
     egress: SharedEgress,
     peer_id: PeerId,
     raw: Bytes,
@@ -656,7 +660,7 @@ async fn send_control_to_peer(
 }
 
 async fn send_data_to_peer(
-    udp_socket: Arc<UdpSocket>,
+    udp_socket: SharedUdpSocket,
     egress: SharedEgress,
     peer_id: PeerId,
     raw: Bytes,
@@ -666,13 +670,19 @@ async fn send_data_to_peer(
 }
 
 async fn send_peer_output(
-    udp_socket: Arc<UdpSocket>,
+    udp_socket: SharedUdpSocket,
     peer_id: PeerId,
     output: PeerOutput,
 ) -> io::Result<()> {
     match output {
         PeerOutput::Udp { address, frame } => {
-            udp_socket.send_to(&frame, address).await?;
+            let Some(socket) = udp_socket else {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    format!("UDP listener is disabled for {peer_id}"),
+                ));
+            };
+            socket.send_to(&frame, address).await?;
             Ok(())
         }
         PeerOutput::Tcp { sender, frame } => sender.try_send(frame).map_err(|_| {

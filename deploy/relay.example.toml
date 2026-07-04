@@ -1,12 +1,12 @@
-bind = "0.0.0.0:25910"
-tcp_enabled = true
+[relay_server]
+udp_bind = "0.0.0.0:25910"
 tcp_bind = "0.0.0.0:25910"
-tcp_egress_queue_capacity = 512
-max_packet_size = 65535
-peer_idle_seconds = 30
-room_idle_seconds = 120
-rate_limit_per_second = 2000
-max_rooms = 1024
-max_peers_per_room = 4
-max_room_name_len = 64
+
+[admission]
+pow_difficulty_bits = 18
+
+[room_limits]
+max_rooms = 256
+
+[access_control]
 blocked_cidrs = []

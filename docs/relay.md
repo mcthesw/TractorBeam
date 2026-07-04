@@ -1,7 +1,7 @@
 # Relay Server
 
-The Relay Server is one binary with UDP enabled by default and optional TCP
-fallback on the same Relay Protocol. It does not need a database for Phase 2.
+The Relay Server is one binary that can listen on UDP, TCP, or both using the
+same Relay Protocol. It does not need a database for Phase 2.
 
 ## Run
 
@@ -33,42 +33,39 @@ docker build -f deploy/Dockerfile.relay -t basement-bridge-relay .
 docker run --rm -p 25910:25910/udp -p 25910:25910/tcp basement-bridge-relay
 ```
 
-Open inbound UDP for the configured port, normally `25910/udp`. If TCP fallback
-is enabled, also open the configured TCP port, normally `25910/tcp`.
+Open inbound firewall rules for each listener configured under
+`[relay_server]`, normally `25910/udp` and `25910/tcp`.
 
 ## Config
 
 ```toml
-bind = "0.0.0.0:25910"
-tcp_enabled = true
+[relay_server]
+udp_bind = "0.0.0.0:25910"
 tcp_bind = "0.0.0.0:25910"
-tcp_egress_queue_capacity = 512
-max_packet_size = 1500
-peer_idle_seconds = 30
-room_idle_seconds = 120
-rate_limit_per_second = 240
-max_rooms = 1024
-max_peers_per_room = 4
-max_room_name_len = 64
+
+[admission]
+pow_difficulty_bits = 18
+
+[room_limits]
+max_rooms = 256
+
+[access_control]
 blocked_cidrs = []
 ```
 
-- `bind`: UDP listener address.
-- `tcp_enabled`: whether the TCP fallback listener starts.
-- `tcp_bind`: TCP listener address when TCP is enabled.
-- `tcp_egress_queue_capacity`: per TCP Peer outbound queue capacity. Queue-full
-  drops are reported separately in periodic stats so closed tests can identify
-  TCP backpressure without mixing it into generic packet errors.
-- `max_packet_size`: maximum UDP datagram or TCP frame payload accepted by the
-  Relay Server.
-- `peer_idle_seconds`: inactive Peer expiry.
-- `room_idle_seconds`: empty Room expiry.
-- `rate_limit_per_second`: per-address packet limit.
-- `max_rooms`: maximum active Rooms.
-- `max_peers_per_room`: maximum Peers in one Room.
-- `max_room_name_len`: maximum Room name length in bytes.
+- `relay_server.udp_bind`: UDP listener address. Omit it to disable UDP.
+- `relay_server.tcp_bind`: TCP listener address. Omit it to disable TCP.
+- `admission.pow_difficulty_bits`: room-admission proof-of-work difficulty.
+  Use `0` only for local or private development relays.
+- `room_limits.max_rooms`: maximum active Rooms.
 - `blocked_cidrs`: local IP/CIDR blocklist, for example
   `["203.0.113.10/32", "2001:db8::/32"]`.
+
+Other relay safety limits are shared built-in defaults. Public relay datagrams
+are capped at 2048 bytes on the wire, per-peer packet rate is capped so a peer
+cannot sustain more than about 200 KB/s before the byte-token-bucket hardening
+lands, rooms hold at most four peers, inactive peers expire after 30 seconds,
+and empty rooms expire after 120 seconds.
 
 Restart the Relay Server after config changes.
 
@@ -77,14 +74,15 @@ Restart the Relay Server after config changes.
 - Startup is healthy when the log contains `relay listening`.
 - If clients report `relay join timed out`, check the selected Transport Choice
   and the matching firewall rule first.
-- If a Room fills unexpectedly, check `max_peers_per_room` and stale Peers.
+- If a Room fills unexpectedly, check stale Peers and whether the Room already
+  has four peers.
 - For obvious abuse, add the source IP or CIDR to `blocked_cidrs`, restart, and
   keep raw IPs out of public notes.
 - If TCP sessions feel delayed, compare `tcp_egress_queue_full` and
   `tcp_egress_dropped_packets` in the periodic `relay stats` lines before
-  raising `tcp_egress_queue_capacity` again.
-- If CPU or traffic spikes, lower `rate_limit_per_second` and collect the Relay
-  Server logs privately.
+  changing relay internals.
+- If CPU or traffic spikes, collect the Relay Server logs privately and check
+  `blocked`, `rate_limited`, and room-level counters before changing defaults.
 - The Relay Server keeps only in-memory Room state, so a restart drops all active
   Rooms.
 

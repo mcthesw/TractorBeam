@@ -343,7 +343,10 @@ async fn handle_datagram(
             );
         }
     }
-    state.lock().await.cleanup(now);
+    let broadcasts = state.lock().await.cleanup(now);
+    for broadcast in broadcasts {
+        let _ = broadcast_room_update(Arc::clone(&udp_socket), Arc::clone(&egress), broadcast).await;
+    }
     Ok(())
 }
 

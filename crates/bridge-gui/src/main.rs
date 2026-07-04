@@ -4,8 +4,8 @@ mod logging;
 
 use eframe::egui;
 
-const DEFAULT_WINDOW_SIZE: [f32; 2] = [480.0, 620.0];
-const MIN_WINDOW_SIZE: [f32; 2] = [360.0, 420.0];
+const DEFAULT_WINDOW_SIZE: [f32; 2] = [480.0, 720.0];
+const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 480.0];
 
 fn main() -> eframe::Result<()> {
     let log_sink: Box<dyn basement_bridge_core::ClientLogSink> =

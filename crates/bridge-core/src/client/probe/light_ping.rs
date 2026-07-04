@@ -55,9 +55,7 @@ pub struct LightPingHandle {
 
 impl Drop for LightPingHandle {
     fn drop(&mut self) {
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        drop(self.worker.take());
     }
 }
 
@@ -96,15 +94,25 @@ pub fn spawn_light_ping_probes(
 }
 
 async fn light_ping_relay(target: LightPingTarget) -> LightPingReport {
-    let mut relay = match RelayTransport::connect(&target.endpoint, target.transport).await {
-        Ok(relay) => relay,
-        Err(error) => {
+    let connect_result = time::timeout(LIGHT_PING_TIMEOUT, RelayTransport::connect(&target.endpoint, target.transport)).await;
+    let mut relay = match connect_result {
+        Ok(Ok(relay)) => relay,
+        Ok(Err(error)) => {
             return LightPingReport {
                 target,
                 sent: 0,
                 received: 0,
                 median_rtt_ms: None,
                 failure_reason: Some(format!("connect failed: {error}")),
+            };
+        }
+        Err(_) => {
+            return LightPingReport {
+                target,
+                sent: 0,
+                received: 0,
+                median_rtt_ms: None,
+                failure_reason: Some("connect timed out".to_owned()),
             };
         }
     };

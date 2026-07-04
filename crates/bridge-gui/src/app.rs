@@ -247,18 +247,13 @@ impl BridgeApp {
         let _ = self.client.start_light_ping_probes(targets);
     }
 
-    fn retest_relays(&mut self) {
+    fn test_relay_latency(&mut self) {
         self.startup_light_ping();
     }
 
     fn selected_relay_preset(&self) -> Option<&RelayPreset> {
         self.selected_relay
             .and_then(|index| self.relay_presets.get(index))
-    }
-
-    fn relay_selection_label(&self) -> String {
-        self.selected_relay_preset()
-            .map_or_else(|| self.t(Text::ManualRelay).to_owned(), RelayPreset::label)
     }
 
     fn apply_selected_relay_defaults(&mut self) {

@@ -580,6 +580,7 @@ mod tests {
                     MessageType::JoinChallenge,
                     ControlMessage::Challenge {
                         token: "token".to_owned(),
+                        pow: None,
                     },
                 )
             }

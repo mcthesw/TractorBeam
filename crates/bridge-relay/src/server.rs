@@ -434,7 +434,10 @@ async fn handle_join(
                 room,
                 steam_id64,
                 display_name: _,
+                client: _,
                 challenge: Some(challenge),
+                pow_proof: _,
+                admission: _,
             } => state.complete_join(JoinCompletion {
                 peer_id: source.peer_id,
                 room,
@@ -447,7 +450,10 @@ async fn handle_join(
                 room,
                 steam_id64,
                 display_name,
+                client: _,
                 challenge: None,
+                pow_proof: _,
+                admission: _,
             } => JoinOutcome {
                 response: state.challenge_join(source.peer_id, room, steam_id64, display_name, now),
                 broadcast: None,

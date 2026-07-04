@@ -249,7 +249,7 @@ impl TestPeer {
 async fn join_peer(peer: &mut TestPeer, room: &str, steam_id64: &str) {
     send_join(peer, room, steam_id64, None).await;
     let challenge = match recv_control(peer).await {
-        ControlMessage::Challenge { token } => token,
+        ControlMessage::Challenge { token, .. } => token,
         other => panic!("expected challenge, got {other:?}"),
     };
     send_join(peer, room, steam_id64, Some(challenge)).await;
@@ -264,7 +264,10 @@ async fn send_join(peer: &mut TestPeer, room: &str, steam_id64: &str, challenge:
         room: room.to_owned(),
         steam_id64: steam_id64.to_owned(),
         display_name: None,
+        client: None,
         challenge,
+        pow_proof: None,
+        admission: None,
     };
     send_control(peer, MessageType::Join, &message).await;
 }

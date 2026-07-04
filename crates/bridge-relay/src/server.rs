@@ -104,6 +104,7 @@ async fn run_with_listeners(
         Arc::clone(&metrics),
         udp_socket.clone(),
         Arc::clone(&egress),
+        Arc::clone(&peer_registry),
     ));
     match tasks.join_next().await {
         Some(Ok(result)) => result,
@@ -130,6 +131,7 @@ async fn run_udp_listener(
             Arc::clone(&state),
             Arc::clone(&egress),
             Arc::clone(&metrics),
+            Arc::clone(&peer_registry),
             DatagramSource {
                 peer_id,
                 address,
@@ -161,6 +163,7 @@ async fn run_tcp_listener(
             state: Arc::clone(&state),
             egress: Arc::clone(&egress),
             metrics: Arc::clone(&metrics),
+            peer_registry: Arc::clone(&peer_registry),
             max_packet_size: config.max_packet_size,
         };
         tokio::spawn(tcp_connection_task(
@@ -201,6 +204,7 @@ async fn tcp_connection_task(
                             Arc::clone(&runtime.state),
                             Arc::clone(&runtime.egress),
                             Arc::clone(&runtime.metrics),
+                            Arc::clone(&runtime.peer_registry),
                             source,
                             bytes.freeze(),
                         ).await {
@@ -253,21 +257,44 @@ async fn run_stats_loop(
     metrics: SharedMetrics,
     udp_socket: SharedUdpSocket,
     egress: SharedEgress,
+    peer_registry: SharedPeerRegistry,
 ) -> io::Result<()> {
     let mut stats_interval = time::interval(Duration::from_secs(5));
     stats_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         stats_interval.tick().await;
         let now = Instant::now();
-        let broadcasts = {
+        let cleanup = {
             let mut state = state.lock().await;
-            let broadcasts = state.cleanup(now);
+            let cleanup = state.cleanup(now);
             metrics.lock().await.log_and_reset(&state);
-            broadcasts
+            cleanup
         };
-        for broadcast in broadcasts {
+        remove_expired_peers(
+            Arc::clone(&egress),
+            Arc::clone(&peer_registry),
+            &cleanup.removed_peers,
+        )
+        .await;
+        for broadcast in cleanup.broadcasts {
             let _ = broadcast_room_update(udp_socket.clone(), Arc::clone(&egress), broadcast).await;
         }
+    }
+}
+
+async fn remove_expired_peers(
+    egress: SharedEgress,
+    peer_registry: SharedPeerRegistry,
+    peer_ids: &[PeerId],
+) {
+    if peer_ids.is_empty() {
+        return;
+    }
+    let mut egress = egress.lock().await;
+    let mut peer_registry = peer_registry.lock().await;
+    for peer_id in peer_ids {
+        egress.remove(*peer_id);
+        peer_registry.remove(*peer_id);
     }
 }
 
@@ -284,6 +311,7 @@ struct TcpConnectionRuntime {
     state: SharedState,
     egress: SharedEgress,
     metrics: SharedMetrics,
+    peer_registry: SharedPeerRegistry,
     max_packet_size: usize,
 }
 
@@ -292,6 +320,7 @@ async fn handle_datagram(
     state: SharedState,
     egress: SharedEgress,
     metrics: SharedMetrics,
+    peer_registry: SharedPeerRegistry,
     source: DatagramSource,
     raw: Bytes,
 ) -> io::Result<()> {
@@ -300,12 +329,25 @@ async fn handle_datagram(
         let mut metrics = metrics.lock().await;
         metrics.record_packet_in();
     }
-    {
+    enum GateOutcome {
+        Allowed,
+        Blocked(Option<String>),
+        RateLimited(Option<String>),
+    }
+    let gate = {
         let mut state = state.lock().await;
         if state.is_blocked(source.address) {
-            let room = state.peer_room(source.peer_id);
-            let mut metrics = metrics.lock().await;
-            metrics.record_blocked(room.as_deref());
+            GateOutcome::Blocked(state.peer_room(source.peer_id))
+        } else if !state.allow_packet(source.peer_id, raw.len(), now) {
+            GateOutcome::RateLimited(state.peer_room(source.peer_id))
+        } else {
+            GateOutcome::Allowed
+        }
+    };
+    match gate {
+        GateOutcome::Allowed => {}
+        GateOutcome::Blocked(room) => {
+            metrics.lock().await.record_blocked(room.as_deref());
             debug!(
                 peer_id = %source.peer_id,
                 address = %source.address,
@@ -313,12 +355,12 @@ async fn handle_datagram(
                 room = room.as_deref().unwrap_or(""),
                 "packet rejected by blocklist"
             );
+            egress.lock().await.remove(source.peer_id);
+            peer_registry.lock().await.remove(source.peer_id);
             return Ok(());
         }
-        if !state.allow_packet(source.peer_id, raw.len(), now) {
-            let room = state.peer_room(source.peer_id);
-            let mut metrics = metrics.lock().await;
-            metrics.record_rate_limited(room.as_deref());
+        GateOutcome::RateLimited(room) => {
+            metrics.lock().await.record_rate_limited(room.as_deref());
             debug!(
                 peer_id = %source.peer_id,
                 address = %source.address,
@@ -355,8 +397,14 @@ async fn handle_datagram(
             );
         }
     }
-    let broadcasts = state.lock().await.cleanup(now);
-    for broadcast in broadcasts {
+    let cleanup = state.lock().await.cleanup(now);
+    remove_expired_peers(
+        Arc::clone(&egress),
+        Arc::clone(&peer_registry),
+        &cleanup.removed_peers,
+    )
+    .await;
+    for broadcast in cleanup.broadcasts {
         let _ = broadcast_room_update(udp_socket.clone(), Arc::clone(&egress), broadcast).await;
     }
     Ok(())

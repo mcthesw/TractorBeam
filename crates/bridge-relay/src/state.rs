@@ -94,6 +94,12 @@ pub(crate) struct RoomBroadcast {
     pub(crate) peers: Vec<basement_bridge_core::protocol::PeerInfo>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CleanupOutcome {
+    pub(crate) broadcasts: Vec<RoomBroadcast>,
+    pub(crate) removed_peers: Vec<PeerId>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct JoinOutcome {
     pub(crate) response: ControlMessage,
@@ -145,29 +151,27 @@ impl ByteBucket {
         }
     }
 
-    fn allow(
-        &mut self,
-        bytes: usize,
-        now: Instant,
-        refill_per_second: usize,
-        capacity: usize,
-    ) -> bool {
+    fn refill(&mut self, now: Instant, refill_per_second: usize, capacity: usize) {
         let elapsed = now.duration_since(self.updated_at);
         let refill = (elapsed.as_secs_f64() * refill_per_second as f64) as usize;
         if refill > 0 {
             self.tokens = self.tokens.saturating_add(refill).min(capacity);
             self.updated_at = now;
         }
-        if bytes > self.tokens {
-            return false;
-        }
+    }
+
+    fn can_spend(&self, bytes: usize) -> bool {
+        bytes <= self.tokens
+    }
+
+    fn spend(&mut self, bytes: usize) {
         self.tokens -= bytes;
-        true
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 struct PeerRateLimit {
+    last_seen: Instant,
     packet_window: RateWindow,
     byte_bucket: ByteBucket,
 }
@@ -175,6 +179,7 @@ struct PeerRateLimit {
 impl PeerRateLimit {
     fn new(now: Instant, byte_burst: usize) -> Self {
         Self {
+            last_seen: now,
             packet_window: RateWindow {
                 started_at: now,
                 packets: 0,
@@ -218,16 +223,21 @@ impl RelayState {
             rate_limit.packet_window.started_at = now;
             rate_limit.packet_window.packets = 0;
         }
-        rate_limit.packet_window.packets = rate_limit.packet_window.packets.saturating_add(1);
-        if rate_limit.packet_window.packets > self.config.rate_limit_per_second {
-            return false;
-        }
-        rate_limit.byte_bucket.allow(
-            bytes,
+        rate_limit.byte_bucket.refill(
             now,
             self.config.byte_rate_limit_per_second,
             self.config.byte_rate_limit_burst,
-        )
+        );
+        rate_limit.last_seen = now;
+        if !rate_limit.byte_bucket.can_spend(bytes) {
+            return false;
+        }
+        if rate_limit.packet_window.packets >= self.config.rate_limit_per_second {
+            return false;
+        }
+        rate_limit.packet_window.packets = rate_limit.packet_window.packets.saturating_add(1);
+        rate_limit.byte_bucket.spend(bytes);
+        true
     }
 
     pub(crate) fn allow_health_pong(&mut self, source: IpAddr, now: Instant) -> bool {
@@ -512,15 +522,20 @@ impl RelayState {
         summaries
     }
 
-    pub(crate) fn cleanup(&mut self, now: Instant) -> Vec<RoomBroadcast> {
+    pub(crate) fn cleanup(&mut self, now: Instant) -> CleanupOutcome {
         let peer_idle = Duration::from_secs(self.config.peer_idle_seconds);
         let room_idle = Duration::from_secs(self.config.room_idle_seconds);
-        self.pending
-            .retain(|_, pending| now.duration_since(pending.issued_at) < peer_idle);
+        let mut removed_peers = Vec::new();
+        self.pending.retain(|peer_id, pending| {
+            let active = now.duration_since(pending.issued_at) < peer_idle;
+            if !active {
+                removed_peers.push(*peer_id);
+            }
+            active
+        });
         self.health_pong_rates
             .retain(|_, window| now.duration_since(window.started_at) < Duration::from_secs(60));
 
-        let mut removed_peers = Vec::new();
         let mut changed_rooms: std::collections::HashSet<String> = std::collections::HashSet::new();
         self.rooms.retain(|room_name, room| {
             room.peers.retain(|peer_id, peer| {
@@ -544,14 +559,32 @@ impl RelayState {
                     .last_seen
                     .is_some_and(|seen| now.duration_since(seen) < room_idle)
         });
-        for peer_id in removed_peers {
-            self.peer_rooms.remove(&peer_id);
-            self.rates.remove(&peer_id);
+        for peer_id in &removed_peers {
+            self.peer_rooms.remove(peer_id);
+            self.rates.remove(peer_id);
         }
-        changed_rooms
+        let stale_rate_peers = self
+            .rates
+            .iter()
+            .filter_map(|(peer_id, rate)| {
+                (!self.peer_rooms.contains_key(peer_id)
+                    && !self.pending.contains_key(peer_id)
+                    && now.duration_since(rate.last_seen) >= peer_idle)
+                    .then_some(*peer_id)
+            })
+            .collect::<Vec<_>>();
+        for peer_id in stale_rate_peers {
+            self.rates.remove(&peer_id);
+            removed_peers.push(peer_id);
+        }
+        let broadcasts = changed_rooms
             .iter()
             .filter_map(|room_name| self.room_broadcast(room_name, None))
-            .collect()
+            .collect();
+        CleanupOutcome {
+            broadcasts,
+            removed_peers,
+        }
     }
 
     pub(crate) fn remove_peer(&mut self, peer_id: PeerId) -> Option<RoomBroadcast> {
@@ -674,6 +707,12 @@ fn validate_pow(
     proof: Option<&PowProof>,
 ) -> Result<(), Box<ControlMessage>> {
     let Some(challenge) = &pending.pow else {
+        if proof.is_some() {
+            return Err(Box::new(error_message(
+                "pow_unexpected",
+                "proof of work was not requested for room admission",
+            )));
+        }
         return Ok(());
     };
     let Some(proof) = proof else {

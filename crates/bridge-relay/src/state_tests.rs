@@ -126,6 +126,40 @@ fn byte_token_bucket_caps_sustained_peer_traffic() {
 }
 
 #[test]
+fn byte_token_bucket_denial_does_not_consume_packet_budget() {
+    let config = RelayConfig {
+        rate_limit_per_second: 2,
+        byte_rate_limit_per_second: 20,
+        byte_rate_limit_burst: 10,
+        ..RelayConfig::default()
+    };
+    let mut state = RelayState::new(config);
+    let now = Instant::now();
+    let half_second = now + Duration::from_millis(500);
+
+    assert!(state.allow_packet(peer(1), 10, now));
+    assert!(!state.allow_packet(peer(1), 11, half_second));
+    assert!(state.allow_packet(peer(1), 1, half_second));
+}
+
+#[test]
+fn cleanup_reports_idle_unjoined_rate_peers() {
+    let config = RelayConfig {
+        peer_idle_seconds: 1,
+        ..RelayConfig::default()
+    };
+    let mut state = RelayState::new(config);
+    let now = Instant::now();
+
+    assert!(state.allow_packet(peer(1), 1, now));
+
+    let cleanup = state.cleanup(now + Duration::from_secs(1));
+
+    assert_eq!(cleanup.removed_peers, vec![peer(1)]);
+    assert!(cleanup.broadcasts.is_empty());
+}
+
+#[test]
 fn health_pong_rate_limit_caps_replies_per_source_ip() {
     let config = RelayConfig {
         health_pongs_per_second_per_ip: 2,
@@ -474,4 +508,31 @@ fn rejects_bad_pow_proof() {
     });
 
     assert_eq!(error_code(outcome.response), "pow_failed");
+}
+
+#[test]
+fn rejects_unexpected_pow_proof_when_pow_is_disabled() {
+    let config = RelayConfig {
+        pow_difficulty_bits: 0,
+        ..RelayConfig::default()
+    };
+    let mut state = RelayState::new(config);
+    let now = Instant::now();
+    let (token, _pow) =
+        challenge(state.challenge_join(join_request(peer(1), "room", "76561198000000001", now)));
+
+    let outcome = state.complete_join(JoinCompletion {
+        peer_id: peer(1),
+        room: "room".to_owned(),
+        steam_id64: "76561198000000001".to_owned(),
+        client: client(),
+        challenge: token,
+        pow_proof: Some(PowProof {
+            nonce: "unexpected".to_owned(),
+        }),
+        transport: PeerTransport::Udp,
+        now,
+    });
+
+    assert_eq!(error_code(outcome.response), "pow_unexpected");
 }

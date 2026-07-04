@@ -32,4 +32,8 @@ impl PeerRegistry {
         self.udp_peers.insert(address, peer_id);
         peer_id
     }
+
+    pub(crate) fn remove(&mut self, peer_id: PeerId) {
+        self.udp_peers.retain(|_, current| *current != peer_id);
+    }
 }

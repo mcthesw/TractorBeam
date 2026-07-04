@@ -341,10 +341,17 @@ fn save_selection_to(
     selection: &ClientConfigSelection,
 ) -> Result<(), ClientConfigError> {
     let existing = fs::read_to_string(path).unwrap_or_default();
-    let mut doc: toml_edit::DocumentMut = existing
-        .parse::<toml_edit::DocumentMut>()
-        .map_err(|error| ClientConfigError::InvalidRelay(format!("parse app-data config: {error}")))?;
-    set_optional_key(&mut doc, "selected_relay", selection.selected_relay.as_deref());
+    let mut doc: toml_edit::DocumentMut =
+        existing
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| {
+                ClientConfigError::InvalidRelay(format!("parse app-data config: {error}"))
+            })?;
+    set_optional_key(
+        &mut doc,
+        "selected_relay",
+        selection.selected_relay.as_deref(),
+    );
     set_optional_key(&mut doc, "room", selection.room.as_deref());
     set_optional_key(
         &mut doc,
@@ -583,11 +590,14 @@ port = 25910
         let original = std::fs::read_to_string(&config_path).unwrap();
         assert!(original.contains("[[relays]]"));
 
-        let saved = save_client_config_selection_to(&config_path, &ClientConfigSelection {
-            selected_relay: Some("r1".to_owned()),
-            room: Some("20260703-ab12".to_owned()),
-            selected_steam_id64: Some("76561198000000001".to_owned()),
-        });
+        let saved = save_client_config_selection_to(
+            &config_path,
+            &ClientConfigSelection {
+                selected_relay: Some("r1".to_owned()),
+                room: Some("20260703-ab12".to_owned()),
+                selected_steam_id64: Some("76561198000000001".to_owned()),
+            },
+        );
         assert!(saved.is_ok());
 
         let content = std::fs::read_to_string(&config_path).unwrap();

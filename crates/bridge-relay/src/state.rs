@@ -293,7 +293,10 @@ impl RelayState {
         peers
     }
 
-    pub(crate) fn room_peer_infos(&self, room_name: &str) -> Vec<basement_bridge_core::protocol::PeerInfo> {
+    pub(crate) fn room_peer_infos(
+        &self,
+        room_name: &str,
+    ) -> Vec<basement_bridge_core::protocol::PeerInfo> {
         let mut peers = self
             .rooms
             .get(room_name)
@@ -304,8 +307,12 @@ impl RelayState {
                         steam_id64: peer.steam_id64.clone(),
                         display_name: peer.display_name.clone(),
                         transport: match peer.transport {
-                            PeerTransport::Udp => basement_bridge_core::protocol::PeerTransport::Udp,
-                            PeerTransport::Tcp => basement_bridge_core::protocol::PeerTransport::Tcp,
+                            PeerTransport::Udp => {
+                                basement_bridge_core::protocol::PeerTransport::Udp
+                            }
+                            PeerTransport::Tcp => {
+                                basement_bridge_core::protocol::PeerTransport::Tcp
+                            }
                         },
                     })
                     .collect::<Vec<_>>()
@@ -315,11 +322,7 @@ impl RelayState {
         peers
     }
 
-    fn room_broadcast(
-        &self,
-        room_name: &str,
-        exclude: Option<PeerId>,
-    ) -> Option<RoomBroadcast> {
+    fn room_broadcast(&self, room_name: &str, exclude: Option<PeerId>) -> Option<RoomBroadcast> {
         let room = self.rooms.get(room_name)?;
         let peers = self.room_peer_infos(room_name);
         if peers.is_empty() {
@@ -334,10 +337,7 @@ impl RelayState {
         if recipients.is_empty() {
             return None;
         }
-        Some(RoomBroadcast {
-            recipients,
-            peers,
-        })
+        Some(RoomBroadcast { recipients, peers })
     }
 
     #[cfg(test)]

@@ -1,19 +1,18 @@
 use basement_bridge_core::{
     ConnectionProfile, HookReceiveProbeReport, HookStartupPhase, LogLevel,
     ReadinessProbeCaseReport, ReadinessProbeReport, RuntimeState, SessionMode, SessionQuality,
-    SessionStatus, TransportChoice, build_info,
-    protocol::PeerTransport,
+    SessionStatus, TransportChoice, build_info, protocol::PeerTransport,
 };
 use eframe::egui::{self, ComboBox, TextEdit};
 
 use crate::i18n::{Language, Text, text};
 
+use super::generate_room_id;
 use super::{
     BridgeApp, Page,
     status::{connection_profile_label, quality_label},
     widgets::{account_label, detail_counters, selected_account_label},
 };
-use super::generate_room_id;
 
 const PROTOCOL_VERSION: &str = "1.0";
 const LOG_LEVELS: [LogLevel; 5] = [
@@ -216,8 +215,7 @@ impl BridgeApp {
                             self.import_join_code();
                         }
                         _ => {
-                            self.join_code_message =
-                                Some(self.t(Text::ClipboardEmpty).to_owned());
+                            self.join_code_message = Some(self.t(Text::ClipboardEmpty).to_owned());
                         }
                     },
                     Err(error) => {
@@ -238,10 +236,7 @@ impl BridgeApp {
         let generate_label = self.t(Text::GenerateRoom);
         ui.label(room_label);
         ui.horizontal(|ui| {
-            ui.add(
-                TextEdit::singleline(&mut self.room)
-                    .desired_width(310.0),
-            );
+            ui.add(TextEdit::singleline(&mut self.room).desired_width(310.0));
             if ui.button(generate_label).clicked() {
                 self.room = generate_room_id();
                 self.persist_selection();
@@ -252,10 +247,7 @@ impl BridgeApp {
     fn display_name_ui(&mut self, ui: &mut egui::Ui) {
         let name_label = self.t(Text::YourName);
         ui.label(name_label);
-        ui.add(
-            TextEdit::singleline(&mut self.display_name)
-                .desired_width(400.0),
-        );
+        ui.add(TextEdit::singleline(&mut self.display_name).desired_width(400.0));
     }
 
     fn action_row(&mut self, ui: &mut egui::Ui) {
@@ -322,10 +314,7 @@ impl BridgeApp {
         }
         if startup.access_denied {
             ui.add_space(4.0);
-            ui.colored_label(
-                ui.visuals().error_fg_color,
-                self.t(Text::AccessDeniedHint),
-            );
+            ui.colored_label(ui.visuals().error_fg_color, self.t(Text::AccessDeniedHint));
         }
     }
 
@@ -348,10 +337,7 @@ impl BridgeApp {
             .show(ui, |ui| {
                 for peer in peers {
                     let is_self = peer.steam_id64 == my_id;
-                    let name = peer
-                        .display_name
-                        .as_deref()
-                        .unwrap_or(&peer.steam_id64);
+                    let name = peer.display_name.as_deref().unwrap_or(&peer.steam_id64);
                     let display = if is_self {
                         format!("▶ {name}")
                     } else {
@@ -523,10 +509,7 @@ impl BridgeApp {
                     }
                     ui.horizontal_top(|ui| {
                         ui.monospace(format!("[{}]", entry.timestamp));
-                        ui.colored_label(
-                            log_level_color(ui, entry.level),
-                            entry.level.to_string(),
-                        );
+                        ui.colored_label(log_level_color(ui, entry.level), entry.level.to_string());
                         ui.add(egui::Label::new(entry.message.as_str()).wrap());
                     });
                     ui.add_space(1.0);
@@ -582,13 +565,34 @@ impl BridgeApp {
 fn hook_phase_label(language: Language, phase: HookStartupPhase) -> (egui::Color32, &'static str) {
     match phase {
         HookStartupPhase::NotStarted => (egui::Color32::GRAY, text(language, Text::HookNotStarted)),
-        HookStartupPhase::Configured => (egui::Color32::from_rgb(100, 149, 237), text(language, Text::HookConfigured)),
-        HookStartupPhase::WaitingForIsaac => (egui::Color32::from_rgb(255, 200, 0), text(language, Text::HookWaitingIsaac)),
-        HookStartupPhase::Injecting => (egui::Color32::from_rgb(255, 200, 0), text(language, Text::HookInjecting)),
-        HookStartupPhase::WaitingForHookEndpoint => (egui::Color32::from_rgb(255, 200, 0), text(language, Text::HookWaitingEndpoint)),
-        HookStartupPhase::EndpointReady => (egui::Color32::from_rgb(100, 200, 100), text(language, Text::HookEndpointReady)),
-        HookStartupPhase::Ready => (egui::Color32::from_rgb(100, 200, 100), text(language, Text::HookReady)),
-        HookStartupPhase::Failed => (egui::Color32::from_rgb(220, 80, 80), text(language, Text::HookFailed)),
+        HookStartupPhase::Configured => (
+            egui::Color32::from_rgb(100, 149, 237),
+            text(language, Text::HookConfigured),
+        ),
+        HookStartupPhase::WaitingForIsaac => (
+            egui::Color32::from_rgb(255, 200, 0),
+            text(language, Text::HookWaitingIsaac),
+        ),
+        HookStartupPhase::Injecting => (
+            egui::Color32::from_rgb(255, 200, 0),
+            text(language, Text::HookInjecting),
+        ),
+        HookStartupPhase::WaitingForHookEndpoint => (
+            egui::Color32::from_rgb(255, 200, 0),
+            text(language, Text::HookWaitingEndpoint),
+        ),
+        HookStartupPhase::EndpointReady => (
+            egui::Color32::from_rgb(100, 200, 100),
+            text(language, Text::HookEndpointReady),
+        ),
+        HookStartupPhase::Ready => (
+            egui::Color32::from_rgb(100, 200, 100),
+            text(language, Text::HookReady),
+        ),
+        HookStartupPhase::Failed => (
+            egui::Color32::from_rgb(220, 80, 80),
+            text(language, Text::HookFailed),
+        ),
         HookStartupPhase::Cancelled => (egui::Color32::GRAY, text(language, Text::HookCancelled)),
     }
 }

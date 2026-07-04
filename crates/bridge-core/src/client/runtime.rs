@@ -183,12 +183,18 @@ impl BridgeClient {
                         LogLevel::Info,
                         format!(
                             "Light ping {}: relay={} {} received={}/{} median={}ms",
-                            report.target.relay_name.as_deref().unwrap_or(&report.target.endpoint.to_string()),
+                            report
+                                .target
+                                .relay_name
+                                .as_deref()
+                                .unwrap_or(&report.target.endpoint.to_string()),
                             report.target.endpoint,
                             report.latency_label(),
                             report.received,
                             report.sent,
-                            report.median_rtt_ms.map_or("-".to_owned(), |ms| ms.to_string()),
+                            report
+                                .median_rtt_ms
+                                .map_or("-".to_owned(), |ms| ms.to_string()),
                         ),
                     );
                     self.upsert_light_ping_report(report);

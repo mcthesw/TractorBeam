@@ -8,7 +8,7 @@ use tokio::{
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-use crate::protocol::{ClientMetadata, ControlMessage, Envelope, MessageType, PeerInfo};
+use crate::protocol::{ClientMetadata, ControlMessage, Envelope, MessageType, PeerInfo, PowProof};
 
 use super::{RelayEndpoint, SessionConfig, TransportChoice};
 
@@ -119,14 +119,21 @@ async fn complete_relay_join_inner(
     receiver: &mut RelayTransportReceiver,
     config: &SessionConfig,
 ) -> io::Result<Vec<PeerInfo>> {
-    send_join(sender, config, None).await?;
+    send_join(sender, config, None, None).await?;
     loop {
         let raw = receiver.recv_datagram().await?;
         let envelope = Envelope::decode(raw).map_err(io::Error::other)?;
         let control = ControlMessage::decode(&envelope.payload).map_err(io::Error::other)?;
         match control {
-            ControlMessage::Challenge { token, .. } => {
-                send_join(sender, config, Some(token)).await?
+            ControlMessage::Challenge { token, pow } => {
+                let pow_proof = pow
+                    .as_ref()
+                    .map(|challenge| {
+                        PowProof::solve(challenge, &token, &config.room, &config.steam_id64)
+                            .ok_or_else(|| io::Error::other("unsupported proof-of-work challenge"))
+                    })
+                    .transpose()?;
+                send_join(sender, config, Some(token), pow_proof).await?
             }
             ControlMessage::Ready { peers } => {
                 return Ok(peers);
@@ -143,6 +150,7 @@ async fn send_join(
     sender: &mut RelayTransportSender,
     config: &SessionConfig,
     challenge: Option<String>,
+    pow_proof: Option<PowProof>,
 ) -> io::Result<()> {
     let message = ControlMessage::Join {
         room: config.room.clone(),
@@ -150,7 +158,7 @@ async fn send_join(
         display_name: Some(config.display_name.clone()),
         client: Some(ClientMetadata::current()),
         challenge,
-        pow_proof: None,
+        pow_proof,
         admission: Some(config.admission.clone()),
     };
     send_control(sender, MessageType::Join, &message).await

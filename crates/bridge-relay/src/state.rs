@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use basement_bridge_core::protocol::ControlMessage;
+use basement_bridge_core::protocol::{ControlMessage, PowChallenge, PowProof};
 use rand::RngExt as _;
 use tracing::info;
 
@@ -58,6 +58,7 @@ struct PendingJoin {
     steam_id64: String,
     display_name: Option<String>,
     admission: String,
+    pow: Option<PowChallenge>,
     token: String,
     issued_at: Instant,
 }
@@ -68,6 +69,7 @@ pub(crate) struct JoinCompletion {
     pub(crate) room: String,
     pub(crate) steam_id64: String,
     pub(crate) challenge: String,
+    pub(crate) pow_proof: Option<PowProof>,
     pub(crate) transport: PeerTransport,
     pub(crate) now: Instant,
 }
@@ -175,6 +177,8 @@ impl RelayState {
         }
 
         let token = join_token();
+        let pow = (self.config.pow_difficulty_bits > 0)
+            .then(|| PowChallenge::sha256(join_token(), self.config.pow_difficulty_bits));
         self.pending.insert(
             peer_id,
             PendingJoin {
@@ -182,11 +186,12 @@ impl RelayState {
                 steam_id64,
                 display_name,
                 admission,
+                pow: pow.clone(),
                 token: token.clone(),
                 issued_at: now,
             },
         );
-        ControlMessage::Challenge { token, pow: None }
+        ControlMessage::Challenge { token, pow }
     }
 
     pub(crate) fn complete_join(&mut self, completion: JoinCompletion) -> JoinOutcome {
@@ -195,6 +200,7 @@ impl RelayState {
             room,
             steam_id64,
             challenge,
+            pow_proof,
             transport,
             now,
         } = completion;
@@ -207,6 +213,12 @@ impl RelayState {
         if pending.room != room || pending.steam_id64 != steam_id64 || pending.token != challenge {
             return JoinOutcome {
                 response: error_message("bad_challenge", "join challenge did not match"),
+                broadcast: None,
+            };
+        }
+        if let Err(error) = validate_pow(&pending, pow_proof.as_ref()) {
+            return JoinOutcome {
+                response: *error,
                 broadcast: None,
             };
         }
@@ -552,6 +564,33 @@ pub(crate) fn error_message(code: impl Into<String>, message: impl Into<String>)
         code: code.into(),
         message: message.into(),
     }
+}
+
+fn validate_pow(
+    pending: &PendingJoin,
+    proof: Option<&PowProof>,
+) -> Result<(), Box<ControlMessage>> {
+    let Some(challenge) = &pending.pow else {
+        return Ok(());
+    };
+    let Some(proof) = proof else {
+        return Err(Box::new(error_message(
+            "pow_required",
+            "proof of work is required for room admission",
+        )));
+    };
+    if !proof.verify(
+        challenge,
+        &pending.token,
+        &pending.room,
+        &pending.steam_id64,
+    ) {
+        return Err(Box::new(error_message(
+            "pow_failed",
+            "proof of work did not satisfy the challenge",
+        )));
+    }
+    Ok(())
 }
 
 fn join_token() -> String {

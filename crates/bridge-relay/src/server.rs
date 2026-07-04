@@ -49,6 +49,9 @@ pub(crate) async fn run(config: RelayConfig) -> io::Result<()> {
         tcp_egress_queue_capacity = config.tcp_egress_queue_capacity,
         max_packet_size = config.max_packet_size,
         rate_limit_per_second = config.rate_limit_per_second,
+        byte_rate_limit_per_second = config.byte_rate_limit_per_second,
+        byte_rate_limit_burst = config.byte_rate_limit_burst,
+        health_pongs_per_second_per_ip = config.health_pongs_per_second_per_ip,
         max_rooms = config.max_rooms,
         max_peers_per_room = config.max_peers_per_room,
         pow_difficulty_bits = config.pow_difficulty_bits,
@@ -312,7 +315,7 @@ async fn handle_datagram(
             );
             return Ok(());
         }
-        if !state.allow_packet(source.peer_id, now) {
+        if !state.allow_packet(source.peer_id, raw.len(), now) {
             let room = state.peer_room(source.peer_id);
             let mut metrics = metrics.lock().await;
             metrics.record_rate_limited(room.as_deref());
@@ -403,8 +406,24 @@ async fn handle_heartbeat(
     envelope: &Envelope,
     now: Instant,
 ) -> io::Result<PacketOutcome> {
-    let room = state.lock().await.touch_peer(source.peer_id, now);
-    if let Ok(ControlMessage::HealthPing { id }) = ControlMessage::decode(&envelope.payload) {
+    let health_ping = match ControlMessage::decode(&envelope.payload) {
+        Ok(ControlMessage::HealthPing { id }) => Some(id),
+        _ => None,
+    };
+    let (room, allow_health_pong) = {
+        let mut state = state.lock().await;
+        (
+            state.touch_peer(source.peer_id, now),
+            if health_ping.is_some() {
+                state.allow_health_pong(source.address.ip(), now)
+            } else {
+                false
+            },
+        )
+    };
+    if let Some(id) = health_ping
+        && allow_health_pong
+    {
         send_control(
             udp_socket,
             egress,

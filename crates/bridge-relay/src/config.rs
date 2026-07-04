@@ -8,6 +8,9 @@ const MAX_UDP_PACKET_SIZE: usize = 65_535;
 const DEFAULT_BIND: &str = "0.0.0.0:25910";
 const DEFAULT_MAX_PACKET_SIZE: usize = 2_048;
 const DEFAULT_RATE_LIMIT_PER_SECOND: u32 = 100;
+const DEFAULT_BYTE_RATE_LIMIT_PER_SECOND: usize = 256 * 1024;
+const DEFAULT_BYTE_RATE_LIMIT_BURST: usize = 512 * 1024;
+const DEFAULT_HEALTH_PONGS_PER_SECOND_PER_IP: u32 = 10;
 const DEFAULT_MAX_ROOMS: usize = 256;
 const DEFAULT_MAX_PEERS_PER_ROOM: usize = 4;
 const DEFAULT_MAX_ROOM_NAME_LEN: usize = 64;
@@ -47,6 +50,9 @@ pub(crate) struct RelayConfig {
     pub(crate) peer_idle_seconds: u64,
     pub(crate) room_idle_seconds: u64,
     pub(crate) rate_limit_per_second: u32,
+    pub(crate) byte_rate_limit_per_second: usize,
+    pub(crate) byte_rate_limit_burst: usize,
+    pub(crate) health_pongs_per_second_per_ip: u32,
     pub(crate) max_rooms: usize,
     pub(crate) max_peers_per_room: usize,
     pub(crate) max_room_name_len: usize,
@@ -64,6 +70,9 @@ impl Default for RelayConfig {
             peer_idle_seconds: DEFAULT_PEER_IDLE_SECONDS,
             room_idle_seconds: DEFAULT_ROOM_IDLE_SECONDS,
             rate_limit_per_second: DEFAULT_RATE_LIMIT_PER_SECOND,
+            byte_rate_limit_per_second: DEFAULT_BYTE_RATE_LIMIT_PER_SECOND,
+            byte_rate_limit_burst: DEFAULT_BYTE_RATE_LIMIT_BURST,
+            health_pongs_per_second_per_ip: DEFAULT_HEALTH_PONGS_PER_SECOND_PER_IP,
             max_rooms: DEFAULT_MAX_ROOMS,
             max_peers_per_room: DEFAULT_MAX_PEERS_PER_ROOM,
             max_room_name_len: DEFAULT_MAX_ROOM_NAME_LEN,
@@ -141,6 +150,15 @@ impl RelayConfig {
         }
         if self.rate_limit_per_second == 0 {
             return invalid_config("rate_limit_per_second must be greater than 0");
+        }
+        if self.byte_rate_limit_per_second == 0 {
+            return invalid_config("byte_rate_limit_per_second must be greater than 0");
+        }
+        if self.byte_rate_limit_burst == 0 {
+            return invalid_config("byte_rate_limit_burst must be greater than 0");
+        }
+        if self.health_pongs_per_second_per_ip == 0 {
+            return invalid_config("health_pongs_per_second_per_ip must be greater than 0");
         }
         if self.max_rooms == 0 {
             return invalid_config("max_rooms must be greater than 0");
@@ -234,7 +252,11 @@ fn default_bind() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_MAX_PACKET_SIZE, DEFAULT_RATE_LIMIT_PER_SECOND, RelayConfig};
+    use super::{
+        DEFAULT_BYTE_RATE_LIMIT_BURST, DEFAULT_BYTE_RATE_LIMIT_PER_SECOND,
+        DEFAULT_HEALTH_PONGS_PER_SECOND_PER_IP, DEFAULT_MAX_PACKET_SIZE,
+        DEFAULT_RATE_LIMIT_PER_SECOND, RelayConfig,
+    };
 
     #[test]
     fn parses_minimal_sectioned_config() {
@@ -262,6 +284,15 @@ blocked_cidrs = ["203.0.113.10/32"]
         assert_eq!(config.max_rooms, 256);
         assert_eq!(config.max_packet_size, DEFAULT_MAX_PACKET_SIZE);
         assert_eq!(config.rate_limit_per_second, DEFAULT_RATE_LIMIT_PER_SECOND);
+        assert_eq!(
+            config.byte_rate_limit_per_second,
+            DEFAULT_BYTE_RATE_LIMIT_PER_SECOND
+        );
+        assert_eq!(config.byte_rate_limit_burst, DEFAULT_BYTE_RATE_LIMIT_BURST);
+        assert_eq!(
+            config.health_pongs_per_second_per_ip,
+            DEFAULT_HEALTH_PONGS_PER_SECOND_PER_IP
+        );
         assert_eq!(config.blocked_cidrs.len(), 1);
     }
 

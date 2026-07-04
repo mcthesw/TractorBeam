@@ -6,7 +6,8 @@ mod widgets;
 use basement_bridge_core::{
     BridgeClient, ClientConfigSelection, ClientLogSink, ConnectionProfile, LightPingTarget,
     LocalDate, RelayEndpoint, RelayPreset, SessionConfig, SessionMode, SessionStatus,
-    TransportChoice, load_client_config, resolve_room_template, save_client_config_selection,
+    SteamIdentity, TransportChoice, load_client_config, resolve_room_template,
+    save_client_config_selection,
 };
 use eframe::egui::{self, ScrollArea};
 
@@ -41,6 +42,16 @@ fn random_room_suffix() -> String {
     out
 }
 
+fn initial_selected_account(
+    accounts: &[SteamIdentity],
+    selected_steam_id64: Option<&str>,
+) -> Option<usize> {
+    selected_steam_id64
+        .and_then(|id| accounts.iter().position(|account| account.steam_id64 == id))
+        .or_else(|| accounts.iter().position(|account| account.most_recent))
+        .or_else(|| (!accounts.is_empty()).then_some(0))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Page {
     Home,
@@ -65,7 +76,6 @@ pub struct BridgeApp {
     selected_account: Option<usize>,
     manual_steam_id: String,
     manual_display_name: String,
-    display_name: String,
     last_error: Option<String>,
     last_log_directory: Option<String>,
     start_error_dialog_open: bool,
@@ -83,24 +93,16 @@ impl BridgeApp {
         let loaded_config = load_client_config();
         let client = BridgeClient::with_config_and_log_sink(loaded_config.clone(), log_sink);
 
-        let selected_account = client.state().detected_accounts.iter().position(|account| {
-            loaded_config
-                .config
-                .selected_steam_id64
-                .as_deref()
-                .is_some_and(|id| id == account.steam_id64)
-        });
+        let selected_account = initial_selected_account(
+            &client.state().detected_accounts,
+            loaded_config.config.selected_steam_id64.as_deref(),
+        );
 
         let startup_room = loaded_config
             .config
             .room
             .clone()
             .unwrap_or_else(generate_room_id);
-
-        let initial_display_name = selected_account
-            .and_then(|index| client.state().detected_accounts.get(index))
-            .map(|account| account.display_name.clone())
-            .unwrap_or_default();
 
         let mut app = Self {
             client,
@@ -117,7 +119,6 @@ impl BridgeApp {
             selected_account,
             manual_steam_id: String::new(),
             manual_display_name: String::new(),
-            display_name: initial_display_name,
             last_error: (!loaded_config.warnings.is_empty())
                 .then(|| text(Language::Chinese, Text::ConfigWarning).to_owned()),
             last_log_directory: None,
@@ -134,22 +135,25 @@ impl BridgeApp {
         text(self.language, key)
     }
 
-    fn current_identity(&self) -> (String, String) {
+    fn selected_steam_account(&self) -> Option<&SteamIdentity> {
         self.selected_account
             .and_then(|index| self.client.state().detected_accounts.get(index))
-            .map_or_else(
-                || {
-                    (
-                        self.manual_steam_id.trim().to_owned(),
-                        self.manual_display_name.trim().to_owned(),
-                    )
-                },
-                |account| (account.steam_id64.clone(), account.display_name.clone()),
-            )
+    }
+
+    fn current_identity(&self) -> (String, String) {
+        self.selected_steam_account().map_or_else(
+            || {
+                (
+                    self.manual_steam_id.trim().to_owned(),
+                    self.manual_display_name.trim().to_owned(),
+                )
+            },
+            |account| (account.steam_id64.clone(), account.display_name.clone()),
+        )
     }
 
     fn session_config(&self) -> SessionConfig {
-        let (steam_id64, _) = self.current_identity();
+        let (steam_id64, display_name) = self.current_identity();
         SessionConfig {
             relay: RelayEndpoint::new(self.relay_host.trim(), self.relay_port),
             relay_name: self.selected_relay_preset().map(|relay| relay.name.clone()),
@@ -157,7 +161,7 @@ impl BridgeApp {
             room: self.room.trim().to_owned(),
             mode: self.mode,
             steam_id64,
-            display_name: self.display_name.trim().to_owned(),
+            display_name,
             session_health: self.client.loaded_config().config.session_health,
         }
     }
@@ -198,13 +202,8 @@ impl BridgeApp {
 
     fn refresh_accounts(&mut self) {
         self.client.refresh_steam_accounts();
-        self.selected_account = self
-            .client
-            .state()
-            .detected_accounts
-            .iter()
-            .position(|account| account.most_recent)
-            .or_else(|| (!self.client.state().detected_accounts.is_empty()).then_some(0));
+        self.selected_account =
+            initial_selected_account(&self.client.state().detected_accounts, None);
     }
 
     fn open_log_directory(&mut self) {
@@ -363,5 +362,61 @@ impl eframe::App for BridgeApp {
         });
 
         self.start_error_dialog(ui.ctx());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn account(steam_id64: &str, most_recent: bool) -> SteamIdentity {
+        SteamIdentity {
+            steam_id64: steam_id64.to_owned(),
+            display_name: format!("User {steam_id64}"),
+            most_recent,
+        }
+    }
+
+    #[test]
+    fn initial_selection_prefers_saved_account() {
+        let accounts = [
+            account("76561198000000001", true),
+            account("76561198000000002", false),
+        ];
+
+        let selected = initial_selected_account(&accounts, Some("76561198000000002"));
+
+        assert_eq!(selected, Some(1));
+    }
+
+    #[test]
+    fn initial_selection_uses_most_recent_without_saved_match() {
+        let accounts = [
+            account("76561198000000001", false),
+            account("76561198000000002", true),
+        ];
+
+        let selected = initial_selected_account(&accounts, Some("76561198000000003"));
+
+        assert_eq!(selected, Some(1));
+    }
+
+    #[test]
+    fn initial_selection_falls_back_to_first_account() {
+        let accounts = [
+            account("76561198000000001", false),
+            account("76561198000000002", false),
+        ];
+
+        let selected = initial_selected_account(&accounts, None);
+
+        assert_eq!(selected, Some(0));
+    }
+
+    #[test]
+    fn initial_selection_handles_empty_accounts() {
+        let selected = initial_selected_account(&[], None);
+
+        assert_eq!(selected, None);
     }
 }

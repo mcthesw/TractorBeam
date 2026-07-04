@@ -26,12 +26,12 @@ use super::{
     state::{RuntimeEvent, log_event, unix_seconds},
 };
 
+pub(super) use light_ping::spawn_light_ping_probes;
+pub use light_ping::{LightPingHandle, LightPingReport, LightPingTarget};
 pub use readiness::{
     READINESS_PROBE_CONNECTION_PROFILES, READINESS_PROBE_PAYLOAD_BYTES,
     READINESS_PROBE_SAMPLES_PER_CASE, ReadinessProbeCaseReport, ReadinessProbeReport,
 };
-pub use light_ping::{LightPingHandle, LightPingReport, LightPingTarget};
-pub(super) use light_ping::spawn_light_ping_probes;
 
 pub(super) const PROBE_A_STEAM: &str = "76561198000000101";
 pub(super) const PROBE_B_STEAM: &str = "76561198000000102";

@@ -41,8 +41,12 @@ pub(super) struct InboundGamePacket {
 #[derive(Clone, Debug)]
 pub(super) enum InboundRelayDatagram {
     Game(InboundGamePacket),
-    HealthPong { id: u64 },
-    RoomUpdate { peers: Vec<crate::protocol::PeerInfo> },
+    HealthPong {
+        id: u64,
+    },
+    RoomUpdate {
+        peers: Vec<crate::protocol::PeerInfo>,
+    },
 }
 
 #[derive(Debug, Default)]

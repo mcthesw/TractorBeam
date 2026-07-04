@@ -1,4 +1,6 @@
-use basement_bridge_core::{ClientError, ConfigError, ConnectionProfile, SessionQuality, SessionStatus, SessionStopReason};
+use basement_bridge_core::{
+    ClientError, ConfigError, ConnectionProfile, SessionQuality, SessionStatus, SessionStopReason,
+};
 use eframe::egui;
 
 use crate::i18n::{Language, Text, text};

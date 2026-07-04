@@ -22,7 +22,10 @@ use crate::{
     egress::{EgressTable, PeerOutput},
     metrics::{PacketOutcome, RelayMetrics},
     peer_registry::PeerRegistry,
-    state::{JoinCompletion, JoinOutcome, PeerId, PeerTransport, RelayState, RoomBroadcast, error_message},
+    state::{
+        JoinCompletion, JoinOutcome, PeerId, PeerTransport, RelayState, RoomBroadcast,
+        error_message,
+    },
 };
 
 type SharedState = Arc<Mutex<RelayState>>;
@@ -254,7 +257,8 @@ async fn run_stats_loop(
             broadcasts
         };
         for broadcast in broadcasts {
-            let _ = broadcast_room_update(Arc::clone(&udp_socket), Arc::clone(&egress), broadcast).await;
+            let _ = broadcast_room_update(Arc::clone(&udp_socket), Arc::clone(&egress), broadcast)
+                .await;
         }
     }
 }
@@ -345,7 +349,8 @@ async fn handle_datagram(
     }
     let broadcasts = state.lock().await.cleanup(now);
     for broadcast in broadcasts {
-        let _ = broadcast_room_update(Arc::clone(&udp_socket), Arc::clone(&egress), broadcast).await;
+        let _ =
+            broadcast_room_update(Arc::clone(&udp_socket), Arc::clone(&egress), broadcast).await;
     }
     Ok(())
 }
@@ -455,7 +460,14 @@ async fn handle_join(
         ControlMessage::Error { .. } => MessageType::Error,
         _ => MessageType::Error,
     };
-    send_control(Arc::clone(&udp_socket), Arc::clone(&egress), source.peer_id, response_type, &outcome.response).await?;
+    send_control(
+        Arc::clone(&udp_socket),
+        Arc::clone(&egress),
+        source.peer_id,
+        response_type,
+        &outcome.response,
+    )
+    .await?;
     if let Some(broadcast) = outcome.broadcast {
         broadcast_room_update(udp_socket, egress, broadcast).await?;
     }
@@ -467,13 +479,23 @@ async fn broadcast_room_update(
     egress: SharedEgress,
     update: RoomBroadcast,
 ) -> io::Result<()> {
-    let message = ControlMessage::RoomUpdate { peers: update.peers };
-    let raw = Envelope::new(MessageType::RoomUpdate, message.encode().map_err(io::Error::other)?)
-        .encode()
-        .map_err(io::Error::other)?;
+    let message = ControlMessage::RoomUpdate {
+        peers: update.peers,
+    };
+    let raw = Envelope::new(
+        MessageType::RoomUpdate,
+        message.encode().map_err(io::Error::other)?,
+    )
+    .encode()
+    .map_err(io::Error::other)?;
     for peer_id in update.recipients {
-        send_control_to_peer(Arc::clone(&udp_socket), Arc::clone(&egress), peer_id, raw.clone())
-            .await?;
+        send_control_to_peer(
+            Arc::clone(&udp_socket),
+            Arc::clone(&egress),
+            peer_id,
+            raw.clone(),
+        )
+        .await?;
     }
     Ok(())
 }

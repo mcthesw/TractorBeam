@@ -59,9 +59,7 @@ impl Drop for LightPingHandle {
     }
 }
 
-pub fn spawn_light_ping_probes(
-    targets: Vec<LightPingTarget>,
-) -> io::Result<LightPingHandle> {
+pub fn spawn_light_ping_probes(targets: Vec<LightPingTarget>) -> io::Result<LightPingHandle> {
     let (event_tx, event_rx) = mpsc::channel::<RuntimeEvent>();
     let worker = thread::spawn(move || {
         let runtime = match Builder::new_current_thread().enable_all().build() {
@@ -80,7 +78,8 @@ pub fn spawn_light_ping_probes(
                 let event_tx = event_tx.clone();
                 tasks.spawn(async move {
                     let report = light_ping_relay(target).await;
-                    let _ = event_tx.send(RuntimeEvent::LightPingFinished(Box::new(report.clone())));
+                    let _ =
+                        event_tx.send(RuntimeEvent::LightPingFinished(Box::new(report.clone())));
                     report
                 });
             }
@@ -94,7 +93,11 @@ pub fn spawn_light_ping_probes(
 }
 
 async fn light_ping_relay(target: LightPingTarget) -> LightPingReport {
-    let connect_result = time::timeout(LIGHT_PING_TIMEOUT, RelayTransport::connect(&target.endpoint, target.transport)).await;
+    let connect_result = time::timeout(
+        LIGHT_PING_TIMEOUT,
+        RelayTransport::connect(&target.endpoint, target.transport),
+    )
+    .await;
     let mut relay = match connect_result {
         Ok(Ok(relay)) => relay,
         Ok(Err(error)) => {

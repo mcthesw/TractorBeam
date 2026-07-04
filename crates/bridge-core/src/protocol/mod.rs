@@ -4,7 +4,10 @@ mod control;
 mod envelope;
 mod local;
 
-pub use control::{ControlMessage, ControlMessageError, PeerInfo, PeerTransport};
+pub use control::{
+    ClientMetadata, ControlMessage, ControlMessageError, PeerInfo, PeerTransport, PowChallenge,
+    PowProof,
+};
 pub use envelope::{DecodeError, EncodeError, Envelope, MessageType};
 pub use local::{GamePacket, GamePacketError, LocalPacket, LocalPacketError, LocalPacketType};
 
@@ -21,6 +24,8 @@ pub const GAME_PACKET_HEADER_LEN: usize = 40;
 
 pub const CAP_PATH_VALIDATION: u64 = 1 << 0;
 pub const CAP_ENCRYPTION_RESERVED: u64 = 1 << 1;
+pub const CAP_POW_ADMISSION: u64 = 1 << 2;
+pub const CAP_ADMISSION_MATERIAL: u64 = 1 << 3;
 
 #[cfg(test)]
 mod tests {
@@ -75,7 +80,16 @@ mod tests {
             room: "room".to_owned(),
             steam_id64: "76561198000000001".to_owned(),
             display_name: Some("Alice".to_owned()),
+            client: Some(ClientMetadata {
+                app_version: "1.2.3".to_owned(),
+                git_hash: Some("0123456789abcdef".to_owned()),
+                protocol_major: PROTOCOL_MAJOR,
+                protocol_minor: PROTOCOL_MINOR,
+                features: CAP_PATH_VALIDATION | CAP_POW_ADMISSION | CAP_ADMISSION_MATERIAL,
+            }),
             challenge: None,
+            pow_proof: None,
+            admission: Some("AbCdEfGhIjKlMn12".to_owned()),
         };
 
         let bytes = message.encode().unwrap();
@@ -137,6 +151,43 @@ mod tests {
             ControlMessage::Ready { peers } => assert!(peers.is_empty()),
             other => panic!("expected Ready, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn legacy_join_without_admission_fields_decodes() {
+        let json = br#"{"type":"join","room":"room","steam_id64":"76561198000000001","display_name":null,"challenge":null}"#;
+        let decoded = ControlMessage::decode(json).unwrap();
+
+        match decoded {
+            ControlMessage::Join {
+                client,
+                pow_proof,
+                admission,
+                ..
+            } => {
+                assert_eq!(client, None);
+                assert_eq!(pow_proof, None);
+                assert_eq!(admission, None);
+            }
+            other => panic!("expected Join, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn challenge_can_carry_pow_metadata() {
+        let message = ControlMessage::Challenge {
+            token: "token".to_owned(),
+            pow: Some(PowChallenge {
+                algorithm: "sha256".to_owned(),
+                nonce: "nonce".to_owned(),
+                difficulty_bits: 18,
+            }),
+        };
+
+        let bytes = message.encode().unwrap();
+        let decoded = ControlMessage::decode(&bytes).unwrap();
+
+        assert_eq!(decoded, message);
     }
 
     #[test]

@@ -155,7 +155,7 @@ impl RelayState {
         now: Instant,
     ) -> ControlMessage {
         if let Err(error) = self.validate_join(peer_id, &room) {
-            return error;
+            return *error;
         }
 
         let token = join_token();
@@ -169,7 +169,7 @@ impl RelayState {
                 issued_at: now,
             },
         );
-        ControlMessage::Challenge { token }
+        ControlMessage::Challenge { token, pow: None }
     }
 
     pub(crate) fn complete_join(&mut self, completion: JoinCompletion) -> JoinOutcome {
@@ -196,7 +196,7 @@ impl RelayState {
         self.remove_duplicate_peer(&pending.room, &pending.steam_id64, peer_id);
         if let Err(error) = self.validate_join(peer_id, &pending.room) {
             return JoinOutcome {
-                response: error,
+                response: *error,
                 broadcast: None,
             };
         }
@@ -443,19 +443,19 @@ impl RelayState {
         self.room_broadcast(&room_name, Some(peer_id))
     }
 
-    fn validate_join(&self, peer_id: PeerId, room_name: &str) -> Result<(), ControlMessage> {
+    fn validate_join(&self, peer_id: PeerId, room_name: &str) -> Result<(), Box<ControlMessage>> {
         let room_name = room_name.trim();
         if room_name.is_empty() {
-            return Err(error_message("empty_room", "room is required"));
+            return Err(Box::new(error_message("empty_room", "room is required")));
         }
         if room_name.len() > self.config.max_room_name_len {
-            return Err(error_message(
+            return Err(Box::new(error_message(
                 "room_name_too_long",
                 format!(
                     "room must be at most {} bytes",
                     self.config.max_room_name_len
                 ),
-            ));
+            )));
         }
 
         let already_joined = self
@@ -468,13 +468,16 @@ impl RelayState {
                 && !room.peers.contains_key(&peer_id)
                 && room.peers.len() >= self.config.max_peers_per_room
             {
-                return Err(error_message("room_full", "room is full"));
+                return Err(Box::new(error_message("room_full", "room is full")));
             }
             return Ok(());
         }
 
         if !already_joined && self.rooms.len() >= self.config.max_rooms {
-            return Err(error_message("too_many_rooms", "relay room limit reached"));
+            return Err(Box::new(error_message(
+                "too_many_rooms",
+                "relay room limit reached",
+            )));
         }
 
         Ok(())

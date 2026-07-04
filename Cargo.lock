@@ -452,7 +452,7 @@ checksum = "cd637ac531c60eb7fbc4684dc061c2d7d90d73d758181aa02eeff0464b9eee4b"
 
 [[package]]
 name = "basement-bridge-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "basement-isaac-injector",
  "bs58",
@@ -475,7 +475,7 @@ dependencies = [
 
 [[package]]
 name = "basement-bridge-gui"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "arboard",
  "basement-bridge-core",
@@ -490,7 +490,7 @@ dependencies = [
 
 [[package]]
 name = "basement-bridge-relay"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "basement-bridge-core",
  "bytes",
@@ -508,7 +508,7 @@ dependencies = [
 
 [[package]]
 name = "basement-isaac-injector"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "clap",
  "sysinfo",
@@ -518,7 +518,7 @@ dependencies = [
 
 [[package]]
 name = "basement-native-hook"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "windows-sys 0.61.2",
 ]

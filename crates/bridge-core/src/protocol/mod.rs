@@ -191,6 +191,15 @@ mod tests {
     }
 
     #[test]
+    fn pow_proof_solves_and_verifies_challenge() {
+        let challenge = PowChallenge::sha256("nonce".to_owned(), 8);
+        let proof = PowProof::solve(&challenge, "token", "room", "76561198000000001").unwrap();
+
+        assert!(proof.verify(&challenge, "token", "room", "76561198000000001",));
+        assert!(!proof.verify(&challenge, "token", "other-room", "76561198000000001",));
+    }
+
+    #[test]
     fn roundtrips_local_packet() {
         let packet = LocalPacket {
             packet_type: LocalPacketType::Outgoing,

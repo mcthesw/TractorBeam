@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use basement_bridge_core::protocol::ControlMessage;
+use basement_bridge_core::protocol::{ControlMessage, PowChallenge, PowProof};
 
 use super::*;
 use crate::incident::{MISSING_TARGET_INITIAL_LOGS, MISSING_TARGET_LOG_INTERVAL};
@@ -20,11 +20,11 @@ fn admission() -> Option<String> {
     Some("AbCdEfGhIjKlMn12".to_owned())
 }
 
-fn challenge_token(message: ControlMessage) -> String {
-    let ControlMessage::Challenge { token, .. } = message else {
+fn challenge(message: ControlMessage) -> (String, Option<PowChallenge>) {
+    let ControlMessage::Challenge { token, pow } = message else {
         panic!("expected challenge message");
     };
-    token
+    (token, pow)
 }
 
 fn error_code(message: ControlMessage) -> String {
@@ -42,7 +42,7 @@ fn join_peer(
     transport: PeerTransport,
     now: Instant,
 ) {
-    let token = challenge_token(state.challenge_join(
+    let (token, pow) = challenge(state.challenge_join(
         peer_id,
         room.to_owned(),
         steam_id64.to_owned(),
@@ -50,6 +50,9 @@ fn join_peer(
         admission(),
         now,
     ));
+    let pow_proof = pow
+        .as_ref()
+        .and_then(|pow| PowProof::solve(pow, &token, room, steam_id64));
     assert!(matches!(
         state
             .complete_join(JoinCompletion {
@@ -57,6 +60,7 @@ fn join_peer(
                 room: room.to_owned(),
                 steam_id64: steam_id64.to_owned(),
                 challenge: token,
+                pow_proof,
                 transport,
                 now,
             })
@@ -339,4 +343,66 @@ fn rejects_mismatched_room_admission_material() {
     );
 
     assert_eq!(error_code(response), "room_admission_mismatch");
+}
+
+#[test]
+fn rejects_missing_pow_proof_when_required() {
+    let config = RelayConfig {
+        pow_difficulty_bits: 4,
+        ..RelayConfig::default()
+    };
+    let mut state = RelayState::new(config);
+    let now = Instant::now();
+    let (token, _pow) = challenge(state.challenge_join(
+        peer(1),
+        "room".to_owned(),
+        "76561198000000001".to_owned(),
+        None,
+        admission(),
+        now,
+    ));
+
+    let outcome = state.complete_join(JoinCompletion {
+        peer_id: peer(1),
+        room: "room".to_owned(),
+        steam_id64: "76561198000000001".to_owned(),
+        challenge: token,
+        pow_proof: None,
+        transport: PeerTransport::Udp,
+        now,
+    });
+
+    assert_eq!(error_code(outcome.response), "pow_required");
+}
+
+#[test]
+fn rejects_bad_pow_proof() {
+    let config = RelayConfig {
+        pow_difficulty_bits: 4,
+        ..RelayConfig::default()
+    };
+    let mut state = RelayState::new(config);
+    let now = Instant::now();
+    let (token, _pow) = challenge(state.challenge_join(
+        peer(1),
+        "room".to_owned(),
+        "76561198000000001".to_owned(),
+        None,
+        admission(),
+        now,
+    ));
+
+    let outcome = state.complete_join(JoinCompletion {
+        peer_id: peer(1),
+        room: "room".to_owned(),
+        steam_id64: "76561198000000001".to_owned(),
+        challenge: token,
+        pow_proof: Some(PowProof {
+            nonce: "bad".to_owned(),
+        }),
+        transport: PeerTransport::Udp,
+        now,
+    });
+
+    assert_eq!(error_code(outcome.response), "pow_failed");
 }

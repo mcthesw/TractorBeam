@@ -159,6 +159,7 @@ async fn spawn_test_relay(
         tcp_bind: tcp_address
             .map(|address| address.to_string())
             .or_else(|| tcp_enabled.then(|| "127.0.0.1:0".to_owned())),
+        pow_difficulty_bits: 0,
         ..RelayConfig::default()
     };
     let server = tokio::spawn(run_with_listeners(Some(udp_socket), tcp_listener, config));

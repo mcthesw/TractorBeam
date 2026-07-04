@@ -1,7 +1,8 @@
 use basement_bridge_core::{
-    ConnectionProfile, HookReceiveProbeReport, LogLevel, ReadinessProbeCaseReport,
-    ReadinessProbeReport, RuntimeState, SessionMode, SessionQuality, SessionStatus,
-    TransportChoice, build_info,
+    ConnectionProfile, HookReceiveProbeReport, HookStartupPhase, LogLevel,
+    ReadinessProbeCaseReport, ReadinessProbeReport, RuntimeState, SessionMode, SessionQuality,
+    SessionStatus, TransportChoice, build_info,
+    protocol::PeerTransport,
 };
 use eframe::egui::{self, ComboBox, TextEdit};
 
@@ -12,19 +13,32 @@ use super::{
     status::{connection_profile_label, quality_label},
     widgets::{account_label, detail_counters, selected_account_label},
 };
+use super::generate_room_id;
+
+const PROTOCOL_VERSION: &str = "1.0";
+const LOG_LEVELS: [LogLevel; 5] = [
+    LogLevel::Error,
+    LogLevel::Warn,
+    LogLevel::Info,
+    LogLevel::Debug,
+    LogLevel::Trace,
+];
 
 impl BridgeApp {
     pub(super) fn top_bar(&mut self, ui: &mut egui::Ui) {
-        let home = self.t(Text::Home);
-        let diagnostics = self.t(Text::Diagnostics);
-        let debug = self.t(Text::Debug);
         let selected_language = self.language.label();
-
+        let home = self.t(Text::Home);
+        let settings = self.t(Text::Settings);
+        let stats = self.t(Text::Stats);
+        let log = self.t(Text::Log);
+        let about = self.t(Text::About);
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.page, Page::Home, home);
-                ui.selectable_value(&mut self.page, Page::Diagnostics, diagnostics);
-                ui.selectable_value(&mut self.page, Page::Debug, debug);
+                ui.selectable_value(&mut self.page, Page::Settings, settings);
+                ui.selectable_value(&mut self.page, Page::Stats, stats);
+                ui.selectable_value(&mut self.page, Page::Log, log);
+                ui.selectable_value(&mut self.page, Page::About, about);
             });
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -49,174 +63,99 @@ impl BridgeApp {
     }
 
     pub(super) fn home_page(&mut self, ui: &mut egui::Ui) {
-        self.connection_form(ui);
-        ui.add_space(12.0);
-        self.steam_identity_ui(ui);
-        ui.add_space(12.0);
-        self.action_row(ui);
-    }
-
-    pub(super) fn diagnostics_page(&mut self, ui: &mut egui::Ui) {
-        ui.heading(self.t(Text::Diagnostics));
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.label(self.t(Text::Version));
-            ui.monospace(build_info::version_label());
-        });
-        ui.add_space(8.0);
-        if ui.button(self.t(Text::OpenLogDirectory)).clicked() {
-            self.open_log_directory();
-        }
-        if let Some(path) = &self.last_log_directory {
-            ui.add_space(4.0);
-            ui.label(self.t(Text::LogDirectory));
-            ui.monospace(path);
-        }
-        ui.add_space(12.0);
-        detail_counters(ui, self.language, self.client.state());
-        ui.add_space(12.0);
-        session_health_summary(ui, self.language, self.client.state());
-        ui.add_space(12.0);
-        ui.heading(self.t(Text::Logs));
-        ui.add_space(4.0);
-        let logs = &self.client.state().logs;
-        egui::ScrollArea::vertical()
-            .id_salt("diagnostics_logs")
-            .max_height(420.0)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                for entry in logs {
-                    ui.horizontal_top(|ui| {
-                        ui.monospace(format!("[{}]", entry.timestamp));
-                        ui.colored_label(log_level_color(ui, entry.level), entry.level.to_string());
-                        ui.add(egui::Label::new(entry.message.as_str()).wrap());
-                    });
-                    ui.add_space(2.0);
-                }
-            });
-    }
-
-    pub(super) fn debug_page(&mut self, ui: &mut egui::Ui) {
-        ui.heading(self.t(Text::Debug));
-        ui.add_space(8.0);
-
-        ui.heading(self.t(Text::RelayReadiness));
-        ui.add_space(6.0);
-        self.readiness_probe_ui(ui);
-
-        ui.add_space(12.0);
-        ui.separator();
-        ui.add_space(12.0);
-
-        ui.heading(self.t(Text::HookReceive));
-        ui.add_space(6.0);
-        if ui.button(self.t(Text::RunHookReceiveProbe)).clicked() {
-            self.run_hook_receive_probe();
-        }
-        if self.client.state().hook_probe_running {
-            ui.add_space(4.0);
-            ui.label(self.t(Text::ProbeRunning));
-        }
-        if let Some(result) = &self.client.state().latest_hook_receive_probe {
-            ui.add_space(4.0);
-            hook_probe_table(ui, self.language, result);
-        }
-        if let Some(message) = &self.client.state().latest_hook_receive_probe_error {
-            ui.add_space(4.0);
-            ui.label(self.t(Text::Details));
-            wrapped_colored_label(ui, ui.visuals().error_fg_color, message);
-        }
-    }
-
-    fn connection_form(&mut self, ui: &mut egui::Ui) {
         ui.heading(self.t(Text::Home));
         ui.add_space(8.0);
 
-        ui.label(self.t(Text::RelayServer));
+        self.relay_section(ui);
+        ui.add_space(8.0);
+
+        self.steam_section(ui);
+        ui.add_space(8.0);
+
+        self.join_code_ui(ui);
+        ui.add_space(8.0);
+
+        self.room_ui(ui);
+        ui.add_space(8.0);
+
+        self.display_name_ui(ui);
+        ui.add_space(12.0);
+
+        self.action_row(ui);
+        ui.add_space(8.0);
+
+        self.hook_progress_ui(ui);
+        ui.add_space(8.0);
+
+        self.room_members_ui(ui);
+    }
+
+    fn relay_section(&mut self, ui: &mut egui::Ui) {
+        let relay_label = self.t(Text::RelayServer);
+        let manual_label = self.t(Text::ManualRelay);
+        let retest_label = self.t(Text::RetestRelays);
+        let host_label = self.t(Text::RelayHost);
+        ui.label(relay_label);
         let mut selected_relay = self.selected_relay;
-        ComboBox::from_id_salt("relay_preset")
+        ComboBox::from_id_salt("home_relay")
             .selected_text(self.relay_selection_label())
-            .width(360.0)
+            .width(400.0)
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut selected_relay, None, self.t(Text::ManualRelay));
+                ui.selectable_value(&mut selected_relay, None, manual_label);
                 for (index, relay) in self.relay_presets.iter().enumerate() {
-                    ui.selectable_value(&mut selected_relay, Some(index), relay.label());
+                    let label = format!(
+                        "{} ({})",
+                        relay.name,
+                        self.relay_latency_label(&relay.endpoint)
+                    );
+                    ui.selectable_value(&mut selected_relay, Some(index), label);
                 }
             });
         if selected_relay != self.selected_relay {
             self.selected_relay = selected_relay;
             self.apply_selected_relay_defaults();
+            self.persist_selection();
         }
-
-        let manual_relay = self.selected_relay.is_none();
-        ui.add_space(8.0);
-        ui.label(self.t(Text::RelayHost));
-        ui.add_enabled(
-            manual_relay,
-            TextEdit::singleline(&mut self.relay_host).desired_width(f32::INFINITY),
-        );
-
-        ui.add_space(8.0);
-        ui.label(self.t(Text::RelayPort));
-        ui.add_enabled(
-            manual_relay,
-            egui::DragValue::new(&mut self.relay_port).range(1..=u16::MAX),
-        );
-
-        ui.add_space(8.0);
-        let tcp = self.t(Text::Tcp);
-        let udp = self.t(Text::Udp);
-        ui.label(self.t(Text::ConnectionProfile));
-        let profile_before = self.current_connection_profile();
-        let mut selected_profile = profile_before;
-        ui.horizontal(|ui| {
-            ui.add_enabled_ui(self.preset_supports_transport(TransportChoice::Tcp), |ui| {
-                ui.radio_value(&mut selected_profile, ConnectionProfile::Tcp, tcp);
+        let manual = self.selected_relay.is_none();
+        if manual {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add_enabled(
+                    manual,
+                    TextEdit::singleline(&mut self.relay_host)
+                        .hint_text(host_label)
+                        .desired_width(310.0),
+                );
+                ui.add_enabled(
+                    manual,
+                    egui::DragValue::new(&mut self.relay_port).range(1..=u16::MAX),
+                );
             });
-            ui.add_enabled_ui(self.preset_supports_transport(TransportChoice::Udp), |ui| {
-                ui.radio_value(&mut selected_profile, ConnectionProfile::Udp, udp);
-            });
-        });
-        if selected_profile != profile_before {
-            self.set_connection_profile(selected_profile);
         }
-        if !self.preset_supports_transport(self.transport) {
-            self.apply_selected_relay_defaults();
+        ui.add_space(4.0);
+        if ui.button(retest_label).clicked() {
+            self.retest_relays();
         }
-        if self.connection_profile_pending() {
-            ui.small(self.t(Text::ReconnectRequired));
-        }
-
-        ui.add_space(8.0);
-        ui.label(self.t(Text::Room));
-        ui.add(TextEdit::singleline(&mut self.room).desired_width(f32::INFINITY));
-        ui.add_space(8.0);
-
-        let official = self.t(Text::Official);
-        let fallback = self.t(Text::Fallback);
-        let pure = self.t(Text::Pure);
-        ui.label(self.t(Text::Mode));
-        ui.vertical(|ui| {
-            ui.radio_value(&mut self.mode, SessionMode::Official, official);
-            ui.radio_value(&mut self.mode, SessionMode::Fallback, fallback);
-            ui.radio_value(&mut self.mode, SessionMode::Pure, pure);
-        });
     }
 
-    fn steam_identity_ui(&mut self, ui: &mut egui::Ui) {
+    fn steam_section(&mut self, ui: &mut egui::Ui) {
         let accounts = self.client.state().detected_accounts.clone();
-        ui.heading(self.t(Text::SteamAccount));
-        ui.add_space(8.0);
+        let steam_label = self.t(Text::SteamAccount);
+        let refresh_label = self.t(Text::RefreshAccounts);
+        let manual_steam_label = self.t(Text::ManualSteamId);
+        let display_name_label = self.t(Text::DisplayName);
+        ui.label(steam_label);
         if accounts.is_empty() {
             ui.label(self.t(Text::NoSteamAccounts));
         } else {
-            ComboBox::from_id_salt("steam_account")
+            let account_before = self.selected_account;
+            ComboBox::from_id_salt("home_steam_account")
                 .selected_text(selected_account_label(
                     self.selected_account,
                     &accounts,
                     self.language,
                 ))
-                .width(360.0)
+                .width(400.0)
                 .show_ui(ui, |ui| {
                     for (index, account) in accounts.iter().enumerate() {
                         ui.selectable_value(
@@ -231,35 +170,107 @@ impl BridgeApp {
                         text(self.language, Text::Manual),
                     );
                 });
+            if self.selected_account != account_before {
+                self.persist_selection();
+            }
+            if self.selected_account.is_some() {
+                ui.add_space(2.0);
+            }
         }
-        ui.add_space(4.0);
-        if ui.button(self.t(Text::RefreshAccounts)).clicked() {
+        ui.add_space(2.0);
+        if ui.button(refresh_label).clicked() {
             self.refresh_accounts();
+            self.persist_selection();
         }
-
         if self.selected_account.is_none() {
-            ui.add_space(8.0);
-            ui.label(self.t(Text::ManualSteamId));
-            ui.add(TextEdit::singleline(&mut self.manual_steam_id).desired_width(f32::INFINITY));
-            ui.add_space(8.0);
-            ui.label(self.t(Text::DisplayName));
+            ui.add_space(4.0);
             ui.add(
-                TextEdit::singleline(&mut self.manual_display_name).desired_width(f32::INFINITY),
+                TextEdit::singleline(&mut self.manual_steam_id)
+                    .hint_text(manual_steam_label)
+                    .desired_width(400.0),
+            );
+            ui.add_space(2.0);
+            ui.add(
+                TextEdit::singleline(&mut self.manual_display_name)
+                    .hint_text(display_name_label)
+                    .desired_width(400.0),
             );
         }
     }
 
+    fn join_code_ui(&mut self, ui: &mut egui::Ui) {
+        let join_code_label = self.t(Text::JoinCode);
+        let copy_label = self.t(Text::CopyCode);
+        let import_label = self.t(Text::ImportCode);
+        ui.label(join_code_label);
+        ui.horizontal(|ui| {
+            if ui.button(copy_label).clicked() {
+                ui.ctx().copy_text(self.copy_join_code());
+                self.join_code_message = Some(self.t(Text::CodeCopied).to_owned());
+            }
+            if ui.button(import_label).clicked() {
+                match arboard::Clipboard::new() {
+                    Ok(mut cb) => match cb.get_text() {
+                        Ok(text) if !text.trim().is_empty() => {
+                            self.join_code_input = text;
+                            self.import_join_code();
+                        }
+                        _ => {
+                            self.join_code_message =
+                                Some(self.t(Text::ClipboardEmpty).to_owned());
+                        }
+                    },
+                    Err(error) => {
+                        self.join_code_message =
+                            Some(format!("{}: {error}", self.t(Text::ClipboardEmpty)));
+                    }
+                }
+            }
+        });
+        if let Some(message) = &self.join_code_message {
+            ui.add_space(4.0);
+            ui.label(message);
+        }
+    }
+
+    fn room_ui(&mut self, ui: &mut egui::Ui) {
+        let room_label = self.t(Text::Room);
+        let generate_label = self.t(Text::GenerateRoom);
+        ui.label(room_label);
+        ui.horizontal(|ui| {
+            ui.add(
+                TextEdit::singleline(&mut self.room)
+                    .desired_width(310.0),
+            );
+            if ui.button(generate_label).clicked() {
+                self.room = generate_room_id();
+                self.persist_selection();
+            }
+        });
+    }
+
+    fn display_name_ui(&mut self, ui: &mut egui::Ui) {
+        let name_label = self.t(Text::YourName);
+        ui.label(name_label);
+        ui.add(
+            TextEdit::singleline(&mut self.display_name)
+                .desired_width(400.0),
+        );
+    }
+
     fn action_row(&mut self, ui: &mut egui::Ui) {
         let running = self.client.state().status == SessionStatus::Running;
+        let start_label = self.t(Text::Start);
+        let stop_label = self.t(Text::Stop);
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(!running, egui::Button::new(self.t(Text::Start)))
+                .add_enabled(!running, egui::Button::new(start_label))
                 .clicked()
             {
                 self.start();
             }
             if ui
-                .add_enabled(running, egui::Button::new(self.t(Text::Stop)))
+                .add_enabled(running, egui::Button::new(stop_label))
                 .clicked()
             {
                 self.client.stop_session();
@@ -267,22 +278,325 @@ impl BridgeApp {
         });
     }
 
-    fn readiness_probe_ui(&mut self, ui: &mut egui::Ui) {
+    fn hook_progress_ui(&self, ui: &mut egui::Ui) {
+        let startup = &self.client.state().hook_startup;
+        if startup.phase == HookStartupPhase::NotStarted {
+            return;
+        }
+        let progress_label = self.t(Text::HookProgress);
+        ui.separator();
+        ui.add_space(4.0);
+        ui.heading(progress_label);
+        ui.add_space(4.0);
+        let (color, phase_text) = hook_phase_label(self.language, startup.phase);
+        ui.horizontal(|ui| {
+            ui.colored_label(color, "●");
+            ui.label(phase_text);
+        });
+        if let Some(message) = &startup.message {
+            ui.add_space(4.0);
+            let rich = if startup.phase == HookStartupPhase::Failed {
+                egui::RichText::new(message).color(ui.visuals().error_fg_color)
+            } else {
+                egui::RichText::new(message)
+            };
+            ui.add(egui::Label::new(rich).wrap());
+        }
+        if let Some(name) = &startup.process_name {
+            ui.add_space(2.0);
+            ui.monospace(format!(
+                "{name} PID {}",
+                startup.pid.map_or("-".to_owned(), |p| p.to_string())
+            ));
+        }
+        if matches!(
+            startup.phase,
+            HookStartupPhase::WaitingForIsaac | HookStartupPhase::WaitingForHookEndpoint
+        ) {
+            ui.add_space(2.0);
+            ui.monospace(format!(
+                "{}: {}s",
+                self.t(Text::Elapsed),
+                unix_seconds().saturating_sub(startup.updated_at)
+            ));
+        }
+        if startup.access_denied {
+            ui.add_space(4.0);
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                self.t(Text::AccessDeniedHint),
+            );
+        }
+    }
+
+    fn room_members_ui(&self, ui: &mut egui::Ui) {
+        let peers = &self.client.state().room_peers;
+        let members_label = self.t(Text::RoomMembers);
+        ui.separator();
+        ui.add_space(4.0);
+        ui.heading(members_label);
+        ui.add_space(4.0);
+        if peers.is_empty() {
+            ui.label(self.t(Text::RoomEmpty));
+            return;
+        }
+        let (my_id, _) = self.current_identity();
+        egui::Grid::new("room_members")
+            .num_columns(3)
+            .striped(true)
+            .spacing([16.0, 4.0])
+            .show(ui, |ui| {
+                for peer in peers {
+                    let is_self = peer.steam_id64 == my_id;
+                    let name = peer
+                        .display_name
+                        .as_deref()
+                        .unwrap_or(&peer.steam_id64);
+                    let display = if is_self {
+                        format!("▶ {name}")
+                    } else {
+                        name.to_owned()
+                    };
+                    let color = if is_self {
+                        ui.visuals().strong_text_color()
+                    } else {
+                        ui.visuals().text_color()
+                    };
+                    ui.colored_label(color, display);
+                    ui.label(peer_transport_label(self.language, peer.transport));
+                    ui.end_row();
+                }
+            });
+    }
+
+    pub(super) fn settings_page(&mut self, ui: &mut egui::Ui) {
+        let settings_label = self.t(Text::Settings);
+        let profile_label = self.t(Text::ConnectionProfile);
+        let mode_label = self.t(Text::Mode);
+        let tcp = self.t(Text::Tcp);
+        let udp = self.t(Text::Udp);
+        let official = self.t(Text::Official);
+        let fallback = self.t(Text::Fallback);
+        let pure = self.t(Text::Pure);
+        ui.heading(settings_label);
+        ui.add_space(12.0);
+
+        ui.label(profile_label);
+        let profile_before = self.current_connection_profile();
+        let mut selected_profile = profile_before;
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(self.preset_supports_transport(TransportChoice::Tcp), |ui| {
+                ui.radio_value(&mut selected_profile, ConnectionProfile::Tcp, tcp);
+            });
+            ui.add_enabled_ui(self.preset_supports_transport(TransportChoice::Udp), |ui| {
+                ui.radio_value(&mut selected_profile, ConnectionProfile::Udp, udp);
+            });
+        });
+        if selected_profile != profile_before {
+            self.transport = selected_profile.transport();
+            self.persist_selection();
+        }
+
+        ui.add_space(12.0);
+        ui.label(mode_label);
+        let mode_before = self.mode;
+        ui.vertical(|ui| {
+            ui.radio_value(&mut self.mode, SessionMode::Official, official);
+            ui.radio_value(&mut self.mode, SessionMode::Fallback, fallback);
+            ui.radio_value(&mut self.mode, SessionMode::Pure, pure);
+        });
+        if self.mode != mode_before {
+            self.persist_selection();
+        }
+    }
+
+    pub(super) fn stats_page(&mut self, ui: &mut egui::Ui) {
+        let stats_label = self.t(Text::Stats);
+        let readiness_label = self.t(Text::RelayReadiness);
+        let hook_recv_label = self.t(Text::HookReceive);
+        let run_hook_label = self.t(Text::RunHookReceiveProbe);
+        let probe_running_label = self.t(Text::ProbeRunning);
+        let run_readiness_label = self.t(Text::RunReadinessProbe);
+        ui.heading(stats_label);
+        ui.add_space(8.0);
+
+        session_health_summary(ui, self.language, self.client.state());
+        ui.add_space(12.0);
+
+        ui.separator();
+        ui.add_space(8.0);
+        detail_counters(ui, self.language, self.client.state());
+        ui.add_space(12.0);
+
+        ui.separator();
+        ui.add_space(8.0);
+        ui.heading(readiness_label);
         let running = self.client.state().readiness_probe_running;
         if ui
-            .add_enabled(!running, egui::Button::new(self.t(Text::RunReadinessProbe)))
+            .add_enabled(!running, egui::Button::new(run_readiness_label))
             .clicked()
         {
             self.start_readiness_probe();
         }
         if running {
             ui.add_space(4.0);
-            ui.label(self.t(Text::ProbeRunning));
+            ui.label(probe_running_label);
         }
         if let Some(report) = &self.client.state().latest_readiness_probe {
             ui.add_space(4.0);
             readiness_probe_table(ui, self.language, report);
         }
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
+        ui.heading(hook_recv_label);
+        if ui.button(run_hook_label).clicked() {
+            self.run_hook_receive_probe();
+        }
+        if self.client.state().hook_probe_running {
+            ui.add_space(4.0);
+            ui.label(probe_running_label);
+        }
+        if let Some(result) = &self.client.state().latest_hook_receive_probe {
+            ui.add_space(4.0);
+            hook_probe_table(ui, self.language, result);
+        }
+    }
+
+    pub(super) fn log_page(&mut self, ui: &mut egui::Ui) {
+        let log_label = self.t(Text::Log);
+        let clear_label = self.t(Text::ClearLogs);
+        let level_filter_label = self.t(Text::LogLevelFilter);
+        let empty_label = self.t(Text::LogEmpty);
+        let open_log_label = self.t(Text::OpenLogDirectory);
+        ui.heading(log_label);
+        ui.add_space(4.0);
+
+        let logs = self.client.state().logs.clone();
+        let max_level = ui.data_mut(|data| {
+            data.get_persisted::<u8>("log_level_filter".into())
+                .unwrap_or(LogLevel::Info as u8)
+        });
+        let mut selected_level = max_level;
+        ui.horizontal(|ui| {
+            ui.label(level_filter_label);
+            ComboBox::from_id_salt("log_level_filter")
+                .selected_text(level_name(self.language, u8_to_level(max_level)))
+                .width(100.0)
+                .show_ui(ui, |ui| {
+                    for level in LOG_LEVELS {
+                        ui.selectable_value(
+                            &mut selected_level,
+                            level as u8,
+                            level_name(self.language, level),
+                        );
+                    }
+                });
+            if ui.button(clear_label).clicked() {
+                self.client.clear_logs();
+            }
+            if ui.button(open_log_label).clicked() {
+                self.open_log_directory();
+            }
+        });
+        ui.data_mut(|data| {
+            data.insert_persisted("log_level_filter".into(), selected_level);
+        });
+        let filter_level = u8_to_level(selected_level);
+        ui.separator();
+        ui.add_space(4.0);
+
+        egui::ScrollArea::vertical()
+            .id_salt("log_scroll")
+            .auto_shrink([false, true])
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                if logs.is_empty() {
+                    ui.label(empty_label);
+                    return;
+                }
+                ui.set_min_width(ui.available_width());
+                for entry in &logs {
+                    if entry.level as u8 > filter_level as u8 {
+                        continue;
+                    }
+                    ui.horizontal_top(|ui| {
+                        ui.monospace(format!("[{}]", entry.timestamp));
+                        ui.colored_label(
+                            log_level_color(ui, entry.level),
+                            entry.level.to_string(),
+                        );
+                        ui.add(egui::Label::new(entry.message.as_str()).wrap());
+                    });
+                    ui.add_space(1.0);
+                }
+            });
+    }
+
+    pub(super) fn about_page(&mut self, ui: &mut egui::Ui) {
+        let about_label = self.t(Text::About);
+        let desc_label = self.t(Text::AboutDesc);
+        let version_label = self.t(Text::Version);
+        let proto_label = self.t(Text::ProtocolVersion);
+        ui.heading(about_label);
+        ui.add_space(12.0);
+        ui.label(desc_label);
+        ui.add_space(16.0);
+        egui::Grid::new("about_grid")
+            .num_columns(2)
+            .spacing([20.0, 6.0])
+            .show(ui, |ui| {
+                ui.label(version_label);
+                ui.monospace(build_info::version_label());
+                ui.end_row();
+                ui.label(proto_label);
+                ui.monospace(PROTOCOL_VERSION);
+                ui.end_row();
+            });
+        ui.add_space(12.0);
+        ui.hyperlink_to("GitHub", "https://github.com/mcthesw/Basement-Bridge");
+        ui.add_space(2.0);
+        ui.label("License: GNU AGPL-3.0-or-later");
+    }
+
+    fn relay_latency_label(&self, endpoint: &basement_bridge_core::RelayEndpoint) -> String {
+        let state = self.client.state();
+        state
+            .light_ping_reports
+            .iter()
+            .find(|report| &report.target.endpoint == endpoint)
+            .map_or_else(
+                || self.t(Text::Probing).to_owned(),
+                |report| {
+                    if let Some(ms) = report.median_rtt_ms {
+                        format!("{ms} ms")
+                    } else {
+                        self.t(Text::Unreachable).to_owned()
+                    }
+                },
+            )
+    }
+}
+
+fn hook_phase_label(language: Language, phase: HookStartupPhase) -> (egui::Color32, &'static str) {
+    match phase {
+        HookStartupPhase::NotStarted => (egui::Color32::GRAY, text(language, Text::HookNotStarted)),
+        HookStartupPhase::Configured => (egui::Color32::from_rgb(100, 149, 237), text(language, Text::HookConfigured)),
+        HookStartupPhase::WaitingForIsaac => (egui::Color32::from_rgb(255, 200, 0), text(language, Text::HookWaitingIsaac)),
+        HookStartupPhase::Injecting => (egui::Color32::from_rgb(255, 200, 0), text(language, Text::HookInjecting)),
+        HookStartupPhase::WaitingForHookEndpoint => (egui::Color32::from_rgb(255, 200, 0), text(language, Text::HookWaitingEndpoint)),
+        HookStartupPhase::EndpointReady => (egui::Color32::from_rgb(100, 200, 100), text(language, Text::HookEndpointReady)),
+        HookStartupPhase::Ready => (egui::Color32::from_rgb(100, 200, 100), text(language, Text::HookReady)),
+        HookStartupPhase::Failed => (egui::Color32::from_rgb(220, 80, 80), text(language, Text::HookFailed)),
+        HookStartupPhase::Cancelled => (egui::Color32::GRAY, text(language, Text::HookCancelled)),
+    }
+}
+
+fn peer_transport_label(language: Language, transport: PeerTransport) -> &'static str {
+    match transport {
+        PeerTransport::Udp => text(language, Text::Udp),
+        PeerTransport::Tcp => text(language, Text::Tcp),
     }
 }
 
@@ -468,5 +782,37 @@ fn log_level_color(ui: &egui::Ui, level: LogLevel) -> egui::Color32 {
         LogLevel::Info => ui.visuals().text_color(),
         LogLevel::Warn => egui::Color32::from_rgb(185, 124, 0),
         LogLevel::Error => ui.visuals().error_fg_color,
+    }
+}
+
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn u8_to_level(value: u8) -> LogLevel {
+    match value {
+        0 => LogLevel::Error,
+        1 => LogLevel::Warn,
+        2 => LogLevel::Info,
+        3 => LogLevel::Debug,
+        _ => LogLevel::Trace,
+    }
+}
+
+fn level_name(language: Language, level: LogLevel) -> &'static str {
+    match (language, level) {
+        (Language::Chinese, LogLevel::Error) => "错误",
+        (Language::Chinese, LogLevel::Warn) => "警告",
+        (Language::Chinese, LogLevel::Info) => "信息",
+        (Language::Chinese, LogLevel::Debug) => "调试",
+        (Language::Chinese, LogLevel::Trace) => "跟踪",
+        (_, LogLevel::Error) => "ERROR",
+        (_, LogLevel::Warn) => "WARN",
+        (_, LogLevel::Info) => "INFO",
+        (_, LogLevel::Debug) => "DEBUG",
+        (_, LogLevel::Trace) => "TRACE",
     }
 }

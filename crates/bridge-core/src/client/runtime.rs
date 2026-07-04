@@ -423,6 +423,10 @@ impl BridgeClient {
         self.push_log(level, message);
     }
 
+    pub fn clear_logs(&mut self) {
+        self.state.logs.clear();
+    }
+
     fn push_log(&mut self, level: LogLevel, message: impl Into<String>) {
         let message = message.into();
         let active_session = self.active_session_log.as_deref();

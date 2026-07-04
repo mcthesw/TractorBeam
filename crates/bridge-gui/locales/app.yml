@@ -215,6 +215,9 @@ config.invalid_relay_port:
 config.missing_room:
   zh_CN: "需要填写房间"
   en_US: "Room is required"
+config.missing_admission:
+  zh_CN: "联机码无效，请重新复制或导入"
+  en_US: "Join code is invalid; copy or import it again"
 config.missing_steam_id:
   zh_CN: "需要填写 SteamID64"
   en_US: "SteamID64 is required"

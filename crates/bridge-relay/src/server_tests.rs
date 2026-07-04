@@ -267,7 +267,7 @@ async fn send_join(peer: &mut TestPeer, room: &str, steam_id64: &str, challenge:
         client: None,
         challenge,
         pow_proof: None,
-        admission: None,
+        admission: Some("AbCdEfGhIjKlMn12".to_owned()),
     };
     send_control(peer, MessageType::Join, &message).await;
 }

@@ -57,6 +57,7 @@ struct PendingJoin {
     room: String,
     steam_id64: String,
     display_name: Option<String>,
+    admission: String,
     token: String,
     issued_at: Instant,
 }
@@ -93,8 +94,19 @@ struct Peer {
 
 #[derive(Debug, Default)]
 struct Room {
+    admission: String,
     peers: HashMap<PeerId, Peer>,
     last_seen: Option<Instant>,
+}
+
+impl Room {
+    fn new(admission: String) -> Self {
+        Self {
+            admission,
+            peers: HashMap::new(),
+            last_seen: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -152,9 +164,13 @@ impl RelayState {
         room: String,
         steam_id64: String,
         display_name: Option<String>,
+        admission: Option<String>,
         now: Instant,
     ) -> ControlMessage {
-        if let Err(error) = self.validate_join(peer_id, &room) {
+        let Some(admission) = admission.filter(|value| !value.is_empty()) else {
+            return error_message("admission_required", "room admission material is required");
+        };
+        if let Err(error) = self.validate_join(peer_id, &room, &admission) {
             return *error;
         }
 
@@ -165,6 +181,7 @@ impl RelayState {
                 room,
                 steam_id64,
                 display_name,
+                admission,
                 token: token.clone(),
                 issued_at: now,
             },
@@ -194,7 +211,7 @@ impl RelayState {
             };
         }
         self.remove_duplicate_peer(&pending.room, &pending.steam_id64, peer_id);
-        if let Err(error) = self.validate_join(peer_id, &pending.room) {
+        if let Err(error) = self.validate_join(peer_id, &pending.room, &pending.admission) {
             return JoinOutcome {
                 response: *error,
                 broadcast: None,
@@ -202,7 +219,10 @@ impl RelayState {
         }
 
         self.peer_rooms.insert(peer_id, pending.room.clone());
-        let room = self.rooms.entry(pending.room.clone()).or_default();
+        let room = self
+            .rooms
+            .entry(pending.room.clone())
+            .or_insert_with(|| Room::new(pending.admission));
         room.last_seen = Some(now);
         room.peers.insert(
             peer_id,
@@ -443,7 +463,12 @@ impl RelayState {
         self.room_broadcast(&room_name, Some(peer_id))
     }
 
-    fn validate_join(&self, peer_id: PeerId, room_name: &str) -> Result<(), Box<ControlMessage>> {
+    fn validate_join(
+        &self,
+        peer_id: PeerId,
+        room_name: &str,
+        admission: &str,
+    ) -> Result<(), Box<ControlMessage>> {
         let room_name = room_name.trim();
         if room_name.is_empty() {
             return Err(Box::new(error_message("empty_room", "room is required")));
@@ -464,6 +489,12 @@ impl RelayState {
             .is_some_and(|current| current == room_name);
 
         if let Some(room) = self.rooms.get(room_name) {
+            if room.admission != admission {
+                return Err(Box::new(error_message(
+                    "room_admission_mismatch",
+                    "room admission material did not match",
+                )));
+            }
             if !already_joined
                 && !room.peers.contains_key(&peer_id)
                 && room.peers.len() >= self.config.max_peers_per_room

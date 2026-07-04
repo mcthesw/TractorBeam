@@ -637,6 +637,7 @@ mod tests {
             relay_name: None,
             transport: TransportChoice::Udp,
             room: "room".to_owned(),
+            admission: crate::JoinCode::generate_admission(),
             mode: SessionMode::Pure,
             steam_id64: "76561198000000001".to_owned(),
             display_name: "Alice".to_owned(),

@@ -4,9 +4,9 @@ mod status;
 mod widgets;
 
 use basement_bridge_core::{
-    BridgeClient, ClientConfigSelection, ClientLogSink, ConnectionProfile, LightPingTarget,
-    LocalDate, RelayEndpoint, RelayPreset, SessionConfig, SessionMode, SessionStatus,
-    SteamIdentity, TransportChoice, load_client_config, resolve_room_template,
+    BridgeClient, ClientConfigSelection, ClientLogSink, ConnectionProfile, JoinCode,
+    LightPingTarget, LocalDate, RelayEndpoint, RelayPreset, SessionConfig, SessionMode,
+    SessionStatus, SteamIdentity, TransportChoice, load_client_config, resolve_room_template,
     save_client_config_selection,
 };
 use eframe::egui::{self, ScrollArea};
@@ -73,6 +73,7 @@ pub struct BridgeApp {
     transport: TransportChoice,
     active_connection_profile: Option<ConnectionProfile>,
     room: String,
+    admission: String,
     mode: SessionMode,
     selected_account: Option<usize>,
     manual_steam_id: String,
@@ -119,6 +120,7 @@ impl BridgeApp {
             transport: loaded_config.config.default_transport,
             active_connection_profile: None,
             room: startup_room,
+            admission: JoinCode::generate_admission(),
             mode: loaded_config.config.default_mode,
             selected_account,
             manual_steam_id: String::new(),
@@ -166,6 +168,7 @@ impl BridgeApp {
             relay_name: self.selected_relay_preset().map(|relay| relay.name.clone()),
             transport: self.transport,
             room: self.room.trim().to_owned(),
+            admission: self.admission.clone(),
             mode: self.mode,
             steam_id64,
             display_name,
@@ -279,11 +282,12 @@ impl BridgeApp {
 
     fn copy_join_code(&self) -> String {
         let relay_id = self.selected_relay_preset().map(|relay| relay.id.clone());
-        basement_bridge_core::JoinCode {
+        JoinCode {
             relay_id,
             relay_host: self.relay_host.trim().to_owned(),
             relay_port: self.relay_port,
             room: self.room.trim().to_owned(),
+            admission: self.admission.clone(),
         }
         .encode()
     }
@@ -294,7 +298,7 @@ impl BridgeApp {
         } else {
             self.join_code_input.trim().to_owned()
         };
-        match basement_bridge_core::JoinCode::decode(&input) {
+        match JoinCode::decode(&input) {
             Ok(code) => {
                 if let Some(ref relay_id) = code.relay_id {
                     if let Some(index) = self
@@ -315,6 +319,7 @@ impl BridgeApp {
                     self.relay_port = code.relay_port;
                 }
                 self.room = code.room.clone();
+                self.admission = code.admission.clone();
                 self.join_code_message = Some(t!("join_code.imported").into_owned());
                 self.status_message = None;
                 self.persist_selection();

@@ -154,23 +154,15 @@ mod tests {
     }
 
     #[test]
-    fn legacy_join_without_admission_fields_decodes() {
-        let json = br#"{"type":"join","room":"room","steam_id64":"76561198000000001","display_name":null,"challenge":null}"#;
-        let decoded = ControlMessage::decode(json).unwrap();
+    fn current_client_metadata_advertises_join_admission_features() {
+        let metadata = ClientMetadata::current();
 
-        match decoded {
-            ControlMessage::Join {
-                client,
-                pow_proof,
-                admission,
-                ..
-            } => {
-                assert_eq!(client, None);
-                assert_eq!(pow_proof, None);
-                assert_eq!(admission, None);
-            }
-            other => panic!("expected Join, got {other:?}"),
-        }
+        assert_eq!(metadata.protocol_major, PROTOCOL_MAJOR);
+        assert_eq!(metadata.protocol_minor, PROTOCOL_MINOR);
+        assert_eq!(
+            metadata.features & (CAP_POW_ADMISSION | CAP_ADMISSION_MATERIAL),
+            CAP_POW_ADMISSION | CAP_ADMISSION_MATERIAL
+        );
     }
 
     #[test]

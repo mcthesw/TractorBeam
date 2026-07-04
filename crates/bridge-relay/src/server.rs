@@ -23,7 +23,7 @@ use crate::{
     metrics::{PacketOutcome, RelayMetrics},
     peer_registry::PeerRegistry,
     state::{
-        JoinCompletion, JoinOutcome, PeerId, PeerTransport, RelayState, RoomBroadcast,
+        JoinCompletion, JoinOutcome, JoinRequest, PeerId, PeerTransport, RelayState, RoomBroadcast,
         error_message,
     },
 };
@@ -434,7 +434,7 @@ async fn handle_join(
                 room,
                 steam_id64,
                 display_name: _,
-                client: _,
+                client,
                 challenge: Some(challenge),
                 pow_proof,
                 admission: _,
@@ -442,6 +442,7 @@ async fn handle_join(
                 peer_id: source.peer_id,
                 room,
                 steam_id64,
+                client,
                 challenge,
                 pow_proof,
                 transport: source.transport,
@@ -451,19 +452,20 @@ async fn handle_join(
                 room,
                 steam_id64,
                 display_name,
-                client: _,
+                client,
                 challenge: None,
                 pow_proof: _,
                 admission,
             } => JoinOutcome {
-                response: state.challenge_join(
-                    source.peer_id,
+                response: state.challenge_join(JoinRequest {
+                    peer_id: source.peer_id,
                     room,
                     steam_id64,
                     display_name,
+                    client,
                     admission,
                     now,
-                ),
+                }),
                 broadcast: None,
             },
             _ => JoinOutcome {

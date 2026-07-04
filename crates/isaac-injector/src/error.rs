@@ -42,6 +42,8 @@ pub enum InjectorError {
     MissingInjector,
     #[error("Native Hook injection is not supported on this platform yet")]
     UnsupportedPlatform,
+    #[error("Admin permission was cancelled")]
+    AdminPermissionCancelled,
     #[error("{0}")]
     Io(#[from] io::Error),
     #[error("Native Hook injection failed at {step}: {source}")]
@@ -55,6 +57,8 @@ pub enum InjectorError {
         step: InjectionStep,
         message: String,
     },
+    #[error("Native Hook elevated retry failed after access denied: {message}")]
+    ElevatedRetryFailed { message: String },
 }
 
 impl InjectorError {
@@ -69,17 +73,69 @@ impl InjectorError {
         }
     }
 
+    pub fn elevated_retry_failed(message: impl Into<String>) -> Self {
+        Self::ElevatedRetryFailed {
+            message: message.into(),
+        }
+    }
+
     #[must_use]
     pub fn is_access_denied(&self) -> bool {
         match self {
+            Self::AdminPermissionCancelled | Self::ElevatedRetryFailed { .. } => true,
             Self::Io(error) | Self::StepIo { source: error, .. } => {
                 error.raw_os_error() == Some(5) || error.kind() == io::ErrorKind::PermissionDenied
             }
             Self::Injection { message, .. } => {
                 let lower = message.to_ascii_lowercase();
-                lower.contains("access is denied") || lower.contains("access denied")
+                lower.contains("access is denied")
+                    || lower.contains("access denied")
+                    || lower.contains("os error 5")
+                    || message.contains("拒绝访问")
             }
             _ => false,
         }
+    }
+
+    #[must_use]
+    pub fn is_admin_permission_cancelled(&self) -> bool {
+        matches!(self, Self::AdminPermissionCancelled)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_helper_message_access_denied_variants() {
+        for message in [
+            "injector helper exited with exit code: 1: access denied",
+            "injector helper exited with exit code: 1: Access is denied.",
+            "injector helper exited with exit code: 1: open Isaac process: os error 5",
+            "injector helper exited with exit code: 1: open Isaac process: 拒绝访问。 (os error 5)",
+        ] {
+            assert!(
+                InjectorError::injection(InjectionStep::HelperProcess, message).is_access_denied(),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn classifies_raw_os_error_five_as_access_denied() {
+        let error =
+            InjectorError::step_io(InjectionStep::OpenProcess, io::Error::from_raw_os_error(5));
+
+        assert!(error.is_access_denied());
+    }
+
+    #[test]
+    fn admin_permission_cancelled_is_explicit() {
+        let error = InjectorError::AdminPermissionCancelled;
+
+        assert!(error.is_admin_permission_cancelled());
+        assert!(error.is_access_denied());
+        assert_eq!(error.to_string(), "Admin permission was cancelled");
     }
 }

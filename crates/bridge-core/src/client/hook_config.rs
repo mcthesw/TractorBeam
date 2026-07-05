@@ -15,7 +15,7 @@ pub(super) struct HookConfigWrite {
 
 pub(super) fn write_hook_config(
     config: &SessionConfig,
-    paths: &basement_isaac_injector::NativeHookPaths,
+    paths: &tractor_beam_isaac_injector::NativeHookPaths,
 ) -> io::Result<HookConfigWrite> {
     let path = hook_config_path(&paths.hook)?;
     let directory = path.parent().ok_or_else(|| {
@@ -51,7 +51,7 @@ mod tests {
     fn hook_config_path_uses_native_hook_directory() {
         let hook = Path::new("bundle")
             .join("native-hook")
-            .join("basement_native_hook.dll");
+            .join("tractor_beam_native_hook.dll");
 
         let path = hook_config_path(&hook).unwrap();
 

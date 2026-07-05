@@ -60,7 +60,7 @@ pub(super) struct SessionHandle {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SessionNativeHook {
-    paths: basement_isaac_injector::NativeHookPaths,
+    paths: tractor_beam_isaac_injector::NativeHookPaths,
 }
 
 struct RuntimeTasks {
@@ -79,7 +79,7 @@ struct RelayTransportTaskContext {
 #[cfg(test)]
 pub(super) fn spawn_bridge_worker(
     config: SessionConfig,
-    native_hook_paths: basement_isaac_injector::NativeHookPaths,
+    native_hook_paths: tractor_beam_isaac_injector::NativeHookPaths,
 ) -> io::Result<SessionHandle> {
     let (handle, startup_rx) = spawn_bridge_worker_handle(config, native_hook_paths);
     let cancellation = handle.cancellation.clone();
@@ -118,7 +118,7 @@ pub(super) fn spawn_bridge_worker(
 
 pub(super) fn spawn_bridge_worker_background(
     config: SessionConfig,
-    native_hook_paths: basement_isaac_injector::NativeHookPaths,
+    native_hook_paths: tractor_beam_isaac_injector::NativeHookPaths,
 ) -> SessionHandle {
     let (handle, _startup_rx) = spawn_bridge_worker_handle(config, native_hook_paths);
     handle
@@ -126,7 +126,7 @@ pub(super) fn spawn_bridge_worker_background(
 
 fn spawn_bridge_worker_handle(
     config: SessionConfig,
-    native_hook_paths: basement_isaac_injector::NativeHookPaths,
+    native_hook_paths: tractor_beam_isaac_injector::NativeHookPaths,
 ) -> (SessionHandle, Receiver<io::Result<()>>) {
     let cancellation = CancellationToken::new();
     let (event_tx, event_rx) = mpsc::channel();
@@ -138,7 +138,7 @@ fn spawn_bridge_worker_handle(
         let runtime = match Builder::new_multi_thread()
             .enable_all()
             .worker_threads(2)
-            .thread_name("basement-bridge-core")
+            .thread_name("tractor-beam-core")
             .build()
         {
             Ok(runtime) => runtime,
@@ -566,10 +566,10 @@ fn current_health_snapshot(health: &Option<SharedSessionHealth>) -> Option<Sessi
 }
 
 #[cfg(test)]
-fn test_native_hook_paths() -> basement_isaac_injector::NativeHookPaths {
-    basement_isaac_injector::NativeHookPaths {
-        injector: PathBuf::from("basement-isaac-injector.exe"),
-        hook: PathBuf::from("basement_native_hook.dll"),
+fn test_native_hook_paths() -> tractor_beam_isaac_injector::NativeHookPaths {
+    tractor_beam_isaac_injector::NativeHookPaths {
+        injector: PathBuf::from("tractor-beam-isaac-injector.exe"),
+        hook: PathBuf::from("tractor_beam_native_hook.dll"),
     }
 }
 

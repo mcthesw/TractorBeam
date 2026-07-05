@@ -1,10 +1,10 @@
 use std::borrow::Cow;
 
-use basement_bridge_core::{
-    ClientError, ConfigError, ConnectionProfile, SessionQuality, SessionStatus, SessionStopReason,
-};
 use eframe::egui;
 use rust_i18n::t;
+use tractor_beam_core::{
+    ClientError, ConfigError, ConnectionProfile, SessionQuality, SessionStatus, SessionStopReason,
+};
 
 use super::BridgeApp;
 
@@ -141,7 +141,7 @@ fn config_error_message(config_error: ConfigError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use basement_bridge_core::ConfigError;
+    use tractor_beam_core::ConfigError;
 
     use crate::i18n::{Language, set_language, with_locale_lock};
 

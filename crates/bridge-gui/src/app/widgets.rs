@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 
-use basement_bridge_core::{RuntimeState, SteamIdentity};
 use eframe::egui;
 use rust_i18n::t;
+use tractor_beam_core::{RuntimeState, SteamIdentity};
 
 pub(super) fn detail_counters(ui: &mut egui::Ui, state: &RuntimeState) {
     ui.heading(t!("counters"));

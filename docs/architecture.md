@@ -1,6 +1,6 @@
 # Architecture
 
-Basement Bridge is split into a Rust core library, an egui desktop GUI, a Rust
+Tractor Beam is split into a Rust core library, an egui desktop GUI, a Rust
 relay server, a Rust injector helper, and a small Rust native hook.
 
 ```mermaid

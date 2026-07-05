@@ -1,4 +1,4 @@
-//! Shared runtime, protocol, diagnostics, and platform helpers for Basement Bridge.
+//! Shared runtime, protocol, diagnostics, and platform helpers for Tractor Beam.
 
 pub mod build_info;
 pub mod client;

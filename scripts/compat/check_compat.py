@@ -580,7 +580,7 @@ def acquire_base_relay(
         "--repo",
         args.github_repository,
         "--pattern",
-        "basement-bridge-relay-linux-x86_64",
+        "tractor-beam-relay-linux-x86_64",
         "--dir",
         str(downloads),
         "--clobber",
@@ -597,7 +597,7 @@ def acquire_base_relay(
         )
         return None, False
 
-    relay = downloads / "basement-bridge-relay-linux-x86_64"
+    relay = downloads / "tractor-beam-relay-linux-x86_64"
     if os.name != "nt":
         relay.chmod(relay.stat().st_mode | 0o111)
     run_case(
@@ -653,7 +653,7 @@ def run_current_client_suites(args: argparse.Namespace) -> list[CaseResult]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run Basement Bridge client/server compatibility probes."
+        description="Run Tractor Beam client/server compatibility probes."
     )
     parser.add_argument(
         "--head-relay-binary", "--relay-binary", dest="head_relay_binary",

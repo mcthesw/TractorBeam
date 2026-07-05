@@ -451,10 +451,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd637ac531c60eb7fbc4684dc061c2d7d90d73d758181aa02eeff0464b9eee4b"
 
 [[package]]
-name = "basement-bridge-core"
+name = "tractor-beam-core"
 version = "0.2.0"
 dependencies = [
- "basement-isaac-injector",
+ "tractor-beam-isaac-injector",
  "bs58",
  "bytes",
  "chrono",
@@ -476,11 +476,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "basement-bridge-gui"
+name = "tractor-beam-gui"
 version = "0.2.0"
 dependencies = [
  "arboard",
- "basement-bridge-core",
+ "tractor-beam-core",
  "directories",
  "eframe",
  "rust-i18n",
@@ -491,10 +491,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "basement-bridge-relay"
+name = "tractor-beam-relay"
 version = "0.2.0"
 dependencies = [
- "basement-bridge-core",
+ "tractor-beam-core",
  "bytes",
  "clap",
  "futures-util",
@@ -509,7 +509,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "basement-isaac-injector"
+name = "tractor-beam-isaac-injector"
 version = "0.2.0"
 dependencies = [
  "clap",
@@ -519,7 +519,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "basement-native-hook"
+name = "tractor-beam-native-hook"
 version = "0.2.0"
 dependencies = [
  "windows-sys 0.61.2",

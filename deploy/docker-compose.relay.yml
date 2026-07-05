@@ -2,12 +2,12 @@ services:
   relay:
     # Published Relay Server image. Formal release assets replace :latest with
     # the matching release tag for reproducible deployments.
-    image: ghcr.io/mcthesw/basement-bridge-relay:latest
+    image: ghcr.io/mcthesw/tractor-beam-relay:latest
     restart: unless-stopped
     ports:
       - "25910:25910/udp"
       - "25910:25910/tcp"
     volumes:
       # Keep relay.toml next to this compose file when running docker compose.
-      - ./relay.toml:/etc/basement-bridge/relay.toml:ro
-    command: ["--config", "/etc/basement-bridge/relay.toml"]
+      - ./relay.toml:/etc/tractor-beam/relay.toml:ro
+    command: ["--config", "/etc/tractor-beam/relay.toml"]

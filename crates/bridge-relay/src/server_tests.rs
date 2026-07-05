@@ -1,8 +1,5 @@
 use std::{io, net::SocketAddr, time::Duration};
 
-use basement_bridge_core::protocol::{
-    ClientMetadata, ControlMessage, Envelope, GamePacket, MessageType,
-};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use tokio::{
@@ -10,6 +7,9 @@ use tokio::{
     time::timeout,
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
+use tractor_beam_core::protocol::{
+    ClientMetadata, ControlMessage, Envelope, GamePacket, MessageType,
+};
 
 use super::*;
 

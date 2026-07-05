@@ -1,11 +1,11 @@
 # Security
 
-Basement Bridge is a work-in-progress transport moving toward a Windows
+Tractor Beam is a work-in-progress transport moving toward a Windows
 baseline. This document records the security boundary before wider distribution.
 
 ## Threat Model
 
-Who Basement Bridge trusts, and how much:
+Who Tractor Beam trusts, and how much:
 
 - **Same-room Peer: semi-trusted.** A peer who joined your Room is trusted to
   play, not to behave. Bridge treats game payloads as opaque and does not
@@ -29,14 +29,14 @@ Who Basement Bridge trusts, and how much:
 
 - The current bridge path is not end-to-end encrypted.
 - A Relay Server can observe metadata such as source address, room name, packet size, direction, timing, and byte counts.
-- Game packet payloads are treated as opaque by Basement Bridge, but the current test protocol does not make them confidential from the Relay Server.
+- Game packet payloads are treated as opaque by Tractor Beam, but the current test protocol does not make them confidential from the Relay Server.
 - Room names or invite codes should be treated as bearer secrets.
 - Diagnostics may contain SteamID64, relay address, room name, local paths, counters, and error text.
 - Only use trusted Relay Servers for current testing.
 
 ## Phase 1 Requirements
 
-- Reject packets without the Basement Bridge protocol magic.
+- Reject packets without the Tractor Beam protocol magic.
 - Enforce maximum packet sizes.
 - Require a peer to join a room before forwarding room traffic.
 - Validate a peer's claimed address with a join handshake (the relay forwards to an address only after that address echoes a join token) to block spoofed-source reflection.

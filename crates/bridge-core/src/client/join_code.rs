@@ -149,7 +149,7 @@ mod tests {
     fn round_trips_without_relay_id() {
         let code = JoinCode {
             relay_id: None,
-            relay_host: "1.2.3.4".to_owned(),
+            relay_host: "relay.example.test".to_owned(),
             relay_port: 25_910,
             room: "test".to_owned(),
             admission: "AbCdEfGhIjKlMn12".to_owned(),

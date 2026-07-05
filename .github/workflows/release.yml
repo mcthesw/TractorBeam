@@ -95,7 +95,7 @@ jobs:
           Copy-Item "target/x86_64-pc-windows-msvc/release/basement-bridge.exe" $bundleDir
           Copy-Item "target/i686-pc-windows-msvc/release/basement-isaac-injector.exe" $bundleDir
           Copy-Item "target/i686-pc-windows-msvc/release/basement_native_hook.dll" $bundleDir
-          Copy-Item "deploy/client.release.example.toml" (Join-Path $bundleDir "config.example.toml")
+          Copy-Item "deploy/client.config.toml" (Join-Path $bundleDir "config.toml")
           @{
             name = "Basement Bridge Client Bundle"
             version = $version
@@ -105,7 +105,7 @@ jobs:
               "basement-bridge.exe",
               "basement-isaac-injector.exe",
               "basement_native_hook.dll",
-              "config.example.toml"
+              "config.toml"
             )
           } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 (Join-Path $bundleDir "bundle-manifest.json")
           Compress-Archive -Path "$bundleDir/*" -DestinationPath "dist/basement-bridge-client-bundle-windows-x86_64.zip"
@@ -214,6 +214,7 @@ jobs:
         with:
           images: ${{ needs.setup.outputs.image }}
           tags: |
+            type=raw,value=latest
             type=raw,value=${{ needs.setup.outputs.tag }}
             type=raw,value=${{ needs.setup.outputs.version }}
 
@@ -280,8 +281,8 @@ jobs:
           cp staging/basement-bridge-client-bundle-windows-x86_64.zip release-assets/
           cp staging/basement-bridge-relay-linux-x86_64 release-assets/
           cp staging/basement-bridge-relay-windows-x86_64.exe release-assets/
-          sed "s|@RELAY_IMAGE@|${IMAGE}:${TAG}|g" \
-            deploy/docker-compose.relay.template.yml > release-assets/docker-compose.relay.yml
+          sed "s|ghcr.io/mcthesw/basement-bridge-relay:latest|${IMAGE}:${TAG}|g" \
+            deploy/docker-compose.relay.yml > release-assets/docker-compose.relay.yml
           cp staging/relay-image.json release-assets/
           (
             cd release-assets

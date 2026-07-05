@@ -468,6 +468,12 @@ fn rejects_missing_pow_proof_when_required() {
     let now = Instant::now();
     let (token, _pow) =
         challenge(state.challenge_join(join_request(peer(1), "room", "76561198000000001", now)));
+    state
+        .pending
+        .get_mut(&peer(1))
+        .and_then(|pending| pending.pow.as_mut())
+        .expect("pending pow challenge")
+        .algorithm = "unsupported".to_owned();
 
     let outcome = state.complete_join(JoinCompletion {
         peer_id: peer(1),

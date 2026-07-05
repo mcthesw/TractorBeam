@@ -8,7 +8,7 @@ same Relay Protocol. It does not need a database for Phase 2.
 Build and run locally:
 
 ```sh
-cargo run --release -p basement-bridge-relay -- --config deploy/relay.example.toml
+cargo run --release -p basement-bridge-relay -- --config deploy/relay.toml
 ```
 
 Or override the bind address directly:
@@ -31,6 +31,13 @@ Docker build:
 ```sh
 docker build -f deploy/Dockerfile.relay -t basement-bridge-relay .
 docker run --rm -p 25910:25910/udp -p 25910:25910/tcp basement-bridge-relay
+```
+
+Docker Compose with the published image:
+
+```sh
+cd deploy
+docker compose -f docker-compose.relay.yml up -d
 ```
 
 Open inbound firewall rules for each listener configured under

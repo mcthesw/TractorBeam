@@ -408,7 +408,7 @@ async fn run_hook_receive_probe_async(
     hook_log_path: PathBuf,
 ) -> io::Result<HookReceiveProbeReport> {
     let peer = hook_probe_peer();
-    let payload = Bytes::from(format!("basement-bridge-hook-probe-{peer}"));
+    let payload = Bytes::from(format!("tractor-beam-hook-probe-{peer}"));
     let game = GamePacket {
         from_steam_id64: peer.to_string(),
         to_steam_id64: 0,
@@ -488,13 +488,12 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires BASEMENT_BRIDGE_RELAY=host:port and a running Relay Server"]
+    #[ignore = "requires TRACTOR_BEAM_RELAY=host:port and a running Relay Server"]
     fn probes_configured_relay() {
-        let relay =
-            std::env::var("BASEMENT_BRIDGE_RELAY").expect("set BASEMENT_BRIDGE_RELAY=host:port");
+        let relay = std::env::var("TRACTOR_BEAM_RELAY").expect("set TRACTOR_BEAM_RELAY=host:port");
         let (host, port) = relay
             .rsplit_once(':')
-            .expect("BASEMENT_BRIDGE_RELAY must be host:port");
+            .expect("TRACTOR_BEAM_RELAY must be host:port");
         let port = port.parse().expect("relay port must be a u16");
 
         let report = run_relay_probe(

@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use basement_bridge_core::protocol::{ClientMetadata, ControlMessage, PowChallenge, PowProof};
+use tractor_beam_core::protocol::{ClientMetadata, ControlMessage, PowChallenge, PowProof};
 
 use super::*;
 use crate::incident::{MISSING_TARGET_INITIAL_LOGS, MISSING_TARGET_LOG_INTERVAL};

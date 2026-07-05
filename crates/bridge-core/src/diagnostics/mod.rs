@@ -7,7 +7,7 @@ use regex::Regex;
 
 pub const ONLINE_LOG: &str = "online.log";
 pub const BRIDGE_CONFIG_FILE: &str = "isaac_bridge_config.txt";
-pub const BRIDGE_HOOK_LOG: &str = "basement_bridge_hook.log";
+pub const BRIDGE_HOOK_LOG: &str = "tractor_beam_hook.log";
 const MAX_FILE_EXCERPT_BYTES: usize = 64 * 1024;
 
 #[must_use]
@@ -25,7 +25,7 @@ pub fn isaac_online_logs_directory() -> PathBuf {
                 .join("Binding of Isaac Repentance+")
                 .join("online_logs")
         })
-        .unwrap_or_else(|| std::env::temp_dir().join("basement-bridge-online-logs"))
+        .unwrap_or_else(|| std::env::temp_dir().join("tractor-beam-online-logs"))
 }
 
 #[must_use]

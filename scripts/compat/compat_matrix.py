@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
-CLIENT_ONLY_ENV = "BASEMENT_BRIDGE_COMPAT_CLIENT_ONLY"
+CLIENT_ONLY_ENV = "TRACTOR_BEAM_COMPAT_CLIENT_ONLY"
 
 
 @dataclasses.dataclass

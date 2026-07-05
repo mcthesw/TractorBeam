@@ -1,12 +1,12 @@
 use std::borrow::Cow;
 
-use basement_bridge_core::{
+use eframe::egui::{self, ComboBox, TextEdit};
+use rust_i18n::t;
+use tractor_beam_core::{
     ConnectionProfile, HookReceiveProbeReport, HookStartupPhase, LogLevel,
     ReadinessProbeCaseReport, ReadinessProbeReport, RuntimeState, SessionMode, SessionQuality,
     SessionStatus, TransportChoice, build_info, protocol::PeerTransport,
 };
-use eframe::egui::{self, ComboBox, TextEdit};
-use rust_i18n::t;
 
 use crate::i18n::Language;
 
@@ -521,12 +521,12 @@ impl BridgeApp {
                 ui.end_row();
             });
         ui.add_space(12.0);
-        ui.hyperlink_to("GitHub", "https://github.com/mcthesw/Basement-Bridge");
+        ui.hyperlink_to("GitHub", "https://github.com/mcthesw/TractorBeam");
         ui.add_space(2.0);
         ui.label(format!("{}: GNU AGPL-3.0-or-later", t!("license")));
     }
 
-    fn relay_latency_label(&self, endpoint: &basement_bridge_core::RelayEndpoint) -> String {
+    fn relay_latency_label(&self, endpoint: &tractor_beam_core::RelayEndpoint) -> String {
         let state = self.client.state();
         state
             .light_ping_reports
@@ -544,7 +544,7 @@ impl BridgeApp {
             )
     }
 
-    fn relay_option_label(&self, relay: &basement_bridge_core::RelayPreset) -> String {
+    fn relay_option_label(&self, relay: &tractor_beam_core::RelayPreset) -> String {
         format!(
             "{} ({})",
             relay.name,

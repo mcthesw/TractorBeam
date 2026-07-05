@@ -19,13 +19,13 @@ async fn main() -> io::Result<()> {
     let args = Args::parse();
     if args.should_print_version() {
         println!(
-            "basement-bridge-relay {}",
-            basement_bridge_core::build_info::version_label()
+            "tractor-beam-relay {}",
+            tractor_beam_core::build_info::version_label()
         );
         return Ok(());
     }
     tracing::info!(
-        version = %basement_bridge_core::build_info::version_label(),
+        version = %tractor_beam_core::build_info::version_label(),
         "relay starting"
     );
     let config = RelayConfig::load(&args)?;

@@ -4,14 +4,14 @@ use std::{
     sync::OnceLock,
 };
 
-use basement_bridge_core::{
-    ClientLogSink, ClientSessionLog, ClientSessionLogContext, LogLevel, PRODUCT_NAME,
-    bundle_config_path, emit_client_log_event,
-};
 use directories::ProjectDirs;
 use tracing::Dispatch;
 use tracing_appender::{non_blocking::WorkerGuard, rolling};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+use tractor_beam_core::{
+    ClientLogSink, ClientSessionLog, ClientSessionLogContext, LogLevel, PRODUCT_NAME,
+    bundle_config_path, emit_client_log_event,
+};
 
 const SESSION_RETAIN_COUNT: usize = 10;
 
@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn retention_keeps_recent_session_logs() {
         let root =
-            std::env::temp_dir().join(format!("basement-bridge-log-retention-{}", unix_seconds()));
+            std::env::temp_dir().join(format!("tractor-beam-log-retention-{}", unix_seconds()));
         let sessions = root.join("sessions");
         fs::create_dir_all(&sessions).unwrap();
         for index in 0..12 {

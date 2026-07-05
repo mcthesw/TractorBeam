@@ -394,7 +394,7 @@ pub fn app_data_config_path() -> Option<PathBuf> {
 }
 
 pub fn bundle_directory() -> Option<PathBuf> {
-    if let Some(path) = env::var_os("BASEMENT_BRIDGE_BUNDLE_DIR") {
+    if let Some(path) = env::var_os("TRACTOR_BEAM_BUNDLE_DIR") {
         return Some(PathBuf::from(path));
     }
     env::current_exe()

@@ -12,7 +12,7 @@ resolver = "3"
 version = "0.2.0" # x-release-please-version
 edition = "2024"
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/mcthesw/Basement-Bridge"
+repository = "https://github.com/mcthesw/TractorBeam"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

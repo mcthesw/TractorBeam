@@ -19,7 +19,7 @@ use std::{
 use windows_sys::Win32::{Foundation::HINSTANCE, System::LibraryLoader::GetModuleFileNameW};
 
 const CONFIG_FILE: &str = "isaac_bridge_config.txt";
-const LOG_FILE: &str = "basement_bridge_hook.log";
+const LOG_FILE: &str = "tractor_beam_hook.log";
 const LOCAL_MAGIC: &[u8; 4] = b"IBR1";
 const LOCAL_HEADER_LEN: usize = 32;
 const MAX_PAYLOAD_SIZE: usize = 64 * 1024;

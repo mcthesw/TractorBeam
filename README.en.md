@@ -1,4 +1,4 @@
-# Basement Bridge
+# Tractor Beam
 
 [中文](README.md)
 
@@ -6,7 +6,7 @@ A desktop client and relay transport for *The Binding of Isaac: Repentance+*
 online play.
 
 Official online play can be very laggy, and virtual LAN setups are often still
-not smooth enough. Basement Bridge introduces a non-P2P path: it keeps the
+not smooth enough. Tractor Beam introduces a non-P2P path: it keeps the
 normal Steam version features intact while moving game data transport onto a
 server relay for better transmission quality.
 

@@ -5,7 +5,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use basement_bridge_core::protocol::{ControlMessage, Envelope, GamePacket, MessageType};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use tokio::{
@@ -16,6 +15,7 @@ use tokio::{
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::{debug, info, warn};
+use tractor_beam_core::protocol::{ControlMessage, Envelope, GamePacket, MessageType};
 
 use crate::{
     config::RelayConfig,

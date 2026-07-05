@@ -8,13 +8,13 @@ same Relay Protocol. It does not need a database for Phase 2.
 Build and run locally:
 
 ```sh
-cargo run --release -p basement-bridge-relay -- --config deploy/relay.toml
+cargo run --release -p tractor-beam-relay -- --config deploy/relay.toml
 ```
 
 Or override the bind address directly:
 
 ```sh
-cargo run --release -p basement-bridge-relay -- --bind 0.0.0.0:25910
+cargo run --release -p tractor-beam-relay -- --bind 0.0.0.0:25910
 ```
 
 Use `--tcp-bind 0.0.0.0:25910` to override TCP separately, or `--disable-tcp`
@@ -23,14 +23,14 @@ to run UDP only.
 On a server, copy the release binary and a config file, then run:
 
 ```sh
-RUST_LOG=info ./basement-bridge-relay --config /etc/basement-bridge/relay.toml
+RUST_LOG=info ./tractor-beam-relay --config /etc/tractor-beam/relay.toml
 ```
 
 Docker build:
 
 ```sh
-docker build -f deploy/Dockerfile.relay -t basement-bridge-relay .
-docker run --rm -p 25910:25910/udp -p 25910:25910/tcp basement-bridge-relay
+docker build -f deploy/Dockerfile.relay -t tractor-beam-relay .
+docker run --rm -p 25910:25910/udp -p 25910:25910/tcp tractor-beam-relay
 ```
 
 Docker Compose with the published image:

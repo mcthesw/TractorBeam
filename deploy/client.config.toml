@@ -1,4 +1,4 @@
-# Copy this file to config.toml next to basement-bridge.exe.
+# Copy this file to config.toml next to tractor-beam.exe.
 #
 # Do not commit public beta tester relay addresses here. Distribute tester
 # relay presets out-of-band with the test package.

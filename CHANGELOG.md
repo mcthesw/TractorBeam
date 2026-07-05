@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.1](https://github.com/mcthesw/TractorBeam/compare/v0.2.0...v0.2.1) (2026-07-05)
+
+
+### Features
+
+* **protocol:** add relay admission metadata ([254e5a0](https://github.com/mcthesw/TractorBeam/commit/254e5a0232b88e715066252a68c034122d0f002c))
+* **relay:** add public relay config defaults ([0d71766](https://github.com/mcthesw/TractorBeam/commit/0d71766be6c0e04e7b2695bc3a3549a9f17bf4fc))
+* **relay:** add public traffic safety limits ([3bcc3f4](https://github.com/mcthesw/TractorBeam/commit/3bcc3f4099554267cf2224d3a09688147cf48f27))
+* **relay:** enforce client admission metadata ([f7badeb](https://github.com/mcthesw/TractorBeam/commit/f7badebba9b8a335adfc0dcf7bc01e9f3005bb6b))
+* **relay:** require proof of work for joins ([44093e0](https://github.com/mcthesw/TractorBeam/commit/44093e0a032bf9bd2d59704f62b294183e674ffb))
+* **relay:** require room admission material ([e7ab4e3](https://github.com/mcthesw/TractorBeam/commit/e7ab4e3d7d833f3a34cd27f9492bead44a9c5bcb))
+
+
+### Bug Fixes
+
+* **core:** report initial room peers ([f105d92](https://github.com/mcthesw/TractorBeam/commit/f105d92c209ed3cb8aff864b730ddcbcc6f8d7a4))
+* **gui:** keep startup responsive during relay init ([f5b1e9d](https://github.com/mcthesw/TractorBeam/commit/f5b1e9dbe4e3aeff53b634cb29c9007e1782d73a))
+* **relay:** prune stale public peer state ([6243a46](https://github.com/mcthesw/TractorBeam/commit/6243a465bf6b28f480e82867844d83e850970231))
+
 ## [0.2.0](https://github.com/mcthesw/TractorBeam/compare/v0.1.1...v0.2.0) (2026-07-04)
 
 

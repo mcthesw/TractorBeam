@@ -1,0 +1,24 @@
+# Public beta Relay Server configuration.
+#
+# Listener fields enable their transport by presence. Remove udp_bind to run
+# TCP only, or remove tcp_bind to run UDP only. Public hosts must open the same
+# port/protocol in their firewall.
+[relay_server]
+udp_bind = "0.0.0.0:25910"
+tcp_bind = "0.0.0.0:25910"
+
+[admission]
+# Room join proof-of-work difficulty. Use 18 for public beta relays. Set to 0
+# only for local/private development relays where join-spam protection is not
+# needed.
+pow_difficulty_bits = 18
+
+[room_limits]
+# Maximum active rooms kept in memory at one time. Other room/peer/idle/traffic
+# limits are conservative built-in defaults shared by all public relays.
+max_rooms = 256
+
+[access_control]
+# Optional IP/CIDR blocklist for obvious abuse sources.
+# Examples: ["203.0.113.10/32", "2001:db8::/32"]
+blocked_cidrs = []

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -32,6 +33,9 @@ PROTOCOL_MINOR = 0
 ENVELOPE_HEADER_LEN = 42
 GAME_PACKET_HEADER_LEN = 40
 CAP_PATH_VALIDATION = 1 << 0
+CAP_POW_ADMISSION = 1 << 2
+CAP_ADMISSION_MATERIAL = 1 << 3
+COMPAT_ADMISSION = "CompatAdm1ssion"
 
 MESSAGE_JOIN = 1
 MESSAGE_DATA = 4
@@ -172,12 +176,14 @@ def join_peer(
     steam_id64: str,
     timeout: float,
 ) -> dict[str, Any]:
-    send_join(peer, room, steam_id64, None)
+    send_join(peer, room, steam_id64, None, None)
     message_type, challenge = recv_control(peer, timeout)
     if message_type != 2 or challenge.get("type") != "challenge":
         raise CompatError(f"expected join challenge, got {challenge}")
 
-    send_join(peer, room, steam_id64, challenge.get("token"))
+    token = challenge.get("token")
+    pow_proof = solve_pow(challenge.get("pow"), token, room, steam_id64)
+    send_join(peer, room, steam_id64, token, pow_proof)
     message_type, ready = recv_control(peer, timeout)
     if message_type != 3 or ready.get("type") != "ready":
         raise CompatError(f"expected join ready, got {ready}")
@@ -189,19 +195,86 @@ def send_join(
     room: str,
     steam_id64: str,
     challenge: str | None,
+    pow_proof: dict[str, str] | None,
 ) -> None:
+    message: dict[str, Any] = {
+        "type": "join",
+        "room": room,
+        "steam_id64": steam_id64,
+        "display_name": None,
+        "client": current_client_metadata(),
+        "challenge": challenge,
+        "admission": COMPAT_ADMISSION,
+    }
+    if pow_proof is not None:
+        message["pow_proof"] = pow_proof
     peer.send(
         encode_control(
-            {
-                "type": "join",
-                "room": room,
-                "steam_id64": steam_id64,
-                "display_name": None,
-                "challenge": challenge,
-            },
+            message,
             MESSAGE_JOIN,
         )
     )
+
+
+def current_client_metadata() -> dict[str, Any]:
+    return {
+        "app_version": "compat-probe",
+        "git_hash": None,
+        "protocol_major": PROTOCOL_MAJOR,
+        "protocol_minor": PROTOCOL_MINOR,
+        "features": CAP_PATH_VALIDATION | CAP_POW_ADMISSION | CAP_ADMISSION_MATERIAL,
+    }
+
+
+def solve_pow(
+    challenge: Any,
+    token: Any,
+    room: str,
+    steam_id64: str,
+) -> dict[str, str] | None:
+    if challenge is None:
+        return None
+    if not isinstance(token, str):
+        raise CompatError(f"bad POW token in challenge: {token!r}")
+    if not isinstance(challenge, dict) or challenge.get("algorithm") != "sha256":
+        raise CompatError(f"unsupported POW challenge: {challenge}")
+    pow_nonce = challenge.get("nonce")
+    if not isinstance(pow_nonce, str):
+        raise CompatError(f"bad POW nonce in challenge: {challenge}")
+    difficulty_bits = int(challenge.get("difficulty_bits", 0))
+    for counter in range(sys.maxsize):
+        proof_nonce = f"{counter:016x}"
+        digest = pow_digest(token, room, steam_id64, pow_nonce, proof_nonce)
+        if has_leading_zero_bits(digest, difficulty_bits):
+            return {"nonce": proof_nonce}
+    raise CompatError("POW proof search exhausted")
+
+
+def pow_digest(
+    token: str,
+    room: str,
+    steam_id64: str,
+    challenge_nonce: str,
+    proof_nonce: str,
+) -> bytes:
+    hasher = hashlib.sha256()
+    for part in [token, room, steam_id64, challenge_nonce, proof_nonce]:
+        hasher.update(part.encode("utf-8"))
+        hasher.update(b"\0")
+    return hasher.digest()
+
+
+def has_leading_zero_bits(digest: bytes, difficulty_bits: int) -> bool:
+    whole_bytes, remaining_bits = divmod(difficulty_bits, 8)
+    if whole_bytes > len(digest):
+        return False
+    if any(byte != 0 for byte in digest[:whole_bytes]):
+        return False
+    if remaining_bits == 0:
+        return True
+    if whole_bytes >= len(digest):
+        return False
+    return digest[whole_bytes] >> (8 - remaining_bits) == 0
 
 
 def send_health_ping(peer: Peer, timeout: float) -> None:
@@ -477,13 +550,6 @@ def acquire_base_relay(
     if args.base_relay_binary:
         return Path(args.base_relay_binary), True
     if not args.previous_tag:
-        run_case(
-            results,
-            args.current_client_label,
-            args.base_server_label,
-            "base_server_acquisition",
-            lambda: (_ for _ in ()).throw(CompatSkip("no base relay configured")),
-        )
         return None, False
     if not args.github_repository:
         run_case(

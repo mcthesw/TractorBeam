@@ -35,12 +35,14 @@ use super::{
     relay_transport::{RelayTransport, complete_relay_join, send_control},
     session_health::{SessionHealth, SessionHealthSnapshot},
     state::{
-        RuntimeEvent, RuntimeEventSender, SessionStopReason, error_counter, log_event, send_event,
+        HookStartupPhase, HookStartupState, RuntimeEvent, RuntimeEventSender, SessionStopReason,
+        error_counter, log_event, send_event, unix_seconds,
     },
 };
 
 const EVENT_QUEUE_CAPACITY: usize = 512;
 const PACKET_QUEUE_CAPACITY: usize = 256;
+#[cfg(test)]
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(6);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -74,16 +76,65 @@ struct RelayTransportTaskContext {
     runtime_rtt_interval: Duration,
 }
 
+#[cfg(test)]
 pub(super) fn spawn_bridge_worker(
     config: SessionConfig,
     native_hook_paths: basement_isaac_injector::NativeHookPaths,
 ) -> io::Result<SessionHandle> {
+    let (handle, startup_rx) = spawn_bridge_worker_handle(config, native_hook_paths);
+    let cancellation = handle.cancellation.clone();
+
+    match startup_rx.recv_timeout(STARTUP_TIMEOUT) {
+        Ok(Ok(())) => Ok(handle),
+        Ok(Err(error)) => {
+            cancellation.cancel();
+            let mut handle = handle;
+            if let Some(worker) = handle.worker.take() {
+                let _ = worker.join();
+            }
+            Err(error)
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            cancellation.cancel();
+            let mut handle = handle;
+            if let Some(worker) = handle.worker.take() {
+                let _ = worker.join();
+            }
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "bridge runtime startup timed out",
+            ))
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            cancellation.cancel();
+            let mut handle = handle;
+            if let Some(worker) = handle.worker.take() {
+                let _ = worker.join();
+            }
+            Err(io::Error::other("bridge runtime exited during startup"))
+        }
+    }
+}
+
+pub(super) fn spawn_bridge_worker_background(
+    config: SessionConfig,
+    native_hook_paths: basement_isaac_injector::NativeHookPaths,
+) -> SessionHandle {
+    let (handle, _startup_rx) = spawn_bridge_worker_handle(config, native_hook_paths);
+    handle
+}
+
+fn spawn_bridge_worker_handle(
+    config: SessionConfig,
+    native_hook_paths: basement_isaac_injector::NativeHookPaths,
+) -> (SessionHandle, Receiver<io::Result<()>>) {
     let cancellation = CancellationToken::new();
     let (event_tx, event_rx) = mpsc::channel();
     let (startup_tx, startup_rx) = mpsc::sync_channel(1);
     let worker_cancellation = cancellation.clone();
 
     let worker = thread::spawn(move || {
+        let startup_event_tx = event_tx.clone();
         let runtime = match Builder::new_multi_thread()
             .enable_all()
             .worker_threads(2)
@@ -96,6 +147,23 @@ pub(super) fn spawn_bridge_worker(
                     &startup_tx,
                     Err(io::Error::other(format!("runtime startup failed: {error}"))),
                 );
+                let _ = startup_event_tx.send(log_event(
+                    LogLevel::Error,
+                    format!("Bridge runtime startup failed: {error}"),
+                ));
+                let _ =
+                    startup_event_tx.send(RuntimeEvent::HookStartup(Box::new(HookStartupState {
+                        phase: HookStartupPhase::Failed,
+                        message: Some(format!("Bridge runtime startup failed: {error}")),
+                        updated_at: unix_seconds(),
+                        ..HookStartupState::default()
+                    })));
+                let _ = startup_event_tx.send(RuntimeEvent::SessionEnded(
+                    SessionStopReason::RuntimeEnded {
+                        message: format!("Bridge runtime startup failed: {error}"),
+                    },
+                ));
+                let _ = startup_event_tx.send(RuntimeEvent::Stopped);
                 return;
             }
         };
@@ -112,31 +180,14 @@ pub(super) fn spawn_bridge_worker(
         runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
     });
 
-    match startup_rx.recv_timeout(STARTUP_TIMEOUT) {
-        Ok(Ok(())) => Ok(SessionHandle {
+    (
+        SessionHandle {
             cancellation,
             events: event_rx,
             worker: Some(worker),
-        }),
-        Ok(Err(error)) => {
-            cancellation.cancel();
-            let _ = worker.join();
-            Err(error)
-        }
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            cancellation.cancel();
-            let _ = worker.join();
-            Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "bridge runtime startup timed out",
-            ))
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            cancellation.cancel();
-            let _ = worker.join();
-            Err(io::Error::other("bridge runtime exited during startup"))
-        }
-    }
+        },
+        startup_rx,
+    )
 }
 
 impl SessionHandle {
@@ -209,6 +260,21 @@ async fn supervise_session(
                 &event_tx,
                 log_event(LogLevel::Error, format!("Bridge runtime failed: {message}")),
             );
+            send_event(
+                &event_tx,
+                RuntimeEvent::HookStartup(Box::new(HookStartupState {
+                    phase: HookStartupPhase::Failed,
+                    message: Some(format!("Bridge runtime failed: {message}")),
+                    updated_at: unix_seconds(),
+                    ..HookStartupState::default()
+                })),
+            );
+            send_event(
+                &event_tx,
+                RuntimeEvent::SessionEnded(SessionStopReason::RuntimeEnded {
+                    message: message.clone(),
+                }),
+            );
             send_event(&event_tx, RuntimeEvent::CounterDelta(error_counter()));
         }
     }
@@ -219,6 +285,21 @@ async fn supervise_session(
 }
 
 async fn start_runtime_tasks(
+    config: &SessionConfig,
+    native_hook: SessionNativeHook,
+    cancellation: &CancellationToken,
+    event_tx: &RuntimeEventSender,
+) -> io::Result<RuntimeTasks> {
+    tokio::select! {
+        result = start_runtime_tasks_inner(config, native_hook, cancellation, event_tx) => result,
+        () = cancellation.cancelled() => Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "bridge runtime startup cancelled",
+        )),
+    }
+}
+
+async fn start_runtime_tasks_inner(
     config: &SessionConfig,
     native_hook: SessionNativeHook,
     cancellation: &CancellationToken,

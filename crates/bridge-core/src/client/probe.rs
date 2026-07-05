@@ -17,7 +17,9 @@ use bytes::Bytes;
 use serde::Serialize;
 use tokio::{runtime::Builder, time};
 
-use crate::protocol::{Envelope, GamePacket, LocalPacket, MessageType};
+use crate::protocol::{
+    ENVELOPE_HEADER_LEN, Envelope, GAME_PACKET_HEADER_LEN, GamePacket, LocalPacket, MessageType,
+};
 
 use super::{
     BridgeClient, LogLevel, RelayEndpoint, SessionConfig, SessionMode, TransportChoice,
@@ -35,7 +37,8 @@ pub use readiness::{
 
 pub(super) const PROBE_A_STEAM: &str = "76561198000000101";
 pub(super) const PROBE_B_STEAM: &str = "76561198000000102";
-pub const DEFAULT_RELAY_PROBE_PAYLOAD_BYTES: usize = 2_048;
+pub const DEFAULT_RELAY_PROBE_PAYLOAD_BYTES: usize =
+    2_048 - ENVELOPE_HEADER_LEN - GAME_PACKET_HEADER_LEN;
 pub(super) const MAX_RELAY_PROBE_PAYLOAD_BYTES: usize = 60_000;
 const DATA_TIMEOUT: Duration = Duration::from_secs(3);
 const HOOK_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -200,9 +203,26 @@ async fn run_relay_probe_async(
     payload_bytes: usize,
 ) -> io::Result<RelayProbeReport> {
     let room = format!("bb-probe-{}-{}", std::process::id(), unix_seconds());
+    let admission = crate::JoinCode::generate_admission();
     let relay_display = relay.to_string();
-    let mut peer_a = ProbePeer::join(&relay, transport, &room, PROBE_A_STEAM, "Probe A").await?;
-    let mut peer_b = ProbePeer::join(&relay, transport, &room, PROBE_B_STEAM, "Probe B").await?;
+    let mut peer_a = ProbePeer::join(
+        &relay,
+        transport,
+        &room,
+        &admission,
+        PROBE_A_STEAM,
+        "Probe A",
+    )
+    .await?;
+    let mut peer_b = ProbePeer::join(
+        &relay,
+        transport,
+        &room,
+        &admission,
+        PROBE_B_STEAM,
+        "Probe B",
+    )
+    .await?;
 
     let payload = probe_payload(payload_bytes);
     peer_a.send_game(PROBE_B_STEAM, payload.clone()).await?;
@@ -243,6 +263,7 @@ impl ProbePeer {
         relay: &RelayEndpoint,
         transport: TransportChoice,
         room: &str,
+        admission: &str,
         steam_id64: &'static str,
         display_name: &str,
     ) -> io::Result<Self> {
@@ -251,7 +272,7 @@ impl ProbePeer {
             relay_name: None,
             transport,
             room: room.to_owned(),
-            admission: crate::JoinCode::generate_admission(),
+            admission: admission.to_owned(),
             mode: SessionMode::Pure,
             steam_id64: steam_id64.to_owned(),
             display_name: display_name.to_owned(),

@@ -19,11 +19,11 @@ use super::{
 
 const PROTOCOL_VERSION: &str = "1.0";
 const LOG_LEVELS: [LogLevel; 5] = [
-    LogLevel::Error,
-    LogLevel::Warn,
-    LogLevel::Info,
-    LogLevel::Debug,
     LogLevel::Trace,
+    LogLevel::Debug,
+    LogLevel::Info,
+    LogLevel::Warn,
+    LogLevel::Error,
 ];
 
 impl BridgeApp {
@@ -487,7 +487,7 @@ impl BridgeApp {
                 }
                 ui.set_min_width(ui.available_width());
                 for entry in &logs {
-                    if entry.level as u8 > filter_level as u8 {
+                    if (entry.level as u8) < (filter_level as u8) {
                         continue;
                     }
                     ui.horizontal_top(|ui| {
@@ -776,11 +776,11 @@ fn unix_seconds() -> u64 {
 
 fn u8_to_level(value: u8) -> LogLevel {
     match value {
-        0 => LogLevel::Error,
-        1 => LogLevel::Warn,
+        0 => LogLevel::Trace,
+        1 => LogLevel::Debug,
         2 => LogLevel::Info,
-        3 => LogLevel::Debug,
-        _ => LogLevel::Trace,
+        3 => LogLevel::Warn,
+        _ => LogLevel::Error,
     }
 }
 

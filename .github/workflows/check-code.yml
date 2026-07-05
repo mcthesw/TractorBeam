@@ -16,7 +16,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  BASEMENT_BRIDGE_GIT_HASH: ${{ github.sha }}
+  TRACTOR_BEAM_GIT_HASH: ${{ github.sha }}
 
 jobs:
   rust:
@@ -64,7 +64,7 @@ jobs:
         run: cargo test --locked --workspace --all-targets --all-features
 
       - name: Build Relay Server
-        run: cargo build --locked --release -p basement-bridge-relay
+        run: cargo build --locked --release -p tractor-beam-relay
 
   windows:
     name: Windows targets
@@ -78,10 +78,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.1
 
       - name: Build Bridge GUI
-        run: cargo build --locked --release -p basement-bridge-gui --target x86_64-pc-windows-msvc
+        run: cargo build --locked --release -p tractor-beam-gui --target x86_64-pc-windows-msvc
 
       - name: Build Injector
-        run: cargo build --locked --release -p basement-isaac-injector --target i686-pc-windows-msvc
+        run: cargo build --locked --release -p tractor-beam-isaac-injector --target i686-pc-windows-msvc
 
       - name: Build Native Hook
-        run: cargo build --locked --release -p basement-native-hook --target i686-pc-windows-msvc
+        run: cargo build --locked --release -p tractor-beam-native-hook --target i686-pc-windows-msvc

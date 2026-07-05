@@ -1,6 +1,6 @@
-# Basement Bridge Context
+# Tractor Beam Context
 
-Basement Bridge is a remote co-op transport project for *The Binding of Isaac:
+Tractor Beam is a remote co-op transport project for *The Binding of Isaac:
 Repentance+*. This context defines the project language used in code, roadmap,
 and user-facing documentation.
 
@@ -11,19 +11,19 @@ A session mode that leaves the game on its normal Steam online path.
 _Avoid_: vanilla mode, Steam mode
 
 **Fallback Mode**:
-A session mode that uses Basement Bridge transport while allowing Steam receive fallback.
+A session mode that uses Tractor Beam transport while allowing Steam receive fallback.
 _Avoid_: Bridge Safe Mode, hybrid mode, safe mode
 
 **Pure Mode**:
-A session mode that uses only Basement Bridge transport for the hooked packet path.
+A session mode that uses only Tractor Beam transport for the hooked packet path.
 _Avoid_: Bridge Pure Mode, forced mode, relay-only mode
 
 **Bridge Client**:
-The local runtime that coordinates a player's Basement Bridge session without owning presentation.
+The local runtime that coordinates a player's Tractor Beam session without owning presentation.
 _Avoid_: sidecar, GUI, app
 
 **Bridge GUI**:
-The desktop presentation layer used by players to configure and control a Basement Bridge session.
+The desktop presentation layer used by players to configure and control a Tractor Beam session.
 _Avoid_: client, sidecar
 
 **Bridge Core**:
@@ -47,7 +47,7 @@ The versioned player-facing package that ships the Bridge GUI, Bridge Client, Na
 _Avoid_: hook release, GUI release
 
 **Native Hook**:
-The in-process component that redirects Isaac's Steam packet path into Basement Bridge.
+The in-process component that redirects Isaac's Steam packet path into Tractor Beam.
 _Avoid_: mod, plugin
 
 **Injector**:
@@ -55,7 +55,7 @@ The local component that places the Native Hook into the Isaac process.
 _Avoid_: launcher
 
 **Relay Server**:
-The public server that forwards Basement Bridge room traffic between joined peers.
+The public server that forwards Tractor Beam room traffic between joined peers.
 _Avoid_: server, directory
 
 **Directory Service**:

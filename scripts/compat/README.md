@@ -1,4 +1,4 @@
-# Basement Bridge Compatibility Harness
+# Tractor Beam Compatibility Harness
 
 This harness runs protocol-level compatibility probes as a version matrix:
 old/new compatibility client probes against old/new Relay Server binaries. The
@@ -10,7 +10,7 @@ Run the current compatibility client against a built Relay Server:
 
 ```sh
 uv run --project scripts/compat python scripts/compat/check_compat.py \
-  --head-relay-binary target/release/basement-bridge-relay \
+  --head-relay-binary target/release/tractor-beam-relay \
   --json-out .local/compat/compat-report.json
 ```
 
@@ -20,8 +20,8 @@ Run a pull-request style old/new client x old/new server matrix:
 uv run --project head/scripts/compat python head/scripts/compat/check_compat.py \
   --base-client-script base/scripts/compat/check_compat.py \
   --head-client-script head/scripts/compat/check_compat.py \
-  --base-relay-binary base/target/release/basement-bridge-relay \
-  --head-relay-binary head/target/release/basement-bridge-relay \
+  --base-relay-binary base/target/release/tractor-beam-relay \
+  --head-relay-binary head/target/release/tractor-beam-relay \
   --base-client-label old-client \
   --head-client-label new-client \
   --base-label old-server \
@@ -33,9 +33,9 @@ Optional previous-release evidence for manual investigation:
 
 ```sh
 uv run --project scripts/compat python scripts/compat/check_compat.py \
-  --head-relay-binary target/release/basement-bridge-relay \
+  --head-relay-binary target/release/tractor-beam-relay \
   --previous-tag v0.1.0 \
-  --github-repository mcthesw/Basement-Bridge \
+  --github-repository mcthesw/TractorBeam \
   --json-out .local/compat/compat-report.json
 ```
 

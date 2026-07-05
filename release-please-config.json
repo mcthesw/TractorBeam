@@ -21,7 +21,7 @@
   ],
   "packages": {
     ".": {
-      "package-name": "basement-bridge",
+      "package-name": "tractor-beam",
       "extra-files": [
         {
           "type": "generic",

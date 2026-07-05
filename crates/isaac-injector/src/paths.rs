@@ -8,10 +8,10 @@ use std::{
 use crate::{InjectionStep, InjectorError};
 
 /// Rust Native Hook DLL name expected in the Client Bundle.
-pub const NATIVE_HOOK_DLL: &str = "basement_native_hook.dll";
+pub const NATIVE_HOOK_DLL: &str = "tractor_beam_native_hook.dll";
 
 /// Rust Injector helper executable name expected in the Client Bundle.
-pub const NATIVE_INJECTOR_EXE: &str = "basement-isaac-injector.exe";
+pub const NATIVE_INJECTOR_EXE: &str = "tractor-beam-isaac-injector.exe";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeHookPaths {
@@ -312,7 +312,7 @@ mod windows_elevation {
 
 fn bundle_search_dirs() -> Vec<PathBuf> {
     let mut directories = Vec::new();
-    if let Some(path) = env::var_os("BASEMENT_BRIDGE_BUNDLE_DIR") {
+    if let Some(path) = env::var_os("TRACTOR_BEAM_BUNDLE_DIR") {
         directories.push(PathBuf::from(path));
     }
     if let Ok(exe) = env::current_exe()
@@ -497,7 +497,7 @@ mod tests {
                 .expect("system clock should be after unix epoch")
                 .as_nanos();
             let path = env::temp_dir().join(format!(
-                "basement-isaac-injector-{name}-{}-{nonce}",
+                "tractor-beam-isaac-injector-{name}-{}-{nonce}",
                 process::id()
             ));
             fs::create_dir_all(&path).expect("create test directory");

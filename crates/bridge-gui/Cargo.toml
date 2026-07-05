@@ -1,5 +1,5 @@
 [package]
-name = "basement-bridge-gui"
+name = "tractor-beam-gui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,12 +7,12 @@ repository.workspace = true
 publish = false
 
 [[bin]]
-name = "basement-bridge"
+name = "tractor-beam"
 path = "src/main.rs"
 
 [dependencies]
 arboard = "3"
-basement-bridge-core = { path = "../bridge-core" }
+tractor-beam-core = { path = "../bridge-core" }
 directories = "6.0.0"
 eframe = { version = "0.35.0", default-features = false, features = [
     "accesskit",

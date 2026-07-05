@@ -1,5 +1,5 @@
 [package]
-name = "basement-bridge-core"
+name = "tractor-beam-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-basement-isaac-injector = { path = "../isaac-injector" }
+tractor-beam-isaac-injector = { path = "../isaac-injector" }
 bs58 = "0.1"
 bytes = "1.11.1"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }

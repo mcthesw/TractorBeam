@@ -42,4 +42,4 @@ pub use state::{
     LogEntry, LogLevel, RuntimeState, SessionStatus, SessionStopReason,
 };
 
-pub const PRODUCT_NAME: &str = "Basement Bridge";
+pub const PRODUCT_NAME: &str = "Tractor Beam";

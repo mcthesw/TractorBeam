@@ -5,11 +5,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use basement_bridge_core::protocol::{
-    ClientMetadata, ControlMessage, PROTOCOL_MAJOR, PROTOCOL_MINOR, PowChallenge, PowProof,
-};
 use rand::RngExt as _;
 use tracing::info;
+use tractor_beam_core::protocol::{
+    ClientMetadata, ControlMessage, PROTOCOL_MAJOR, PROTOCOL_MINOR, PowChallenge, PowProof,
+};
 
 use crate::{
     config::RelayConfig,
@@ -91,7 +91,7 @@ pub(crate) struct JoinCompletion {
 #[derive(Clone, Debug)]
 pub(crate) struct RoomBroadcast {
     pub(crate) recipients: Vec<PeerId>,
-    pub(crate) peers: Vec<basement_bridge_core::protocol::PeerInfo>,
+    pub(crate) peers: Vec<tractor_beam_core::protocol::PeerInfo>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -439,23 +439,19 @@ impl RelayState {
     pub(crate) fn room_peer_infos(
         &self,
         room_name: &str,
-    ) -> Vec<basement_bridge_core::protocol::PeerInfo> {
+    ) -> Vec<tractor_beam_core::protocol::PeerInfo> {
         let mut peers = self
             .rooms
             .get(room_name)
             .map(|room| {
                 room.peers
                     .values()
-                    .map(|peer| basement_bridge_core::protocol::PeerInfo {
+                    .map(|peer| tractor_beam_core::protocol::PeerInfo {
                         steam_id64: peer.steam_id64.clone(),
                         display_name: peer.display_name.clone(),
                         transport: match peer.transport {
-                            PeerTransport::Udp => {
-                                basement_bridge_core::protocol::PeerTransport::Udp
-                            }
-                            PeerTransport::Tcp => {
-                                basement_bridge_core::protocol::PeerTransport::Tcp
-                            }
+                            PeerTransport::Udp => tractor_beam_core::protocol::PeerTransport::Udp,
+                            PeerTransport::Tcp => tractor_beam_core::protocol::PeerTransport::Tcp,
                         },
                     })
                     .collect::<Vec<_>>()

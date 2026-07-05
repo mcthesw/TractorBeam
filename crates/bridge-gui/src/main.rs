@@ -12,12 +12,12 @@ const DEFAULT_WINDOW_SIZE: [f32; 2] = [480.0, 720.0];
 const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 480.0];
 
 fn main() -> eframe::Result<()> {
-    let log_sink: Box<dyn basement_bridge_core::ClientLogSink> =
+    let log_sink: Box<dyn tractor_beam_core::ClientLogSink> =
         Box::new(logging::ClientLogFiles::new());
     let app_title = format!(
         "{} {}",
-        basement_bridge_core::PRODUCT_NAME,
-        basement_bridge_core::build_info::version_label()
+        tractor_beam_core::PRODUCT_NAME,
+        tractor_beam_core::build_info::version_label()
     );
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

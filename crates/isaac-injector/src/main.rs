@@ -1,10 +1,10 @@
 use std::{path::PathBuf, process::ExitCode};
 
-use basement_isaac_injector::{InjectorError, inject};
 use clap::Parser;
+use tractor_beam_isaac_injector::{InjectorError, inject};
 
 #[derive(Debug, Parser)]
-#[command(version, about = "Inject Basement Bridge Native Hook into Isaac")]
+#[command(version, about = "Inject Tractor Beam Native Hook into Isaac")]
 struct Args {
     #[arg(long)]
     pid: u32,

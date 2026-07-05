@@ -3,14 +3,14 @@ mod pages;
 mod status;
 mod widgets;
 
-use basement_bridge_core::{
+use eframe::egui::{self, ScrollArea};
+use rust_i18n::t;
+use tractor_beam_core::{
     BridgeClient, ClientConfigSelection, ClientLogSink, ConnectionProfile, JoinCode,
     LightPingTarget, LocalDate, RelayEndpoint, RelayPreset, SessionConfig, SessionMode,
     SessionStatus, SteamIdentity, TransportChoice, load_client_config, resolve_room_template,
     save_client_config_selection,
 };
-use eframe::egui::{self, ScrollArea};
-use rust_i18n::t;
 
 use crate::i18n::{Language, set_language};
 

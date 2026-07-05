@@ -24,7 +24,7 @@ impl BridgeClient {
     pub fn export_diagnostics(&mut self) -> io::Result<PathBuf> {
         let directory = diagnostics_directory();
         fs::create_dir_all(&directory)?;
-        let path = directory.join(format!("basement-bridge-{}.txt", unix_seconds()));
+        let path = directory.join(format!("tractor-beam-{}.txt", unix_seconds()));
         fs::write(&path, self.redacted_diagnostics_text())?;
         self.log(
             super::LogLevel::Info,

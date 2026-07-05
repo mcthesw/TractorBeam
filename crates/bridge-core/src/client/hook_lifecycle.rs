@@ -34,7 +34,7 @@ enum HookEndpointWaitError {
 }
 
 pub(super) async fn injector_task(
-    paths: basement_isaac_injector::NativeHookPaths,
+    paths: tractor_beam_isaac_injector::NativeHookPaths,
     event_tx: RuntimeEventSender,
     cancellation: CancellationToken,
 ) {
@@ -111,7 +111,7 @@ pub(super) async fn injector_task(
     let retry_paths = paths.clone();
     let retry_process_name = process_name.clone();
     let injection = tokio::task::spawn_blocking(move || {
-        basement_isaac_injector::run_injector_with_elevated_retry(
+        tractor_beam_isaac_injector::run_injector_with_elevated_retry(
             &injection_paths,
             process_id,
             |event| {
@@ -244,7 +244,7 @@ pub(super) async fn injector_task(
 
 async fn run_hook_startup_preflight(
     hook_log_path: PathBuf,
-    paths: &basement_isaac_injector::NativeHookPaths,
+    paths: &tractor_beam_isaac_injector::NativeHookPaths,
     process_name: &str,
     process_id: u32,
     event_tx: &RuntimeEventSender,
@@ -384,7 +384,7 @@ async fn run_hook_startup_preflight(
 }
 
 async fn wait_for_hook_receive_endpoint(
-    paths: &basement_isaac_injector::NativeHookPaths,
+    paths: &tractor_beam_isaac_injector::NativeHookPaths,
     process_name: &str,
     process_id: u32,
     event_tx: &RuntimeEventSender,
@@ -464,7 +464,7 @@ async fn watch_isaac_process(
             () = cancellation.cancelled() => return,
             () = time::sleep(PROCESS_WATCH_INTERVAL) => {
                 let running = tokio::task::spawn_blocking(move || {
-                    basement_isaac_injector::is_process_running(process_id)
+                    tractor_beam_isaac_injector::is_process_running(process_id)
                 })
                 .await
                 .unwrap_or(false);
@@ -487,14 +487,14 @@ async fn watch_isaac_process(
 }
 
 async fn wait_for_isaac_process(
-    paths: &basement_isaac_injector::NativeHookPaths,
+    paths: &tractor_beam_isaac_injector::NativeHookPaths,
     event_tx: &RuntimeEventSender,
     cancellation: &CancellationToken,
-) -> Option<basement_isaac_injector::IsaacProcess> {
+) -> Option<tractor_beam_isaac_injector::IsaacProcess> {
     let started = Instant::now();
     let mut next_notice = ISAAC_WAIT_NOTICE_INTERVAL;
     loop {
-        if let Some(process) = basement_isaac_injector::find_isaac_process() {
+        if let Some(process) = tractor_beam_isaac_injector::find_isaac_process() {
             return Some(process);
         }
         if started.elapsed() >= next_notice {
@@ -526,7 +526,7 @@ async fn wait_for_isaac_process(
     }
 }
 
-fn injection_support_message(error: &basement_isaac_injector::InjectorError) -> String {
+fn injection_support_message(error: &tractor_beam_isaac_injector::InjectorError) -> String {
     if error.is_admin_permission_cancelled() {
         return ADMIN_PERMISSION_CANCELLED_MESSAGE.to_owned();
     }
@@ -542,13 +542,13 @@ fn injection_support_message(error: &basement_isaac_injector::InjectorError) -> 
 
 fn send_injector_launch_event(
     event_tx: &RuntimeEventSender,
-    paths: &basement_isaac_injector::NativeHookPaths,
+    paths: &tractor_beam_isaac_injector::NativeHookPaths,
     process_name: &str,
     process_id: u32,
-    event: basement_isaac_injector::InjectorLaunchEvent,
+    event: tractor_beam_isaac_injector::InjectorLaunchEvent,
 ) {
     match event {
-        basement_isaac_injector::InjectorLaunchEvent::ElevatedRetryStarting => {
+        tractor_beam_isaac_injector::InjectorLaunchEvent::ElevatedRetryStarting => {
             let mut state = hook_startup_state(
                 HookStartupPhase::Injecting,
                 paths,
@@ -563,7 +563,7 @@ fn send_injector_launch_event(
                 log_event(LogLevel::Info, ADMIN_PERMISSION_REQUEST_MESSAGE),
             );
         }
-        basement_isaac_injector::InjectorLaunchEvent::ElevatedRetrySucceeded => {
+        tractor_beam_isaac_injector::InjectorLaunchEvent::ElevatedRetrySucceeded => {
             send_event(
                 event_tx,
                 log_event(LogLevel::Info, ELEVATED_INJECTOR_RETRY_SUCCEEDED_MESSAGE),
@@ -574,7 +574,7 @@ fn send_injector_launch_event(
 
 fn hook_startup_state(
     phase: HookStartupPhase,
-    paths: &basement_isaac_injector::NativeHookPaths,
+    paths: &tractor_beam_isaac_injector::NativeHookPaths,
     process_name: Option<&str>,
     pid: Option<u32>,
     message: impl Into<String>,
@@ -595,7 +595,7 @@ fn hook_startup_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use basement_isaac_injector::{InjectionStep, InjectorError, NativeHookPaths};
+    use tractor_beam_isaac_injector::{InjectionStep, InjectorError, NativeHookPaths};
 
     #[test]
     fn endpoint_wait_budget_covers_native_hook_startup_window() {
@@ -625,8 +625,8 @@ mod tests {
     fn elevated_retry_start_event_marks_access_denied() {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(4);
         let paths = NativeHookPaths {
-            injector: PathBuf::from("bundle/basement-isaac-injector.exe"),
-            hook: PathBuf::from("bundle/native-hook/basement_native_hook.dll"),
+            injector: PathBuf::from("bundle/tractor-beam-isaac-injector.exe"),
+            hook: PathBuf::from("bundle/native-hook/tractor_beam_native_hook.dll"),
         };
 
         send_injector_launch_event(
@@ -634,7 +634,7 @@ mod tests {
             &paths,
             "isaac-ng.exe",
             42,
-            basement_isaac_injector::InjectorLaunchEvent::ElevatedRetryStarting,
+            tractor_beam_isaac_injector::InjectorLaunchEvent::ElevatedRetryStarting,
         );
 
         let Some(RuntimeEvent::HookStartup(startup)) = event_rx.blocking_recv() else {
@@ -655,8 +655,8 @@ mod tests {
     #[test]
     fn startup_state_carries_artifact_paths_and_endpoint() {
         let paths = NativeHookPaths {
-            injector: PathBuf::from("bundle/basement-isaac-injector.exe"),
-            hook: PathBuf::from("bundle/native-hook/basement_native_hook.dll"),
+            injector: PathBuf::from("bundle/tractor-beam-isaac-injector.exe"),
+            hook: PathBuf::from("bundle/native-hook/tractor_beam_native_hook.dll"),
         };
 
         let state = hook_startup_state(

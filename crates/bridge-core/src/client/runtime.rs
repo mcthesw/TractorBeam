@@ -252,7 +252,7 @@ impl BridgeClient {
             .ok();
 
         let session = if config.mode != SessionMode::Official {
-            let native_hook_paths = match basement_isaac_injector::resolve_native_hook_paths() {
+            let native_hook_paths = match tractor_beam_isaac_injector::resolve_native_hook_paths() {
                 Ok(paths) => paths,
                 Err(error) => {
                     let message = format!("Native Hook artifact resolution failed: {error}");
@@ -485,7 +485,7 @@ impl BridgeClient {
 
     fn record_hook_startup_failure(
         &mut self,
-        paths: Option<&basement_isaac_injector::NativeHookPaths>,
+        paths: Option<&tractor_beam_isaac_injector::NativeHookPaths>,
         message: impl Into<String>,
     ) {
         let message = message.into();
@@ -683,8 +683,10 @@ mod tests {
             phase: state::HookStartupPhase::WaitingForHookEndpoint,
             process_name: Some("isaac-ng.exe".to_owned()),
             pid: Some(42),
-            injector_path: Some(PathBuf::from("bundle/basement-isaac-injector.exe")),
-            hook_path: Some(PathBuf::from("bundle/native-hook/basement_native_hook.dll")),
+            injector_path: Some(PathBuf::from("bundle/tractor-beam-isaac-injector.exe")),
+            hook_path: Some(PathBuf::from(
+                "bundle/native-hook/tractor_beam_native_hook.dll",
+            )),
             launch_parameters_path: Some(PathBuf::from(
                 "bundle/native-hook/isaac_bridge_config.txt",
             )),
@@ -701,8 +703,8 @@ mod tests {
         assert!(text.contains("native hook startup:"));
         assert!(text.contains("phase: waiting_for_hook_endpoint"));
         assert!(text.contains("process_name: isaac-ng.exe"));
-        assert!(text.contains("injector_path: bundle/basement-isaac-injector.exe"));
-        assert!(text.contains("hook_path: bundle/native-hook/basement_native_hook.dll"));
+        assert!(text.contains("injector_path: bundle/tractor-beam-isaac-injector.exe"));
+        assert!(text.contains("hook_path: bundle/native-hook/tractor_beam_native_hook.dll"));
         assert!(
             text.contains("launch_parameters_path: bundle/native-hook/isaac_bridge_config.txt")
         );
@@ -775,9 +777,9 @@ mod tests {
     #[test]
     fn startup_failure_record_keeps_artifact_and_launch_parameter_paths() {
         let mut client = BridgeClient::new();
-        let paths = basement_isaac_injector::NativeHookPaths {
-            injector: PathBuf::from("bundle/basement-isaac-injector.exe"),
-            hook: PathBuf::from("bundle/native-hook/basement_native_hook.dll"),
+        let paths = tractor_beam_isaac_injector::NativeHookPaths {
+            injector: PathBuf::from("bundle/tractor-beam-isaac-injector.exe"),
+            hook: PathBuf::from("bundle/native-hook/tractor_beam_native_hook.dll"),
         };
         client.state.hook_launch_parameters_path_written =
             Some(PathBuf::from("bundle/native-hook/isaac_bridge_config.txt"));
@@ -807,8 +809,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after unix epoch")
             .as_nanos();
-        let path =
-            env::temp_dir().join(format!("basement-bridge-{name}-{}-{nonce}", process::id()));
+        let path = env::temp_dir().join(format!("tractor-beam-{name}-{}-{nonce}", process::id()));
         fs::create_dir_all(&path).expect("create test directory");
         path
     }

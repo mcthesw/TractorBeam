@@ -40,7 +40,7 @@ pub fn version_label() -> String {
 }
 
 fn normalized_git_hash() -> Option<&'static str> {
-    option_env!("BASEMENT_BRIDGE_GIT_HASH").and_then(|hash| {
+    option_env!("TRACTOR_BEAM_GIT_HASH").and_then(|hash| {
         let hash = hash.trim();
         (!hash.is_empty()).then_some(hash)
     })

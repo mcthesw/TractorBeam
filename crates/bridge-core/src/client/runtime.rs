@@ -291,16 +291,10 @@ impl BridgeClient {
                     write.path.display()
                 ),
             );
-            match session::spawn_bridge_worker(config.clone(), native_hook_paths.clone()) {
-                Ok(handle) => Some(handle),
-                Err(error) => {
-                    let message = format!("Bridge worker startup failed: {error}");
-                    self.record_hook_startup_failure(Some(&native_hook_paths), message);
-                    self.cleanup_hook_launch_parameters("bridge worker startup failed");
-                    self.active_session_log = None;
-                    return Err(error.into());
-                }
-            }
+            Some(session::spawn_bridge_worker_background(
+                config.clone(),
+                native_hook_paths,
+            ))
         } else {
             self.state.hook_launch_parameters_path_written = None;
             None

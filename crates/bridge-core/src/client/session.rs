@@ -305,15 +305,21 @@ async fn start_runtime_tasks_inner(
     cancellation: &CancellationToken,
     event_tx: &RuntimeEventSender,
 ) -> io::Result<RuntimeTasks> {
-    let hook_in_socket = UdpSocket::bind(HOOK_IN).await?;
-    let hook_out_socket = UdpSocket::bind("127.0.0.1:0").await?;
+    let hook_in_socket = UdpSocket::bind(HOOK_IN)
+        .await
+        .map_err(|error| socket_bind_error(HOOK_IN, error))?;
+    let hook_out_socket = UdpSocket::bind("127.0.0.1:0")
+        .await
+        .map_err(|error| socket_bind_error("127.0.0.1:0", error))?;
     let mut relay = RelayTransport::connect(&config.relay, config.transport).await?;
     let peers = complete_relay_join(&mut relay.sender, &mut relay.receiver, config).await?;
+    let peer_count = peers.len();
+    send_event(event_tx, RuntimeEvent::RoomPeersUpdated(peers));
     send_event(
         event_tx,
         log_event(
             LogLevel::Info,
-            format!("Joined relay room with {} peer(s)", peers.len()),
+            format!("Joined relay room with {peer_count} peer(s)"),
         ),
     );
 
@@ -370,6 +376,13 @@ async fn start_runtime_tasks_inner(
         essential: tasks,
         health,
     })
+}
+
+fn socket_bind_error(endpoint: &str, error: io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!("failed to bind local endpoint {endpoint}/UDP: {error}"),
+    )
 }
 
 async fn hook_in_task(

@@ -58,6 +58,29 @@ fn session_start_reports_relay_join_timeout() {
 }
 
 #[test]
+fn session_start_reports_initial_room_peers() {
+    let _guard = SESSION_TEST_LOCK.lock().unwrap();
+    let relay = TestRelay::spawn();
+    let handle = spawn_bridge_worker(
+        test_session_config(relay.address.port()),
+        test_native_hook_paths(),
+    )
+    .unwrap();
+
+    let event = recv_matching(&handle.events, |event| {
+        matches!(
+            event,
+            RuntimeEvent::RoomPeersUpdated(peers)
+                if peers.len() == 1 && peers[0].steam_id64 == "76561198000000001"
+        )
+    });
+
+    assert!(event.is_some());
+    handle.stop();
+    relay.stop();
+}
+
+#[test]
 fn runtime_rtt_timeout_is_nonfatal() {
     let _guard = SESSION_TEST_LOCK.lock().unwrap();
     let relay = TestRelay::spawn();

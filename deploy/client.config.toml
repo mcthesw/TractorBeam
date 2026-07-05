@@ -1,0 +1,39 @@
+# Copy this file to config.toml next to basement-bridge.exe.
+#
+# Do not commit public beta tester relay addresses here. Distribute tester
+# relay presets out-of-band with the test package.
+
+# Transport used when a relay preset does not override it. TCP is the public
+# beta default because it works better for peers whose UDP path is blocked or
+# lossy.
+default_transport = "tcp"
+
+# Isaac online mode. Keep "pure" unless a future build documents another mode.
+default_mode = "pure"
+
+# Relay selected when the app starts. Must match one of the [[relays]].id
+# values below.
+selected_relay = "local"
+
+[session_health]
+# Write periodic runtime health snapshots to the Diagnostics Bundle.
+enabled = true
+# Send lightweight runtime RTT probes through the selected relay while a
+# session is running.
+runtime_rtt_enabled = true
+# Seconds between health snapshots written to logs and diagnostics.
+snapshot_interval_seconds = 5
+# Seconds between runtime RTT probes.
+runtime_rtt_interval_seconds = 1
+# Seconds to wait before a runtime RTT probe is counted as timed out.
+runtime_rtt_timeout_seconds = 3
+
+[[relays]]
+# Self-hosted relay matching deploy/relay.toml.
+id = "local"
+name = "Local relay"
+host = "localhost"
+port = 25910
+udp = true
+tcp = true
+default_transport = "tcp"

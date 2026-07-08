@@ -346,6 +346,9 @@ impl BridgeApp {
         let settings_label = t!("settings");
         let profile_label = t!("connection_profile");
         let mode_label = t!("mode");
+        let input_delay_label = t!("input_delay");
+        let input_delay_read = t!("input_delay.read");
+        let input_delay_write = t!("input_delay.write");
         let tcp = t!("transport.tcp");
         let udp = t!("transport.udp");
         let official = t!("mode.official");
@@ -380,6 +383,33 @@ impl BridgeApp {
         });
         if self.mode != mode_before {
             self.persist_selection();
+        }
+
+        ui.add_space(12.0);
+        ui.label(input_delay_label);
+        let input_delay_enabled = input_delay_controls_enabled(self.client.state());
+        ui.horizontal(|ui| {
+            ui.add(
+                TextEdit::singleline(&mut self.input_delay_value)
+                    .desired_width(120.0)
+                    .hint_text("0"),
+            );
+            if ui
+                .add_enabled(input_delay_enabled, egui::Button::new(input_delay_read))
+                .clicked()
+            {
+                self.read_input_delay();
+            }
+            if ui
+                .add_enabled(input_delay_enabled, egui::Button::new(input_delay_write))
+                .clicked()
+            {
+                self.write_input_delay();
+            }
+        });
+        if let Some(message) = &self.input_delay_message {
+            ui.add_space(4.0);
+            ui.label(message);
         }
     }
 
@@ -577,6 +607,15 @@ fn hook_phase_label(phase: HookStartupPhase) -> (egui::Color32, Cow<'static, str
         HookStartupPhase::Failed => (egui::Color32::from_rgb(220, 80, 80), t!("hook.failed")),
         HookStartupPhase::Cancelled => (egui::Color32::GRAY, t!("hook.cancelled")),
     }
+}
+
+fn input_delay_controls_enabled(state: &RuntimeState) -> bool {
+    state.status == SessionStatus::Running
+        && matches!(
+            state.active_session_mode,
+            Some(SessionMode::Fallback | SessionMode::Pure)
+        )
+        && state.hook_startup.phase == HookStartupPhase::Ready
 }
 
 fn peer_transport_label(transport: PeerTransport) -> Cow<'static, str> {

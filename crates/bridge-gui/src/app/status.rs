@@ -3,7 +3,8 @@ use std::borrow::Cow;
 use eframe::egui;
 use rust_i18n::t;
 use tractor_beam_core::{
-    ClientError, ConfigError, ConnectionProfile, SessionQuality, SessionStatus, SessionStopReason,
+    ClientError, ConfigError, ConnectionProfile, InputDelayError, SessionQuality, SessionStatus,
+    SessionStopReason,
 };
 
 use super::BridgeApp;
@@ -20,6 +21,7 @@ impl StatusMessage {
         match error {
             ClientError::Config(error) => Self::ConfigError(*error),
             ClientError::Io(_) => Self::Text(error.to_string()),
+            ClientError::InputDelay(error) => Self::Text(input_delay_error_label(error)),
         }
     }
 
@@ -137,6 +139,23 @@ fn config_error_message(config_error: ConfigError) -> String {
         ConfigError::InvalidSessionHealth => t!("config.invalid_session_health"),
     };
     format!("{}: {message}", t!("config.error"))
+}
+
+pub(super) fn input_delay_error_label(error: &InputDelayError) -> String {
+    match error {
+        InputDelayError::SessionNotRunning => t!("session.not_started").into_owned(),
+        InputDelayError::UnsupportedMode => t!("input_delay.unsupported_mode").into_owned(),
+        InputDelayError::HookNotReady => t!("input_delay.not_ready").into_owned(),
+        InputDelayError::Hook(error) if error.as_str() == "target_not_found" => {
+            t!("input_delay.target_not_found").into_owned()
+        }
+        InputDelayError::Hook(_)
+        | InputDelayError::UnexpectedResponse
+        | InputDelayError::ResponseIdMismatch { .. }
+        | InputDelayError::Io(_) => {
+            format!("{}: {error}", t!("input_delay.failed"))
+        }
+    }
 }
 
 #[cfg(test)]

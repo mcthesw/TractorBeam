@@ -182,6 +182,39 @@ hook.available:
 hook.read:
   zh_CN: "读取"
   en_US: "Read"
+input_delay:
+  zh_CN: "输入延迟"
+  en_US: "Input delay"
+input_delay.read:
+  zh_CN: "读取"
+  en_US: "Read"
+input_delay.write:
+  zh_CN: "写入"
+  en_US: "Write"
+input_delay.read_ok:
+  zh_CN: "已读取"
+  en_US: "Read"
+input_delay.write_ok:
+  zh_CN: "已写入"
+  en_US: "Written"
+input_delay.invalid:
+  zh_CN: "请输入十进制整数"
+  en_US: "Enter a decimal integer"
+input_delay.not_ready:
+  zh_CN: "Hook 就绪后可用"
+  en_US: "Available after Hook is ready"
+input_delay.unsupported_mode:
+  zh_CN: "仅 Fallback/Pure 模式可用"
+  en_US: "Available in Fallback/Pure mode"
+input_delay.target_not_found:
+  zh_CN: "未找到输入延迟"
+  en_US: "Input delay not found"
+input_delay.failed:
+  zh_CN: "输入延迟操作失败"
+  en_US: "Input delay operation failed"
+input_delay.negative_hint:
+  zh_CN: "（非负数才有意义）"
+  en_US: " (only non-negative values are meaningful)"
 yes:
   zh_CN: "是"
   en_US: "Yes"

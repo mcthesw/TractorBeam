@@ -26,6 +26,7 @@ const PATTERN: [Option<u8>; 14] = [
 ];
 const MANAGER_SLOT_OFFSET: usize = 1;
 const INPUT_DELAY_OFFSET_OFFSET: usize = 7;
+const ONLINE_INPUT_DELAY_OFFSET: usize = 0x2A3F4;
 const DOS_E_LFANEW_OFFSET: usize = 0x3C;
 const PE_SIGNATURE: u32 = 0x0000_4550;
 const OPTIONAL_HEADER_OFFSET: usize = 24;
@@ -36,7 +37,6 @@ static TARGET: Mutex<Option<InputDelayTarget>> = Mutex::new(None);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct InputDelayTarget {
     manager_slot: usize,
-    value_offset: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -128,7 +128,7 @@ fn resolve_value_address(target: InputDelayTarget) -> Option<usize> {
     if manager == 0 {
         return None;
     }
-    let address = manager.checked_add(target.value_offset)?;
+    let address = manager.checked_add(ONLINE_INPUT_DELAY_OFFSET)?;
     is_committed_accessible(address, size_of::<i32>()).then_some(address)
 }
 
@@ -145,14 +145,11 @@ fn scan_target() -> Result<InputDelayTarget, InputDelayMemoryError> {
             return Err(InputDelayMemoryError::TargetNotFound);
         }
         let manager_slot = read_u32(&bytes[index + MANAGER_SLOT_OFFSET..])? as usize;
-        let value_offset = read_u32(&bytes[index + INPUT_DELAY_OFFSET_OFFSET..])? as usize;
+        let instruction_offset = read_u32(&bytes[index + INPUT_DELAY_OFFSET_OFFSET..])? as usize;
         super::bridge::log_info(format!(
-            "input_delay_target_resolved offset=0x{value_offset:X}"
+            "input_delay_target_resolved instruction_offset=0x{instruction_offset:X} value_offset=0x{ONLINE_INPUT_DELAY_OFFSET:X}"
         ));
-        found = Some(InputDelayTarget {
-            manager_slot,
-            value_offset,
-        });
+        found = Some(InputDelayTarget { manager_slot });
     }
     found.ok_or(InputDelayMemoryError::TargetNotFound)
 }

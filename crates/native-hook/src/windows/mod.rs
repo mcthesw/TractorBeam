@@ -10,6 +10,7 @@ use windows_sys::Win32::{
 
 mod bridge;
 mod iat;
+mod input_delay;
 mod steam;
 
 const DLL_PROCESS_DETACH: u32 = 0;

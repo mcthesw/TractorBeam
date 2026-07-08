@@ -5,6 +5,7 @@ members = [
     "crates/bridge-gui",
     "crates/isaac-injector",
     "crates/native-hook",
+    "crates/hook-ipc",
 ]
 resolver = "3"
 

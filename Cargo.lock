@@ -3714,6 +3714,7 @@ dependencies = [
  "toml 1.1.2+spec-1.1.0",
  "toml_edit 0.22.27",
  "tracing",
+ "tractor-beam-hook-ipc",
  "tractor-beam-isaac-injector",
  "winreg",
 ]
@@ -3734,6 +3735,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "tractor-beam-hook-ipc"
+version = "0.2.1"
+
+[[package]]
 name = "tractor-beam-isaac-injector"
 version = "0.2.1"
 dependencies = [
@@ -3747,6 +3752,7 @@ dependencies = [
 name = "tractor-beam-native-hook"
 version = "0.2.1"
 dependencies = [
+ "tractor-beam-hook-ipc",
  "windows-sys 0.61.2",
 ]
 

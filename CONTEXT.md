@@ -42,6 +42,11 @@ _Avoid_: protocol, Relay Server, session mode
 The single Relay Transport selected by one Bridge Client session.
 _Avoid_: session mode, automatic fallback
 
+**Input Delay**:
+A player-controlled Isaac remote co-op delay value used to make remote inputs
+feel stable under Relay Server latency.
+_Avoid_: onlineInputDelay, manager offset
+
 **Client Bundle**:
 The versioned player-facing package that ships the Bridge GUI, Bridge Client, Native Hook, and Injector together.
 _Avoid_: hook release, GUI release
@@ -96,6 +101,8 @@ _Avoid_: normal relay mode
 - A **Bridge GUI** controls a **Bridge Client**.
 - A **Bridge Client** joins at most one **Room** on one **Relay Server** per active session.
 - A **Bridge Client** uses one **Transport Choice** to exchange **Protocol** envelopes with a **Relay Server** during an active session.
+- **Input Delay** is adjusted through the **Bridge GUI** and applied by the
+  **Native Hook** when Isaac is ready.
 - A **Relay Server** forwards packets only among **Peers** in the same **Room**.
 - A **Directory Service** publishes metadata about one or more **Relay Servers**.
 - A **Diagnostics Bundle** describes one local **Bridge Client** run.

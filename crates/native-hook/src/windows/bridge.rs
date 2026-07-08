@@ -4,7 +4,7 @@ use std::{
     fmt::Display,
     fs,
     io::{self, Read, Write},
-    net::{SocketAddr, UdpSocket},
+    net::{Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket},
     os::windows::ffi::OsStringExt,
     path::PathBuf,
     str::FromStr,
@@ -17,6 +17,8 @@ use std::{
 };
 
 use windows_sys::Win32::{Foundation::HINSTANCE, System::LibraryLoader::GetModuleFileNameW};
+
+use super::input_delay::InputDelayMemoryError;
 
 const CONFIG_FILE: &str = "isaac_bridge_config.txt";
 const LOG_FILE: &str = "tractor_beam_hook.log";
@@ -71,6 +73,7 @@ struct BridgeConfig {
     fallback_to_steam: bool,
     sidecar: SocketAddr,
     bind: SocketAddr,
+    control: Option<SocketAddr>,
 }
 
 #[derive(Clone, Debug)]
@@ -90,6 +93,7 @@ struct BridgeState {
     queue: Arc<Mutex<VecDeque<QueuedPacket>>>,
     running: Arc<AtomicBool>,
     receiver: Option<JoinHandle<()>>,
+    control: Option<JoinHandle<()>>,
 }
 
 pub fn set_module_handle(module: HINSTANCE) {
@@ -133,6 +137,9 @@ pub fn initialize() {
     let queue = Arc::new(Mutex::new(VecDeque::new()));
     let running = Arc::new(AtomicBool::new(true));
     let receiver = spawn_receiver(receive_socket, Arc::clone(&queue), Arc::clone(&running));
+    let control = config
+        .control
+        .map(|endpoint| spawn_control_listener(endpoint, Arc::clone(&running)));
 
     let state = BridgeState {
         mode: config.mode,
@@ -142,11 +149,18 @@ pub fn initialize() {
         queue,
         running,
         receiver: Some(receiver),
+        control,
     };
     *STATE.lock().expect("bridge state lock poisoned") = Some(state);
     log_info(format!(
-        "bridge_initialized mode={:?} fallback_to_steam={} sidecar={} bind={}",
-        config.mode, config.fallback_to_steam, config.sidecar, config.bind
+        "bridge_initialized mode={:?} fallback_to_steam={} sidecar={} bind={} control={}",
+        config.mode,
+        config.fallback_to_steam,
+        config.sidecar,
+        config.bind,
+        config
+            .control
+            .map_or_else(|| "none".to_owned(), |endpoint| endpoint.to_string())
     ));
 }
 
@@ -156,6 +170,9 @@ pub fn shutdown() {
         state.running.store(false, Ordering::Relaxed);
         if let Some(receiver) = state.receiver.take() {
             let _ = receiver.join();
+        }
+        if let Some(control) = state.control.take() {
+            let _ = control.join();
         }
     }
 }
@@ -399,6 +416,94 @@ fn spawn_receiver(
     })
 }
 
+fn spawn_control_listener(endpoint: SocketAddr, running: Arc<AtomicBool>) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let Ok(listener) = TcpListener::bind(endpoint) else {
+            log_error(format!("control_listener_bind_failed endpoint={endpoint}"));
+            return;
+        };
+        let _ = listener.set_nonblocking(true);
+        log_info(format!("control_listener_started endpoint={endpoint}"));
+        while running.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => handle_control_stream(stream),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => {
+                    log_error(format!("control_listener_error error={error}"));
+                    break;
+                }
+            }
+        }
+        log_info(format!("control_listener_stopped endpoint={endpoint}"));
+    })
+}
+
+fn handle_control_stream(mut stream: TcpStream) {
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    let response = match tractor_beam_hook_ipc::read_request(&mut stream) {
+        Ok(request) => handle_control_request(request),
+        Err(error) => {
+            log_warn(format!("control_request_read_failed error={error}"));
+            tractor_beam_hook_ipc::Response::error(
+                0,
+                tractor_beam_hook_ipc::ErrorCode::InvalidRequest,
+            )
+        }
+    };
+    if let Err(error) = tractor_beam_hook_ipc::write_response(&mut stream, &response) {
+        log_warn(format!("control_response_write_failed error={error}"));
+    }
+    let _ = stream.shutdown(Shutdown::Both);
+}
+
+fn handle_control_request(
+    request: tractor_beam_hook_ipc::Request,
+) -> tractor_beam_hook_ipc::Response {
+    match request {
+        tractor_beam_hook_ipc::Request::ReadInputDelay { id } => {
+            match super::input_delay::read_current() {
+                Ok(value) => {
+                    log_info(format!("input_delay_read value={value}"));
+                    tractor_beam_hook_ipc::Response::ok(id, value)
+                }
+                Err(error) => {
+                    log_warn(format!("input_delay_read_failed error={error:?}"));
+                    tractor_beam_hook_ipc::Response::error(id, map_input_delay_error(error, false))
+                }
+            }
+        }
+        tractor_beam_hook_ipc::Request::WriteInputDelay { id, value } => {
+            match super::input_delay::write_value(value) {
+                Ok(value) => {
+                    log_info(format!("input_delay_write value={value}"));
+                    tractor_beam_hook_ipc::Response::ok(id, value)
+                }
+                Err(error) => {
+                    log_warn(format!("input_delay_write_failed error={error:?}"));
+                    tractor_beam_hook_ipc::Response::error(id, map_input_delay_error(error, true))
+                }
+            }
+        }
+    }
+}
+
+fn map_input_delay_error(
+    error: InputDelayMemoryError,
+    writing: bool,
+) -> tractor_beam_hook_ipc::ErrorCode {
+    match error {
+        InputDelayMemoryError::TargetNotFound => tractor_beam_hook_ipc::ErrorCode::TargetNotFound,
+        InputDelayMemoryError::MemoryAccessFailed if writing => {
+            tractor_beam_hook_ipc::ErrorCode::WriteFailed
+        }
+        InputDelayMemoryError::MemoryAccessFailed => tractor_beam_hook_ipc::ErrorCode::ReadFailed,
+        InputDelayMemoryError::Internal => tractor_beam_hook_ipc::ErrorCode::InternalError,
+    }
+}
+
 fn read_config(path: &std::path::Path) -> io::Result<BridgeConfig> {
     let mut contents = String::new();
     fs::File::open(path)?.read_to_string(&mut contents)?;
@@ -406,6 +511,7 @@ fn read_config(path: &std::path::Path) -> io::Result<BridgeConfig> {
     let mut fallback_to_steam = true;
     let mut sidecar = SocketAddr::from_str("127.0.0.1:25900").expect("static endpoint");
     let mut bind = SocketAddr::from_str("127.0.0.1:25901").expect("static endpoint");
+    let mut control = None;
 
     for line in contents.lines().map(str::trim) {
         let Some((key, value)) = line.split_once('=') else {
@@ -429,6 +535,11 @@ fn read_config(path: &std::path::Path) -> io::Result<BridgeConfig> {
                     bind = parsed;
                 }
             }
+            "control" => {
+                if let Ok(parsed) = value.trim().parse() {
+                    control = Some(parsed);
+                }
+            }
             _ => {}
         }
     }
@@ -438,6 +549,7 @@ fn read_config(path: &std::path::Path) -> io::Result<BridgeConfig> {
         fallback_to_steam,
         sidecar,
         bind,
+        control,
     })
 }
 

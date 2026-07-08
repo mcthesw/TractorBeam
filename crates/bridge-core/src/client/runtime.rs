@@ -1,7 +1,8 @@
 use std::{fs, io};
 
 use super::{
-    ConfigError, LoadedClientConfig, RelayEndpoint, SessionConfig, SessionMode, hook_config,
+    ConfigError, InputDelayError, LoadedClientConfig, RelayEndpoint, SessionConfig, SessionMode,
+    hook_config,
     logging::{ClientLogSink, ClientSessionLog, ClientSessionLogContext, TracingClientLogSink},
     probe, session,
     state::{self, log_entry, trim_logs},
@@ -174,6 +175,7 @@ impl BridgeClient {
                 }
                 state::RuntimeEvent::Stopped => {
                     self.state.status = state::SessionStatus::Idle;
+                    self.state.active_session_mode = None;
                     self.active_session_log = None;
                     should_clear = true;
                 }
@@ -235,6 +237,8 @@ impl BridgeClient {
         self.state.latest_hook_receive_probe_warning = None;
         self.state.latest_session_health = None;
         self.state.latest_session_health_summary = None;
+        self.state.latest_input_delay_status = None;
+        self.state.active_session_mode = None;
         self.state.hook_launch_parameters_path_written = None;
         self.state.hook_launch_parameters_cleanup = None;
         self.state.hook_startup = state::HookStartupState::default();
@@ -311,6 +315,7 @@ impl BridgeClient {
 
         self.session = session;
         self.state.status = state::SessionStatus::Running;
+        self.state.active_session_mode = Some(config.mode);
         self.log(
             LogLevel::Info,
             format!(
@@ -340,6 +345,7 @@ impl BridgeClient {
             self.cleanup_hook_launch_parameters("user stopped session");
         }
         self.state.status = state::SessionStatus::Idle;
+        self.state.active_session_mode = None;
         self.active_session_log = None;
         self.log(LogLevel::Info, "Session stopped");
     }
@@ -589,6 +595,8 @@ pub enum ClientError {
     Config(#[from] ConfigError),
     #[error("{0}")]
     Io(#[from] io::Error),
+    #[error("{0}")]
+    InputDelay(#[from] InputDelayError),
 }
 
 #[cfg(test)]

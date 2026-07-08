@@ -102,6 +102,20 @@ impl BridgeClient {
         if let Some(warning) = &self.state.latest_hook_receive_probe_warning {
             output.push_str(&format!("hook_receive_warning: {warning}\n"));
         }
+        if let Some(status) = &self.state.latest_input_delay_status {
+            match &status.result {
+                Ok(value) => output.push_str(&format!(
+                    "input_delay: operation={} result=ok value={} updated_at={}\n",
+                    status.operation, value, status.updated_at
+                )),
+                Err(error) => output.push_str(&format!(
+                    "input_delay: operation={} result=error error={} updated_at={}\n",
+                    status.operation, error, status.updated_at
+                )),
+            }
+        } else {
+            output.push_str("input_delay: none\n");
+        }
         output.push('\n');
         output.push_str("native hook startup:\n");
         let startup = &self.state.hook_startup;

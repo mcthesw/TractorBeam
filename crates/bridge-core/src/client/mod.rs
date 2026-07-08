@@ -4,6 +4,7 @@ mod config;
 mod diagnostics;
 mod hook_config;
 mod hook_lifecycle;
+mod input_delay;
 mod join_code;
 mod logging;
 mod packet_flow;
@@ -21,6 +22,7 @@ pub use config::{
     resolve_room_template, save_client_config_selection,
 };
 pub use diagnostics::diagnostics_directory;
+pub use input_delay::{InputDelayError, InputDelayOperation, InputDelayReport, InputDelayStatus};
 pub use join_code::{JoinCode, JoinCodeError};
 pub use logging::{
     ClientLogSink, ClientSessionLog, ClientSessionLogContext, emit_client_log_event,

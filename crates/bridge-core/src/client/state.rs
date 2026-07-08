@@ -7,7 +7,7 @@ use std::{
 use tokio::sync::mpsc::Sender;
 
 use super::{
-    SessionHealthSnapshot, SteamIdentity,
+    InputDelayStatus, SessionHealthSnapshot, SessionMode, SteamIdentity,
     probe::{HookReceiveProbeReport, ReadinessProbeReport},
 };
 
@@ -259,6 +259,7 @@ pub struct LogEntry {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RuntimeState {
     pub status: SessionStatus,
+    pub active_session_mode: Option<SessionMode>,
     pub counters: Counters,
     pub detected_accounts: Vec<SteamIdentity>,
     pub logs: Vec<LogEntry>,
@@ -270,6 +271,7 @@ pub struct RuntimeState {
     pub latest_hook_receive_probe_warning: Option<String>,
     pub latest_session_health: Option<SessionHealthSnapshot>,
     pub latest_session_health_summary: Option<SessionHealthSnapshot>,
+    pub latest_input_delay_status: Option<InputDelayStatus>,
     pub hook_launch_parameters_path_written: Option<PathBuf>,
     pub hook_launch_parameters_cleanup: Option<String>,
     pub hook_startup: HookStartupState,

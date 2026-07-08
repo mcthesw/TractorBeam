@@ -6,8 +6,8 @@ mod widgets;
 use eframe::egui::{self, ScrollArea};
 use rust_i18n::t;
 use tractor_beam_core::{
-    BridgeClient, ClientConfigSelection, ClientLogSink, ConnectionProfile, JoinCode,
-    LightPingTarget, LocalDate, RelayEndpoint, RelayPreset, SessionConfig, SessionMode,
+    BridgeClient, ClientConfigSelection, ClientLogSink, ConnectionProfile, InputDelayError,
+    JoinCode, LightPingTarget, LocalDate, RelayEndpoint, RelayPreset, SessionConfig, SessionMode,
     SessionStatus, SteamIdentity, TransportChoice, load_client_config, resolve_room_template,
     save_client_config_selection,
 };
@@ -79,6 +79,8 @@ pub struct BridgeApp {
     manual_steam_id: String,
     manual_display_name: String,
     status_message: Option<StatusMessage>,
+    input_delay_value: String,
+    input_delay_message: Option<String>,
     last_log_directory: Option<String>,
     start_error_dialog_open: bool,
     join_code_input: String,
@@ -127,6 +129,8 @@ impl BridgeApp {
             manual_display_name: String::new(),
             status_message: (!loaded_config.warnings.is_empty())
                 .then_some(StatusMessage::ConfigWarning),
+            input_delay_value: String::new(),
+            input_delay_message: None,
             last_log_directory: None,
             start_error_dialog_open: false,
             join_code_input: String::new(),
@@ -241,6 +245,40 @@ impl BridgeApp {
         } else {
             self.status_message = None;
         }
+    }
+
+    fn read_input_delay(&mut self) {
+        match self.client.read_input_delay() {
+            Ok(report) => {
+                self.input_delay_value = report.value.to_string();
+                self.input_delay_message =
+                    Some(format!("{}: {}", t!("input_delay.read_ok"), report.value));
+                self.status_message = None;
+            }
+            Err(error) => self.set_input_delay_error(&error),
+        }
+    }
+
+    fn write_input_delay(&mut self) {
+        let Ok(value) = self.input_delay_value.trim().parse::<i32>() else {
+            self.input_delay_message = Some(t!("input_delay.invalid").into_owned());
+            return;
+        };
+        match self.client.write_input_delay(value) {
+            Ok(report) => {
+                let mut message = format!("{}: {}", t!("input_delay.write_ok"), report.value);
+                if report.value < 0 {
+                    message.push_str(t!("input_delay.negative_hint").as_ref());
+                }
+                self.input_delay_message = Some(message);
+                self.status_message = None;
+            }
+            Err(error) => self.set_input_delay_error(&error),
+        }
+    }
+
+    fn set_input_delay_error(&mut self, error: &InputDelayError) {
+        self.input_delay_message = Some(status::input_delay_error_label(error));
     }
 
     fn startup_light_ping(&mut self) {

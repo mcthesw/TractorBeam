@@ -7,6 +7,7 @@ use super::{SessionConfig, SessionMode};
 
 pub(super) const HOOK_IN: &str = "127.0.0.1:25900";
 pub(super) const HOOK_OUT: &str = "127.0.0.1:25901";
+pub(super) const HOOK_CONTROL: &str = "127.0.0.1:25902";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct HookConfigWrite {
@@ -23,11 +24,15 @@ pub(super) fn write_hook_config(
     })?;
     fs::create_dir_all(directory)?;
     let fallback_to_steam = u8::from(config.mode == SessionMode::Fallback);
-    let contents = format!(
-        "mode=replace\nfallback_to_steam={fallback_to_steam}\nsidecar={HOOK_IN}\nbind={HOOK_OUT}\n"
-    );
+    let contents = hook_config_contents(fallback_to_steam);
     fs::write(&path, contents)?;
     Ok(HookConfigWrite { path })
+}
+
+fn hook_config_contents(fallback_to_steam: u8) -> String {
+    format!(
+        "mode=replace\nfallback_to_steam={fallback_to_steam}\nsidecar={HOOK_IN}\nbind={HOOK_OUT}\ncontrol={HOOK_CONTROL}\n"
+    )
 }
 
 fn hook_config_path(hook: &Path) -> io::Result<PathBuf> {
@@ -61,5 +66,14 @@ mod tests {
                 .join("native-hook")
                 .join(crate::diagnostics::BRIDGE_CONFIG_FILE)
         );
+    }
+
+    #[test]
+    fn hook_config_contents_includes_control_endpoint() {
+        let contents = hook_config_contents(1);
+
+        assert!(contents.contains("sidecar=127.0.0.1:25900\n"));
+        assert!(contents.contains("bind=127.0.0.1:25901\n"));
+        assert!(contents.contains("control=127.0.0.1:25902\n"));
     }
 }

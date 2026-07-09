@@ -7,9 +7,9 @@ use serde::Deserialize;
 const MAX_UDP_PACKET_SIZE: usize = 65_535;
 const DEFAULT_BIND: &str = "0.0.0.0:25910";
 const DEFAULT_MAX_PACKET_SIZE: usize = 2_048;
-const DEFAULT_RATE_LIMIT_PER_SECOND: u32 = 100;
-const DEFAULT_BYTE_RATE_LIMIT_PER_SECOND: usize = 256 * 1024;
-const DEFAULT_BYTE_RATE_LIMIT_BURST: usize = 512 * 1024;
+const DEFAULT_RATE_LIMIT_PER_SECOND: u32 = 5_000;
+const DEFAULT_BYTE_RATE_LIMIT_PER_SECOND: usize = 8 * 1024 * 1024;
+const DEFAULT_BYTE_RATE_LIMIT_BURST: usize = 16 * 1024 * 1024;
 const DEFAULT_HEALTH_PONGS_PER_SECOND_PER_IP: u32 = 10;
 const DEFAULT_MAX_ROOMS: usize = 256;
 const DEFAULT_MAX_PEERS_PER_ROOM: usize = 4;
@@ -179,6 +179,7 @@ struct RelayConfigFile {
     relay_server: Option<RelayServerSection>,
     admission: Option<AdmissionSection>,
     room_limits: Option<RoomLimitsSection>,
+    traffic_limits: Option<TrafficLimitsSection>,
     access_control: Option<AccessControlSection>,
 }
 
@@ -199,6 +200,17 @@ impl RelayConfigFile {
             && let Some(max_rooms) = room_limits.max_rooms
         {
             config.max_rooms = max_rooms;
+        }
+        if let Some(traffic_limits) = self.traffic_limits {
+            if let Some(rate_limit_per_second) = traffic_limits.rate_limit_per_second {
+                config.rate_limit_per_second = rate_limit_per_second;
+            }
+            if let Some(byte_rate_limit_per_second) = traffic_limits.byte_rate_limit_per_second {
+                config.byte_rate_limit_per_second = byte_rate_limit_per_second;
+            }
+            if let Some(byte_rate_limit_burst) = traffic_limits.byte_rate_limit_burst {
+                config.byte_rate_limit_burst = byte_rate_limit_burst;
+            }
         }
         if let Some(access_control) = self.access_control
             && let Some(blocked_cidrs) = access_control.blocked_cidrs
@@ -227,6 +239,14 @@ struct AdmissionSection {
 #[serde(deny_unknown_fields)]
 struct RoomLimitsSection {
     max_rooms: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrafficLimitsSection {
+    rate_limit_per_second: Option<u32>,
+    byte_rate_limit_per_second: Option<usize>,
+    byte_rate_limit_burst: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -271,6 +291,11 @@ pow_difficulty_bits = 18
 
 [room_limits]
 max_rooms = 256
+
+[traffic_limits]
+rate_limit_per_second = 5000
+byte_rate_limit_per_second = 8388608
+byte_rate_limit_burst = 16777216
 
 [access_control]
 blocked_cidrs = ["203.0.113.10/32"]
@@ -335,6 +360,65 @@ blocked_cidrs = ["198.51.100.0/24"]
 
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn traffic_limits_override_defaults() {
+        let config = RelayConfig::from_toml(
+            r#"
+[relay_server]
+tcp_bind = "127.0.0.1:25910"
+
+[traffic_limits]
+rate_limit_per_second = 240
+byte_rate_limit_per_second = 204800
+byte_rate_limit_burst = 409600
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.rate_limit_per_second, 240);
+        assert_eq!(config.byte_rate_limit_per_second, 204_800);
+        assert_eq!(config.byte_rate_limit_burst, 409_600);
+    }
+
+    #[test]
+    fn traffic_limits_can_be_partially_overridden() {
+        let config = RelayConfig::from_toml(
+            r#"
+[relay_server]
+tcp_bind = "127.0.0.1:25910"
+
+[traffic_limits]
+byte_rate_limit_per_second = 1048576
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.rate_limit_per_second, DEFAULT_RATE_LIMIT_PER_SECOND);
+        assert_eq!(config.byte_rate_limit_per_second, 1_048_576);
+        assert_eq!(config.byte_rate_limit_burst, DEFAULT_BYTE_RATE_LIMIT_BURST);
+    }
+
+    #[test]
+    fn rejects_zero_traffic_limits() {
+        let error = RelayConfig::from_toml(
+            r#"
+[relay_server]
+tcp_bind = "127.0.0.1:25910"
+
+[traffic_limits]
+byte_rate_limit_burst = 0
+"#,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            error
+                .to_string()
+                .contains("byte_rate_limit_burst must be greater than 0")
+        );
     }
 
     #[test]

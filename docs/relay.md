@@ -56,6 +56,11 @@ pow_difficulty_bits = 18
 [room_limits]
 max_rooms = 256
 
+[traffic_limits]
+rate_limit_per_second = 5000
+byte_rate_limit_per_second = 8388608
+byte_rate_limit_burst = 16777216
+
 [access_control]
 blocked_cidrs = []
 ```
@@ -65,14 +70,20 @@ blocked_cidrs = []
 - `admission.pow_difficulty_bits`: room-admission proof-of-work difficulty.
   Use `0` only for local or private development relays.
 - `room_limits.max_rooms`: maximum active Rooms.
+- `traffic_limits.rate_limit_per_second`: maximum admitted data packets per
+  peer per second.
+- `traffic_limits.byte_rate_limit_per_second`: sustained admitted data bytes
+  per peer per second.
+- `traffic_limits.byte_rate_limit_burst`: admitted data byte-token bucket burst
+  per peer.
 - `blocked_cidrs`: local IP/CIDR blocklist, for example
   `["203.0.113.10/32", "2001:db8::/32"]`.
 
 Other relay safety limits are shared built-in defaults. Public relay datagrams
-are capped at 2048 bytes on the wire, each peer is capped at 100 packets/s plus
-a 256 KiB/s byte-token bucket with a 512 KiB burst, HealthPing replies are
-capped per source IP, rooms hold at most four peers, inactive peers expire after
-30 seconds, and empty rooms expire after 120 seconds.
+are capped at 2048 bytes on the wire, each peer defaults to 5000 packets/s plus
+an 8 MiB/s byte-token bucket with a 16 MiB burst, HealthPing replies are capped
+per source IP, rooms hold at most four peers, inactive peers expire after 30
+seconds, and empty rooms expire after 120 seconds.
 
 Restart the Relay Server after config changes.
 

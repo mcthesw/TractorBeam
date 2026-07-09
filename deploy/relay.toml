@@ -14,9 +14,15 @@ tcp_bind = "0.0.0.0:25910"
 pow_difficulty_bits = 18
 
 [room_limits]
-# Maximum active rooms kept in memory at one time. Other room/peer/idle/traffic
-# limits are conservative built-in defaults shared by all public relays.
+# Maximum active rooms kept in memory at one time. Other room/peer/idle limits
+# are shared built-in defaults.
 max_rooms = 256
+
+[traffic_limits]
+# Per-peer admitted traffic limits. Defaults match these values.
+rate_limit_per_second = 5000
+byte_rate_limit_per_second = 8388608
+byte_rate_limit_burst = 16777216
 
 [access_control]
 # Optional IP/CIDR blocklist for obvious abuse sources.

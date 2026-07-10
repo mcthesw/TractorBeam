@@ -3,18 +3,56 @@ mod pages;
 mod status;
 mod widgets;
 
+use std::time::{Duration, Instant};
+
 use eframe::egui::{self, ScrollArea};
 use rust_i18n::t;
 use tractor_beam_core::{
-    BridgeClient, ClientConfigSelection, ClientLogSink, ConnectionProfile, InputDelayError,
-    JoinCode, LightPingTarget, LocalDate, RelayEndpoint, RelayPreset, SessionConfig, SessionMode,
-    SessionStatus, SteamIdentity, TransportChoice, load_client_config, resolve_room_template,
-    save_client_config_selection,
+    ClientConfigSelection, ConnectionProfile, InputDelayError, JoinCode, LightPingTarget,
+    LocalDate, RelayEndpoint, RelayPreset, RuntimeState, SessionConfig, SessionHealthConfig,
+    SessionMode, SteamIdentity, TransportChoice, resolve_room_template,
 };
 
-use crate::i18n::{Language, set_language};
+use crate::{
+    application::{
+        ApplicationEvent, ApplicationHandle, ApplicationOperation, ApplicationSnapshot,
+        BootstrapState,
+    },
+    i18n::{Language, set_language},
+};
 
 use status::StatusMessage;
+
+const APPLICATION_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(3);
+
+#[derive(Default)]
+struct ShutdownGate {
+    deadline: Option<Instant>,
+    close_allowed: bool,
+}
+
+impl ShutdownGate {
+    fn request(&mut self, now: Instant) -> bool {
+        if self.deadline.is_some() {
+            return false;
+        }
+        self.deadline = Some(now + SHUTDOWN_DEADLINE);
+        true
+    }
+
+    fn complete(&mut self) {
+        self.close_allowed = true;
+    }
+
+    fn active(&self) -> bool {
+        self.deadline.is_some()
+    }
+
+    fn timed_out(&self, now: Instant) -> bool {
+        self.deadline.is_some_and(|deadline| now >= deadline)
+    }
+}
 
 fn generate_room_id() -> String {
     let date = resolve_room_template("{date:%Y%m%d}", LocalDate::today())
@@ -63,7 +101,10 @@ enum Page {
 }
 
 pub struct BridgeApp {
-    client: BridgeClient,
+    application: ApplicationHandle,
+    application_snapshot: ApplicationSnapshot,
+    form_initialized: bool,
+    shutdown: ShutdownGate,
     language: Language,
     page: Page,
     relay_presets: Vec<RelayPreset>,
@@ -71,7 +112,6 @@ pub struct BridgeApp {
     relay_host: String,
     relay_port: u16,
     transport: TransportChoice,
-    active_connection_profile: Option<ConnectionProfile>,
     room: String,
     admission: String,
     mode: SessionMode,
@@ -81,64 +121,75 @@ pub struct BridgeApp {
     status_message: Option<StatusMessage>,
     input_delay_value: String,
     input_delay_message: Option<String>,
-    last_log_directory: Option<String>,
     start_error_dialog_open: bool,
     join_code_input: String,
     join_code_message: Option<String>,
+    session_health: SessionHealthConfig,
 }
 
 impl BridgeApp {
-    pub fn new(
-        creation_context: &eframe::CreationContext<'_>,
-        log_sink: Box<dyn ClientLogSink>,
-    ) -> Self {
+    pub fn new(creation_context: &eframe::CreationContext<'_>) -> Self {
         fonts::configure_fonts(&creation_context.egui_ctx);
+        let language = Language::Chinese;
+        set_language(language);
+        let repaint_context = creation_context.egui_ctx.clone();
+        let application = ApplicationHandle::spawn(move || repaint_context.request_repaint());
+        let application_snapshot = application.snapshot();
 
-        let loaded_config = load_client_config();
-        let client = BridgeClient::with_config_and_log_sink(loaded_config.clone(), log_sink);
+        Self {
+            application,
+            application_snapshot,
+            form_initialized: false,
+            shutdown: ShutdownGate::default(),
+            language,
+            page: Page::Home,
+            relay_presets: Vec::new(),
+            selected_relay: None,
+            relay_host: String::new(),
+            relay_port: 25_910,
+            transport: TransportChoice::Tcp,
+            room: generate_room_id(),
+            admission: JoinCode::generate_admission(),
+            mode: SessionMode::Pure,
+            selected_account: None,
+            manual_steam_id: String::new(),
+            manual_display_name: String::new(),
+            status_message: None,
+            input_delay_value: String::new(),
+            input_delay_message: None,
+            start_error_dialog_open: false,
+            join_code_input: String::new(),
+            join_code_message: None,
+            session_health: SessionHealthConfig::default(),
+        }
+    }
 
-        let selected_account = initial_selected_account(
-            &client.state().detected_accounts,
-            loaded_config.config.selected_steam_id64.as_deref(),
-        );
-
-        let startup_room = loaded_config
+    fn initialize_form(&mut self) {
+        if self.form_initialized {
+            return;
+        }
+        let Some(loaded_config) = self.application_snapshot.loaded_config.clone() else {
+            return;
+        };
+        self.relay_presets = loaded_config.config.relays.clone();
+        self.selected_relay = loaded_config.config.selected_relay_index();
+        self.transport = loaded_config.config.default_transport;
+        self.room = loaded_config
             .config
             .room
             .clone()
             .unwrap_or_else(generate_room_id);
-
-        let language = Language::Chinese;
-        set_language(language);
-
-        let mut app = Self {
-            client,
-            language,
-            page: Page::Home,
-            relay_presets: loaded_config.config.relays.clone(),
-            selected_relay: loaded_config.config.selected_relay_index(),
-            relay_host: String::new(),
-            relay_port: 25_910,
-            transport: loaded_config.config.default_transport,
-            active_connection_profile: None,
-            room: startup_room,
-            admission: JoinCode::generate_admission(),
-            mode: loaded_config.config.default_mode,
-            selected_account,
-            manual_steam_id: String::new(),
-            manual_display_name: String::new(),
-            status_message: (!loaded_config.warnings.is_empty())
-                .then_some(StatusMessage::ConfigWarning),
-            input_delay_value: String::new(),
-            input_delay_message: None,
-            last_log_directory: None,
-            start_error_dialog_open: false,
-            join_code_input: String::new(),
-            join_code_message: None,
-        };
-        app.apply_selected_relay_defaults();
-        app.startup_light_ping();
-        app
+        self.mode = loaded_config.config.default_mode;
+        self.session_health = loaded_config.config.session_health;
+        self.selected_account = initial_selected_account(
+            &self.application_snapshot.runtime.detected_accounts,
+            loaded_config.config.selected_steam_id64.as_deref(),
+        );
+        self.status_message =
+            (!loaded_config.warnings.is_empty()).then_some(StatusMessage::ConfigWarning);
+        self.apply_selected_relay_defaults();
+        self.form_initialized = true;
+        self.startup_light_ping();
     }
 
     fn set_language(&mut self, language: Language) {
@@ -150,7 +201,7 @@ impl BridgeApp {
 
     fn selected_steam_account(&self) -> Option<&SteamIdentity> {
         self.selected_account
-            .and_then(|index| self.client.state().detected_accounts.get(index))
+            .and_then(|index| self.client_state().detected_accounts.get(index))
     }
 
     fn current_identity(&self) -> (String, String) {
@@ -176,7 +227,7 @@ impl BridgeApp {
             mode: self.mode,
             steam_id64,
             display_name,
-            session_health: self.client.loaded_config().config.session_health,
+            session_health: self.session_health,
         }
     }
 
@@ -188,74 +239,70 @@ impl BridgeApp {
     }
 
     fn start(&mut self) {
-        match self.client.start_session(&self.session_config()) {
-            Ok(()) => {
-                self.active_connection_profile = Some(self.current_connection_profile());
-                self.status_message = None;
-                self.start_error_dialog_open = false;
-                self.persist_selection();
-            }
-            Err(error) => {
-                self.status_message = Some(StatusMessage::from_client_error(&error));
-                self.start_error_dialog_open = true;
-            }
+        let accepted = self
+            .application
+            .start(self.session_config(), self.config_selection());
+        if accepted {
+            self.status_message = None;
+            self.start_error_dialog_open = false;
+        } else {
+            self.show_busy_status();
         }
     }
 
     fn persist_selection(&self) {
-        let selection = ClientConfigSelection {
+        self.application.persist_selection(self.config_selection());
+    }
+
+    fn config_selection(&self) -> ClientConfigSelection {
+        ClientConfigSelection {
             selected_relay: self.selected_relay_preset().map(|relay| relay.id.clone()),
             room: Some(self.room.clone()),
             selected_steam_id64: {
                 let (id, _) = self.current_identity();
                 if id.is_empty() { None } else { Some(id) }
             },
-        };
-        let _ = save_client_config_selection(&selection);
+        }
     }
 
     fn refresh_accounts(&mut self) {
-        self.client.refresh_steam_accounts();
-        self.selected_account =
-            initial_selected_account(&self.client.state().detected_accounts, None);
+        if !self.application.refresh_accounts() {
+            self.show_busy_status();
+        }
     }
 
     fn open_log_directory(&mut self) {
-        match self.client.open_log_directory() {
-            Ok(path) => {
-                self.status_message = None;
-                self.last_log_directory = Some(path.display().to_string());
-            }
-            Err(error) => self.status_message = Some(StatusMessage::Text(error.to_string())),
+        if !self.application.open_log_directory() {
+            self.show_busy_status();
+        }
+    }
+
+    fn export_diagnostics(&mut self) {
+        if !self.application.export_diagnostics() {
+            self.show_busy_status();
         }
     }
 
     fn start_readiness_probe(&mut self) {
         let relay = RelayEndpoint::new(self.relay_host.trim(), self.relay_port);
-        if let Err(error) = self.client.start_readiness_probe(relay) {
-            self.status_message = Some(StatusMessage::from_client_error(&error));
-        } else {
+        if self.application.start_readiness_probe(relay) {
             self.status_message = None;
+        } else {
+            self.show_busy_status();
         }
     }
 
     fn run_hook_receive_probe(&mut self) {
-        if let Err(error) = self.client.start_hook_receive_probe() {
-            self.status_message = Some(StatusMessage::from_client_error(&error));
-        } else {
+        if self.application.start_hook_receive_probe() {
             self.status_message = None;
+        } else {
+            self.show_busy_status();
         }
     }
 
     fn read_input_delay(&mut self) {
-        match self.client.read_input_delay() {
-            Ok(report) => {
-                self.input_delay_value = report.value.to_string();
-                self.input_delay_message =
-                    Some(format!("{}: {}", t!("input_delay.read_ok"), report.value));
-                self.status_message = None;
-            }
-            Err(error) => self.set_input_delay_error(&error),
+        if !self.application.read_input_delay() {
+            self.show_busy_status();
         }
     }
 
@@ -264,16 +311,8 @@ impl BridgeApp {
             self.input_delay_message = Some(t!("input_delay.invalid").into_owned());
             return;
         };
-        match self.client.write_input_delay(value) {
-            Ok(report) => {
-                let mut message = format!("{}: {}", t!("input_delay.write_ok"), report.value);
-                if report.value < 0 {
-                    message.push_str(t!("input_delay.negative_hint").as_ref());
-                }
-                self.input_delay_message = Some(message);
-                self.status_message = None;
-            }
-            Err(error) => self.set_input_delay_error(&error),
+        if !self.application.write_input_delay(value) {
+            self.show_busy_status();
         }
     }
 
@@ -292,11 +331,189 @@ impl BridgeApp {
                 transport: relay.preferred_transport(self.transport),
             })
             .collect();
-        let _ = self.client.start_light_ping_probes(targets);
+        if !self.application.start_light_ping(targets) {
+            self.show_busy_status();
+        }
     }
 
     fn test_relay_latency(&mut self) {
         self.startup_light_ping();
+    }
+
+    fn stop(&mut self) {
+        self.application.request_stop();
+        self.status_message = None;
+    }
+
+    fn clear_logs(&mut self) {
+        if !self.application.clear_logs() {
+            self.show_busy_status();
+        }
+    }
+
+    fn read_join_code_from_clipboard(&mut self) {
+        if !self.application.read_clipboard() {
+            self.show_busy_status();
+        }
+    }
+
+    fn client_state(&self) -> &RuntimeState {
+        &self.application_snapshot.runtime
+    }
+
+    fn mutations_enabled(&self) -> bool {
+        self.application_snapshot.accepts_mutation()
+    }
+
+    fn show_busy_status(&mut self) {
+        self.status_message = Some(StatusMessage::Busy);
+    }
+
+    fn sync_application(&mut self) {
+        self.application_snapshot = self.application.snapshot();
+        self.initialize_form();
+        for event in self.application.drain_events() {
+            self.handle_application_event(event);
+        }
+    }
+
+    fn handle_application_event(&mut self, event: ApplicationEvent) {
+        match event {
+            ApplicationEvent::StartFinished(result) => match result {
+                Ok(()) => {
+                    self.status_message = None;
+                    self.start_error_dialog_open = false;
+                }
+                Err(error) => {
+                    self.status_message = Some(StatusMessage::from_client_error(&error));
+                    self.start_error_dialog_open = true;
+                }
+            },
+            ApplicationEvent::StopFinished => self.status_message = None,
+            ApplicationEvent::AccountsRefreshed => {
+                self.selected_account =
+                    initial_selected_account(&self.client_state().detected_accounts, None);
+                self.persist_selection();
+            }
+            ApplicationEvent::ReadinessProbeStarted(result)
+            | ApplicationEvent::HookReceiveProbeStarted(result)
+            | ApplicationEvent::LightPingStarted(result) => match result {
+                Ok(()) => self.status_message = None,
+                Err(error) => {
+                    self.status_message = Some(StatusMessage::from_client_error(&error));
+                }
+            },
+            ApplicationEvent::InputDelayReadFinished(result) => match result {
+                Ok(report) => {
+                    self.input_delay_value = report.value.to_string();
+                    self.input_delay_message =
+                        Some(format!("{}: {}", t!("input_delay.read_ok"), report.value));
+                    self.status_message = None;
+                }
+                Err(error) => self.set_input_delay_error(&error),
+            },
+            ApplicationEvent::InputDelayWriteFinished(result) => match result {
+                Ok(report) => {
+                    let mut message = format!("{}: {}", t!("input_delay.write_ok"), report.value);
+                    if report.value < 0 {
+                        message.push_str(t!("input_delay.negative_hint").as_ref());
+                    }
+                    self.input_delay_message = Some(message);
+                    self.status_message = None;
+                }
+                Err(error) => self.set_input_delay_error(&error),
+            },
+            ApplicationEvent::LogDirectoryOpened(result) => match result {
+                Ok(path) => {
+                    self.status_message = None;
+                    tracing::info!(directory = %path.display(), "Opened log directory");
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "Could not open log directory");
+                    self.status_message = Some(StatusMessage::LogOpenFailed);
+                }
+            },
+            ApplicationEvent::DiagnosticsExported(result) => match result {
+                Ok(path) => {
+                    tracing::info!(path = %path.display(), "Diagnostics export completed");
+                    self.status_message = Some(StatusMessage::DiagnosticsExported);
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "Could not export diagnostics");
+                    self.status_message = Some(StatusMessage::DiagnosticsExportFailed);
+                }
+            },
+            ApplicationEvent::ClipboardReadFinished(result) => match result {
+                Ok(text) if !text.trim().is_empty() => {
+                    self.join_code_input = text;
+                    self.import_join_code();
+                }
+                Ok(_) => self.join_code_message = Some(t!("clipboard.empty").into_owned()),
+                Err(error) => {
+                    self.join_code_message = Some(format!("{}: {error}", t!("clipboard.empty")));
+                }
+            },
+            ApplicationEvent::SelectionSaveFailed(error) => {
+                tracing::warn!(error = %error, "Could not save GUI selection");
+                self.status_message = Some(StatusMessage::SelectionSaveFailed);
+            }
+            ApplicationEvent::CommandRejected => self.show_busy_status(),
+            ApplicationEvent::ShutdownComplete => {}
+        }
+    }
+
+    fn handle_close(&mut self, context: &egui::Context) {
+        let close_requested = context.input(|input| input.viewport().close_requested());
+        if close_requested && !self.shutdown.close_allowed {
+            context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if self.shutdown.request(Instant::now()) {
+                self.application.request_shutdown();
+            }
+        }
+
+        if self.application_snapshot.shutdown_complete {
+            self.shutdown.complete();
+            context.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if self.shutdown.timed_out(Instant::now()) {
+            tracing::error!("Application shutdown exceeded the three-second deadline");
+            std::process::exit(0);
+        }
+    }
+
+    fn lifecycle_view(&mut self, ui: &mut egui::Ui) -> bool {
+        if self.shutdown.active() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(48.0);
+                ui.heading(t!("status.shutting_down"));
+                ui.spinner();
+            });
+            return true;
+        }
+        match self.application_snapshot.bootstrap {
+            BootstrapState::Ready => false,
+            BootstrapState::Initializing => {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(48.0);
+                    ui.heading(t!("status.initializing"));
+                    ui.spinner();
+                });
+                true
+            }
+            BootstrapState::Failed => {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(48.0);
+                    ui.heading(t!("status.initialization_failed"));
+                    ui.label(t!("status.initialization_retry_hint"));
+                    if ui.button(t!("retry")).clicked() && !self.application.retry_bootstrap() {
+                        self.show_busy_status();
+                    }
+                    if ui.button(t!("logs.open_directory")).clicked() {
+                        self.open_log_directory();
+                    }
+                });
+                true
+            }
+        }
     }
 
     fn selected_relay_preset(&self) -> Option<&RelayPreset> {
@@ -371,12 +588,14 @@ impl BridgeApp {
 
 impl eframe::App for BridgeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        if self.client.poll_events() {
-            ui.ctx().request_repaint();
+        self.sync_application();
+        self.handle_close(ui.ctx());
+        if self.application_snapshot.needs_polling() || self.shutdown.active() {
+            ui.ctx().request_repaint_after(APPLICATION_POLL_INTERVAL);
         }
-        if self.client.state().status == SessionStatus::Running {
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(100));
+
+        if self.lifecycle_view(ui) {
+            return;
         }
 
         egui::Panel::bottom("status_bar")
@@ -411,57 +630,5 @@ impl eframe::App for BridgeApp {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn account(steam_id64: &str, most_recent: bool) -> SteamIdentity {
-        SteamIdentity {
-            steam_id64: steam_id64.to_owned(),
-            display_name: format!("User {steam_id64}"),
-            most_recent,
-        }
-    }
-
-    #[test]
-    fn initial_selection_prefers_saved_account() {
-        let accounts = [
-            account("76561198000000001", true),
-            account("76561198000000002", false),
-        ];
-
-        let selected = initial_selected_account(&accounts, Some("76561198000000002"));
-
-        assert_eq!(selected, Some(1));
-    }
-
-    #[test]
-    fn initial_selection_uses_most_recent_without_saved_match() {
-        let accounts = [
-            account("76561198000000001", false),
-            account("76561198000000002", true),
-        ];
-
-        let selected = initial_selected_account(&accounts, Some("76561198000000003"));
-
-        assert_eq!(selected, Some(1));
-    }
-
-    #[test]
-    fn initial_selection_falls_back_to_first_account() {
-        let accounts = [
-            account("76561198000000001", false),
-            account("76561198000000002", false),
-        ];
-
-        let selected = initial_selected_account(&accounts, None);
-
-        assert_eq!(selected, Some(0));
-    }
-
-    #[test]
-    fn initial_selection_handles_empty_accounts() {
-        let selected = initial_selected_account(&[], None);
-
-        assert_eq!(selected, None);
-    }
-}
+#[path = "app_tests.rs"]
+mod tests;

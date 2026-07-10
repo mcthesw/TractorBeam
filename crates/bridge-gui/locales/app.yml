@@ -86,6 +86,48 @@ status.idle:
 status.running:
   zh_CN: "运行中"
   en_US: "Running"
+status.initializing:
+  zh_CN: "正在初始化"
+  en_US: "Initializing"
+status.initialization_failed:
+  zh_CN: "初始化失败"
+  en_US: "Initialization failed"
+status.initialization_retry_hint:
+  zh_CN: "请重试；如问题持续，可打开日志文件夹。"
+  en_US: "Retry, or open the log folder if the problem continues."
+status.starting:
+  zh_CN: "正在启动"
+  en_US: "Starting"
+status.stopping:
+  zh_CN: "正在停止"
+  en_US: "Stopping"
+status.shutting_down:
+  zh_CN: "正在退出"
+  en_US: "Shutting down"
+status.working:
+  zh_CN: "正在处理"
+  en_US: "Working"
+operation.busy:
+  zh_CN: "当前操作尚未完成"
+  en_US: "Another operation is still running"
+config.selection_save_failed:
+  zh_CN: "无法保存当前选择"
+  en_US: "Could not save the current selection"
+logs.open_failed:
+  zh_CN: "无法打开日志文件夹"
+  en_US: "Could not open the log folder"
+diagnostics.export:
+  zh_CN: "导出诊断"
+  en_US: "Export diagnostics"
+diagnostics.exported:
+  zh_CN: "诊断已导出"
+  en_US: "Diagnostics exported"
+diagnostics.export_failed:
+  zh_CN: "无法导出诊断"
+  en_US: "Could not export diagnostics"
+retry:
+  zh_CN: "重试"
+  en_US: "Retry"
 counters:
   zh_CN: "计数器"
   en_US: "Counters"
@@ -147,11 +189,11 @@ probe.relay_readiness:
   zh_CN: "连接测试"
   en_US: "Connection test"
 probe.run_hook_receive:
-  zh_CN: "运行 Hook 收包探针"
-  en_US: "Run hook receive probe"
+  zh_CN: "刷新通信状态"
+  en_US: "Refresh communication status"
 probe.hook_receive:
-  zh_CN: "Hook 收包探针"
-  en_US: "Hook receive probe"
+  zh_CN: "Hook 通信状态"
+  en_US: "Hook communication"
 details:
   zh_CN: "详情"
   en_US: "Details"
@@ -182,6 +224,21 @@ hook.available:
 hook.read:
   zh_CN: "读取"
   en_US: "Read"
+hook.connection:
+  zh_CN: "状态"
+  en_US: "Status"
+hook.protocol:
+  zh_CN: "版本"
+  en_US: "Version"
+hook.reconnects:
+  zh_CN: "重连"
+  en_US: "Reconnects"
+hook.dropped:
+  zh_CN: "丢弃（Hook / 程序）"
+  en_US: "Dropped (hook / app)"
+hook.malformed:
+  zh_CN: "异常消息"
+  en_US: "Invalid messages"
 input_delay:
   zh_CN: "输入延迟"
   en_US: "Input delay"

@@ -1,20 +1,15 @@
 use std::{
     io,
-    net::{SocketAddr, TcpStream},
     sync::atomic::{AtomicU32, Ordering},
-    time::Duration,
 };
 
 use thiserror::Error;
-use tractor_beam_hook_ipc::{ErrorCode, Request, Response};
+use tractor_beam_hook_ipc::{ErrorCode, InputDelayCommand};
 
 use super::{
     LogLevel, SessionMode, SessionStatus,
-    hook_config::HOOK_CONTROL,
-    state::{self, HookStartupPhase},
+    state::{self, HookIpcConnectionState},
 };
-
-const CONTROL_TIMEOUT: Duration = Duration::from_millis(600);
 
 static NEXT_REQUEST_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -55,10 +50,6 @@ pub enum InputDelayError {
     HookNotReady,
     #[error("Native Hook returned {0}")]
     Hook(ErrorCode),
-    #[error("unexpected Native Hook response")]
-    UnexpectedResponse,
-    #[error("Native Hook response id mismatch: expected {expected}, got {actual}")]
-    ResponseIdMismatch { expected: u32, actual: u32 },
     #[error("{0}")]
     Io(#[from] io::Error),
 }
@@ -67,14 +58,14 @@ impl super::BridgeClient {
     pub fn read_input_delay(&mut self) -> Result<InputDelayReport, InputDelayError> {
         self.ensure_input_delay_available()?;
         let id = next_request_id();
-        let result = request_input_delay(Request::read_input_delay(id));
+        let result = self.request_input_delay(id, InputDelayCommand::Read);
         self.record_input_delay_result(InputDelayOperation::Read, result)
     }
 
     pub fn write_input_delay(&mut self, value: i32) -> Result<InputDelayReport, InputDelayError> {
         self.ensure_input_delay_available()?;
         let id = next_request_id();
-        let result = request_input_delay(Request::write_input_delay(id, value));
+        let result = self.request_input_delay(id, InputDelayCommand::Write(value));
         self.record_input_delay_result(InputDelayOperation::Write, result)
     }
 
@@ -86,10 +77,25 @@ impl super::BridgeClient {
             Some(SessionMode::Fallback | SessionMode::Pure) => {}
             Some(SessionMode::Official) | None => return Err(InputDelayError::UnsupportedMode),
         }
-        if self.state.hook_startup.phase != HookStartupPhase::Ready {
+        if self.state.hook_ipc.connection != HookIpcConnectionState::Connected {
             return Err(InputDelayError::HookNotReady);
         }
         Ok(())
+    }
+
+    fn request_input_delay(
+        &self,
+        id: u32,
+        command: InputDelayCommand,
+    ) -> Result<InputDelayReport, InputDelayError> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or(InputDelayError::SessionNotRunning)?;
+        match session.request_input_delay(id, command)? {
+            Ok(value) => Ok(InputDelayReport { value }),
+            Err(code) => Err(InputDelayError::Hook(code)),
+        }
     }
 
     fn record_input_delay_result(
@@ -117,29 +123,6 @@ impl super::BridgeClient {
             ),
         }
         result
-    }
-}
-
-fn request_input_delay(request: Request) -> Result<InputDelayReport, InputDelayError> {
-    let endpoint = HOOK_CONTROL
-        .parse::<SocketAddr>()
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    let expected_id = request.id();
-    let mut stream = TcpStream::connect_timeout(&endpoint, CONTROL_TIMEOUT)?;
-    stream.set_read_timeout(Some(CONTROL_TIMEOUT))?;
-    stream.set_write_timeout(Some(CONTROL_TIMEOUT))?;
-    tractor_beam_hook_ipc::write_request(&mut stream, request)?;
-    let response = tractor_beam_hook_ipc::read_response(&mut stream)?;
-    let actual_id = response.id();
-    if actual_id != expected_id {
-        return Err(InputDelayError::ResponseIdMismatch {
-            expected: expected_id,
-            actual: actual_id,
-        });
-    }
-    match response {
-        Response::Ok { value, .. } => Ok(InputDelayReport { value }),
-        Response::Error { code, .. } => Err(InputDelayError::Hook(code)),
     }
 }
 

@@ -1,87 +1,30 @@
-use std::{
-    io,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::time::Duration;
+
+#[cfg(test)]
+use std::io;
 
 use tokio::time;
 use tokio_util::sync::CancellationToken;
 
 use super::{
     LogLevel,
-    hook_config::HOOK_OUT,
-    probe,
     state::{
         HookStartupPhase, HookStartupState, RuntimeEvent, RuntimeEventSender, SessionStopReason,
-        error_counter, log_event, send_event, unix_seconds,
+        error_counter, log_event, send_critical_event, send_event, unix_seconds,
     },
 };
 
 const INJECTOR_HELPER_TIMEOUT: Duration = Duration::from_secs(60);
-const ISAAC_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(250);
-const ISAAC_WAIT_NOTICE_INTERVAL: Duration = Duration::from_secs(60);
-const PROCESS_WATCH_INTERVAL: Duration = Duration::from_secs(1);
-const HOOK_ENDPOINT_WAIT_TIMEOUT: Duration = Duration::from_secs(35);
-const HOOK_ENDPOINT_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const HOOK_ENDPOINT_WAIT_NOTICE_INTERVAL: Duration = Duration::from_secs(5);
 const ADMIN_PERMISSION_REQUEST_MESSAGE: &str = "Requesting admin permission...";
 const ADMIN_PERMISSION_CANCELLED_MESSAGE: &str = "Admin permission was cancelled";
 const ELEVATED_INJECTOR_RETRY_SUCCEEDED_MESSAGE: &str = "Elevated Injector retry succeeded";
 
-enum HookEndpointWaitError {
-    Cancelled,
-    NotReady(io::Error),
-}
-
-pub(super) async fn injector_task(
+pub(super) async fn inject_process(
     paths: tractor_beam_isaac_injector::NativeHookPaths,
+    process: tractor_beam_isaac_injector::IsaacProcess,
     event_tx: RuntimeEventSender,
     cancellation: CancellationToken,
 ) {
-    send_event(
-        &event_tx,
-        log_event(LogLevel::Info, "Waiting for Isaac process"),
-    );
-    send_event(
-        &event_tx,
-        RuntimeEvent::HookStartup(Box::new(hook_startup_state(
-            HookStartupPhase::WaitingForIsaac,
-            &paths,
-            None,
-            None,
-            "Waiting for Isaac process",
-        ))),
-    );
-    send_event(
-        &event_tx,
-        log_event(
-            LogLevel::Info,
-            format!(
-                "Native Hook artifacts: injector={} hook={}",
-                paths.injector.display(),
-                paths.hook.display()
-            ),
-        ),
-    );
-
-    let Some(process) = wait_for_isaac_process(&paths, &event_tx, &cancellation).await else {
-        send_event(
-            &event_tx,
-            RuntimeEvent::HookStartup(Box::new(hook_startup_state(
-                HookStartupPhase::Cancelled,
-                &paths,
-                None,
-                None,
-                "Native Hook injection cancelled while waiting for Isaac",
-            ))),
-        );
-        send_event(
-            &event_tx,
-            log_event(LogLevel::Info, "Native Hook injection cancelled"),
-        );
-        return;
-    };
-
     let process_name = process.name.clone();
     let process_id = process.pid;
     let hook_path = paths.hook.clone();
@@ -208,10 +151,11 @@ pub(super) async fn injector_task(
                     &event_tx,
                     RuntimeEvent::HookReceiveProbeFinished(Err(message.clone())),
                 );
-                send_event(
+                send_critical_event(
                     &event_tx,
                     RuntimeEvent::SessionEnded(SessionStopReason::RuntimeEnded { message }),
-                );
+                )
+                .await;
                 cancellation.cancel();
             }
             if injected {
@@ -220,310 +164,44 @@ pub(super) async fn injector_task(
                     &paths,
                     Some(&process_name),
                     Some(process_id),
-                    format!(
-                        "Injection succeeded; waiting up to {} seconds for Hook receive endpoint",
-                        HOOK_ENDPOINT_WAIT_TIMEOUT.as_secs()
-                    ),
+                    "Injection succeeded; waiting for local IPC handshake",
                 );
                 state.injected = true;
                 send_event(&event_tx, RuntimeEvent::HookStartup(Box::new(state)));
-                run_hook_startup_preflight(
-                    hook_path.with_file_name(crate::diagnostics::BRIDGE_HOOK_LOG),
-                    &paths,
-                    &process_name,
-                    process_id,
-                    &event_tx,
-                    &cancellation,
-                )
-                .await;
-                watch_isaac_process(process_name, process_id, &event_tx, &cancellation).await;
             }
         }
     }
 }
 
-async fn run_hook_startup_preflight(
-    hook_log_path: PathBuf,
+pub(super) fn report_waiting_for_isaac(
     paths: &tractor_beam_isaac_injector::NativeHookPaths,
-    process_name: &str,
-    process_id: u32,
     event_tx: &RuntimeEventSender,
-    cancellation: &CancellationToken,
+    message: impl Into<String>,
 ) {
-    match wait_for_hook_receive_endpoint(paths, process_name, process_id, event_tx, cancellation)
-        .await
-    {
-        Ok(()) => {
-            let mut state = hook_startup_state(
-                HookStartupPhase::EndpointReady,
-                paths,
-                Some(process_name),
-                Some(process_id),
-                format!("Hook receive endpoint is ready at {HOOK_OUT}/UDP"),
-            );
-            state.injected = true;
-            state.endpoint_ready = true;
-            send_event(event_tx, RuntimeEvent::HookStartup(Box::new(state)));
-            send_event(
-                event_tx,
-                log_event(
-                    LogLevel::Info,
-                    format!("Hook receive endpoint is ready at {HOOK_OUT}/UDP"),
-                ),
-            );
-        }
-        Err(HookEndpointWaitError::Cancelled) => {
-            let mut state = hook_startup_state(
-                HookStartupPhase::Cancelled,
-                paths,
-                Some(process_name),
-                Some(process_id),
-                "Hook receive endpoint wait cancelled",
-            );
-            state.injected = true;
-            send_event(event_tx, RuntimeEvent::HookStartup(Box::new(state)));
-            send_event(
-                event_tx,
-                log_event(LogLevel::Info, "Hook receive endpoint wait cancelled"),
-            );
-            return;
-        }
-        Err(HookEndpointWaitError::NotReady(error)) => {
-            let message = format!(
-                "Hook receive endpoint did not become ready within {} seconds after injection: {error}",
-                HOOK_ENDPOINT_WAIT_TIMEOUT.as_secs()
-            );
-            let mut state = hook_startup_state(
-                HookStartupPhase::Failed,
-                paths,
-                Some(process_name),
-                Some(process_id),
-                message.clone(),
-            );
-            state.injected = true;
-            send_event(event_tx, RuntimeEvent::HookStartup(Box::new(state)));
-            send_event(event_tx, log_event(LogLevel::Error, message.clone()));
-            send_event(
-                event_tx,
-                RuntimeEvent::HookReceiveProbeFinished(Err(message.clone())),
-            );
-            send_event(
-                event_tx,
-                RuntimeEvent::SessionEnded(SessionStopReason::RuntimeEnded { message }),
-            );
-            send_event(event_tx, RuntimeEvent::CounterDelta(error_counter()));
-            cancellation.cancel();
-            return;
-        }
-    }
     send_event(
         event_tx,
-        log_event(
-            LogLevel::Info,
-            format!(
-                "Running Hook startup preflight with {}",
-                hook_log_path.display()
-            ),
-        ),
+        RuntimeEvent::HookStartup(Box::new(hook_startup_state(
+            HookStartupPhase::WaitingForIsaac,
+            paths,
+            None,
+            None,
+            message,
+        ))),
     );
-    let probe =
-        tokio::task::spawn_blocking(move || probe::run_hook_receive_probe(Some(hook_log_path)));
-    tokio::select! {
-        () = cancellation.cancelled() => {}
-        result = probe => match result {
-            Ok(Ok(report)) => {
-                let mut state = hook_startup_state(
-                    HookStartupPhase::Ready,
-                    paths,
-                    Some(process_name),
-                    Some(process_id),
-                    "Hook startup ready; Hook receive probe succeeded",
-                );
-                state.injected = true;
-                state.endpoint_ready = true;
-                send_event(event_tx, RuntimeEvent::HookStartup(Box::new(state)));
-                send_event(event_tx, log_event(LogLevel::Info, report.to_string()));
-                send_event(event_tx, RuntimeEvent::HookReceiveProbeFinished(Ok(report)));
-            }
-            Ok(Err(error)) => {
-                let message = format!(
-                    "Hook receive probe warning: {error}; {HOOK_OUT}/UDP is bound, continuing because this probe may be log-sampling sensitive"
-                );
-                let mut state = hook_startup_state(
-                    HookStartupPhase::Ready,
-                    paths,
-                    Some(process_name),
-                    Some(process_id),
-                    message.clone(),
-                );
-                state.injected = true;
-                state.endpoint_ready = true;
-                send_event(event_tx, RuntimeEvent::HookStartup(Box::new(state)));
-                send_event(event_tx, log_event(LogLevel::Warn, message.clone()));
-                send_event(event_tx, RuntimeEvent::HookReceiveProbeWarning(message));
-            }
-            Err(error) => {
-                let message = format!(
-                    "Hook receive probe warning: task failed: {error}; {HOOK_OUT}/UDP is bound"
-                );
-                let mut state = hook_startup_state(
-                    HookStartupPhase::Ready,
-                    paths,
-                    Some(process_name),
-                    Some(process_id),
-                    message.clone(),
-                );
-                state.injected = true;
-                state.endpoint_ready = true;
-                send_event(event_tx, RuntimeEvent::HookStartup(Box::new(state)));
-                send_event(event_tx, log_event(LogLevel::Warn, message.clone()));
-                send_event(event_tx, RuntimeEvent::HookReceiveProbeWarning(message));
-            }
-        }
-    }
 }
 
-async fn wait_for_hook_receive_endpoint(
+pub(super) fn report_isaac_wait_failure(
     paths: &tractor_beam_isaac_injector::NativeHookPaths,
-    process_name: &str,
-    process_id: u32,
     event_tx: &RuntimeEventSender,
-    cancellation: &CancellationToken,
-) -> Result<(), HookEndpointWaitError> {
-    let started = Instant::now();
-    let mut next_notice = HOOK_ENDPOINT_WAIT_NOTICE_INTERVAL;
-    loop {
-        if let Err(error) = verify_hook_receive_endpoint_bound() {
-            if started.elapsed() >= HOOK_ENDPOINT_WAIT_TIMEOUT {
-                return Err(HookEndpointWaitError::NotReady(error));
-            }
-            if started.elapsed() >= next_notice {
-                let elapsed_seconds = started.elapsed().as_secs();
-                let mut state = hook_startup_state(
-                    HookStartupPhase::WaitingForHookEndpoint,
-                    paths,
-                    Some(process_name),
-                    Some(process_id),
-                    format!(
-                        "Still waiting for Hook receive endpoint at {HOOK_OUT}/UDP after {elapsed_seconds} seconds"
-                    ),
-                );
-                state.injected = true;
-                send_event(event_tx, RuntimeEvent::HookStartup(Box::new(state)));
-                send_event(
-                    event_tx,
-                    log_event(
-                        LogLevel::Info,
-                        format!(
-                            "Still waiting for Hook receive endpoint at {HOOK_OUT}/UDP after {elapsed_seconds} seconds"
-                        ),
-                    ),
-                );
-                next_notice += HOOK_ENDPOINT_WAIT_NOTICE_INTERVAL;
-            }
-        } else {
-            return Ok(());
-        }
-        tokio::select! {
-            () = cancellation.cancelled() => {
-                return Err(HookEndpointWaitError::Cancelled);
-            }
-            () = time::sleep(HOOK_ENDPOINT_POLL_INTERVAL) => {}
-        }
-    }
-}
-
-fn verify_hook_receive_endpoint_bound() -> io::Result<()> {
-    match std::net::UdpSocket::bind(HOOK_OUT) {
-        Ok(socket) => {
-            drop(socket);
-            Err(io::Error::other(format!(
-                "Hook receive endpoint {HOOK_OUT}/UDP is not occupied by Native Hook"
-            )))
-        }
-        Err(error) if is_address_in_use(&error) => Ok(()),
-        Err(error) => Err(io::Error::new(
-            error.kind(),
-            format!("could not verify Hook receive endpoint {HOOK_OUT}/UDP: {error}"),
-        )),
-    }
-}
-
-fn is_address_in_use(error: &io::Error) -> bool {
-    error.kind() == io::ErrorKind::AddrInUse || error.raw_os_error() == Some(10_048)
-}
-
-async fn watch_isaac_process(
-    process_name: String,
-    process_id: u32,
-    event_tx: &RuntimeEventSender,
-    cancellation: &CancellationToken,
+    phase: HookStartupPhase,
+    message: impl Into<String>,
 ) {
-    loop {
-        tokio::select! {
-            () = cancellation.cancelled() => return,
-            () = time::sleep(PROCESS_WATCH_INTERVAL) => {
-                let running = tokio::task::spawn_blocking(move || {
-                    tractor_beam_isaac_injector::is_process_running(process_id)
-                })
-                .await
-                .unwrap_or(false);
-                if !running {
-                    let reason = SessionStopReason::GameExited {
-                        process_name,
-                        pid: process_id,
-                    };
-                    send_event(event_tx, RuntimeEvent::SessionEnded(reason.clone()));
-                    send_event(
-                        event_tx,
-                        log_event(LogLevel::Warn, format!("Session ended: {reason}")),
-                    );
-                    cancellation.cancel();
-                    return;
-                }
-            }
-        }
-    }
-}
-
-async fn wait_for_isaac_process(
-    paths: &tractor_beam_isaac_injector::NativeHookPaths,
-    event_tx: &RuntimeEventSender,
-    cancellation: &CancellationToken,
-) -> Option<tractor_beam_isaac_injector::IsaacProcess> {
-    let started = Instant::now();
-    let mut next_notice = ISAAC_WAIT_NOTICE_INTERVAL;
-    loop {
-        if let Some(process) = tractor_beam_isaac_injector::find_isaac_process() {
-            return Some(process);
-        }
-        if started.elapsed() >= next_notice {
-            let elapsed_seconds = started.elapsed().as_secs();
-            send_event(
-                event_tx,
-                RuntimeEvent::HookStartup(Box::new(hook_startup_state(
-                    HookStartupPhase::WaitingForIsaac,
-                    paths,
-                    None,
-                    None,
-                    format!("Still waiting for Isaac process after {elapsed_seconds} seconds"),
-                ))),
-            );
-            send_event(
-                event_tx,
-                log_event(
-                    LogLevel::Info,
-                    format!("Still waiting for Isaac process after {elapsed_seconds} seconds"),
-                ),
-            );
-            next_notice += ISAAC_WAIT_NOTICE_INTERVAL;
-        }
-
-        tokio::select! {
-            () = cancellation.cancelled() => return None,
-            () = time::sleep(ISAAC_PROCESS_POLL_INTERVAL) => {}
-        }
-    }
+    send_event(
+        event_tx,
+        RuntimeEvent::HookStartup(Box::new(hook_startup_state(
+            phase, paths, None, None, message,
+        ))),
+    );
 }
 
 fn injection_support_message(error: &tractor_beam_isaac_injector::InjectorError) -> String {
@@ -585,7 +263,7 @@ fn hook_startup_state(
         pid,
         injector_path: (!paths.injector.as_os_str().is_empty()).then(|| paths.injector.clone()),
         hook_path: (!paths.hook.as_os_str().is_empty()).then(|| paths.hook.clone()),
-        endpoint: Some(format!("{HOOK_OUT}/UDP")),
+        endpoint: Some("local IPC".to_owned()),
         message: Some(message.into()),
         updated_at: unix_seconds(),
         ..HookStartupState::default()
@@ -595,11 +273,11 @@ fn hook_startup_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use tractor_beam_isaac_injector::{InjectionStep, InjectorError, NativeHookPaths};
 
     #[test]
-    fn endpoint_wait_budget_covers_native_hook_startup_window() {
-        assert!(HOOK_ENDPOINT_WAIT_TIMEOUT > Duration::from_secs(30));
+    fn injector_helper_has_bounded_startup_window() {
         assert_eq!(INJECTOR_HELPER_TIMEOUT, Duration::from_secs(60));
     }
 
@@ -672,6 +350,6 @@ mod tests {
         assert_eq!(state.pid, Some(42));
         assert_eq!(state.injector_path.as_ref(), Some(&paths.injector));
         assert_eq!(state.hook_path.as_ref(), Some(&paths.hook));
-        assert_eq!(state.endpoint.as_deref(), Some("127.0.0.1:25901/UDP"));
+        assert_eq!(state.endpoint.as_deref(), Some("local IPC"));
     }
 }

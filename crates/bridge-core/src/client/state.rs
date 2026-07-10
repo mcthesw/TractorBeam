@@ -256,6 +256,41 @@ pub struct LogEntry {
     pub message: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HookIpcConnectionState {
+    #[default]
+    Inactive,
+    Listening,
+    Connected,
+    Reconnecting,
+    Failed,
+}
+
+impl Display for HookIpcConnectionState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Inactive => formatter.write_str("inactive"),
+            Self::Listening => formatter.write_str("listening"),
+            Self::Connected => formatter.write_str("connected"),
+            Self::Reconnecting => formatter.write_str("reconnecting"),
+            Self::Failed => formatter.write_str("failed"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct HookIpcState {
+    pub connection: HookIpcConnectionState,
+    pub negotiated_major: Option<u16>,
+    pub negotiated_minor: Option<u16>,
+    pub reconnects: u32,
+    pub hook_data_dropped: u64,
+    pub client_data_dropped: u64,
+    pub malformed_frames: u64,
+    pub last_error: Option<String>,
+    pub updated_at: u64,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RuntimeState {
     pub status: SessionStatus,
@@ -268,13 +303,13 @@ pub struct RuntimeState {
     pub latest_readiness_probe: Option<ReadinessProbeReport>,
     pub latest_hook_receive_probe: Option<HookReceiveProbeReport>,
     pub latest_hook_receive_probe_error: Option<String>,
-    pub latest_hook_receive_probe_warning: Option<String>,
     pub latest_session_health: Option<SessionHealthSnapshot>,
     pub latest_session_health_summary: Option<SessionHealthSnapshot>,
     pub latest_input_delay_status: Option<InputDelayStatus>,
     pub hook_launch_parameters_path_written: Option<PathBuf>,
     pub hook_launch_parameters_cleanup: Option<String>,
     pub hook_startup: HookStartupState,
+    pub hook_ipc: HookIpcState,
     pub last_stop_reason: Option<SessionStopReason>,
     pub client_incidents: Vec<ClientIncidentSnapshot>,
     pub light_ping_reports: Vec<super::probe::LightPingReport>,
@@ -287,8 +322,8 @@ pub(super) enum RuntimeEvent {
     CounterDelta(Counters),
     ReadinessProbeFinished(Result<Box<ReadinessProbeReport>, String>),
     HookReceiveProbeFinished(Result<HookReceiveProbeReport, String>),
-    HookReceiveProbeWarning(String),
     HookStartup(Box<HookStartupState>),
+    HookIpc(Box<HookIpcState>),
     SessionHealthSnapshot(Box<SessionHealthSnapshot>),
     SessionHealthSummary(Box<SessionHealthSnapshot>),
     SessionEnded(SessionStopReason),
@@ -320,6 +355,10 @@ pub(super) fn trim_logs(logs: &mut Vec<LogEntry>) {
 
 pub(super) fn send_event(sender: &RuntimeEventSender, event: RuntimeEvent) {
     let _ = sender.try_send(event);
+}
+
+pub(super) async fn send_critical_event(sender: &RuntimeEventSender, event: RuntimeEvent) {
+    let _ = sender.send(event).await;
 }
 
 pub(super) fn error_counter() -> Counters {
@@ -399,5 +438,26 @@ mod tests {
             .expect("queue drop should be recorded");
 
         assert_eq!(incident.kind, ClientIncidentKind::QueueDrop);
+    }
+
+    #[tokio::test]
+    async fn critical_lifecycle_event_survives_a_saturated_queue() {
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
+        send_event(&event_tx, log_event(LogLevel::Debug, "fills queue"));
+
+        let critical_tx = event_tx.clone();
+        let critical = tokio::spawn(async move {
+            send_critical_event(&critical_tx, RuntimeEvent::Stopped).await;
+        });
+        tokio::task::yield_now().await;
+        assert!(!critical.is_finished());
+
+        let Some(RuntimeEvent::Log(LogLevel::Debug, _)) = event_rx.recv().await else {
+            panic!("expected queued diagnostic event");
+        };
+        critical.await.expect("critical send task should finish");
+        let Some(RuntimeEvent::Stopped) = event_rx.recv().await else {
+            panic!("expected reliable stopped event");
+        };
     }
 }

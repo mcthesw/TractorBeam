@@ -1,5 +1,10 @@
 //! Byte-stable Relay Protocol v1 wire contract.
 
+/// Relay Protocol v2 wire contract. This module temporarily lives beside the
+/// v1 types while the Client and Relay are migrated as one hard-cut release.
+/// It does not provide runtime version fallback or a v1 compatibility adapter.
+pub mod v2;
+
 mod control;
 mod envelope;
 mod game;

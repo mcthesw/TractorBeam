@@ -1,9 +1,9 @@
 use bytes::Bytes;
 
-use super::*;
+use tractor_beam_relay_protocol::*;
 
 #[test]
-fn envelope_golden_bytes_are_stable() {
+fn envelope_v1_bytes_are_stable() {
     let envelope = Envelope {
         message_type: MessageType::Data,
         flags: 0xa5,
@@ -12,14 +12,14 @@ fn envelope_golden_bytes_are_stable() {
         nonce: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
         payload: Bytes::from_static(b"abc"),
     };
-    let expected = fixture_hex(include_str!("fixtures/envelope-data.hex"));
+    let expected = fixture_hex(include_str!("fixtures/v1/envelope-data.hex"));
 
     assert_eq!(envelope.encode().unwrap().as_ref(), expected);
     assert_eq!(Envelope::decode(Bytes::from(expected)).unwrap(), envelope);
 }
 
 #[test]
-fn game_packet_golden_bytes_are_stable() {
+fn game_packet_v1_bytes_are_stable() {
     let game = GamePacket {
         from_steam_id64: "76561198000000001".to_owned(),
         to_steam_id64: 42,
@@ -28,14 +28,14 @@ fn game_packet_golden_bytes_are_stable() {
         send_type: 2,
         payload: Bytes::from_static(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
     };
-    let expected = fixture_hex(include_str!("fixtures/game-16.hex"));
+    let expected = fixture_hex(include_str!("fixtures/v1/game-16.hex"));
 
     assert_eq!(game.encode().unwrap().as_ref(), expected);
     assert_eq!(GamePacket::decode(&expected).unwrap(), game);
 }
 
 #[test]
-fn control_message_json_fixtures_are_stable() {
+fn control_message_v1_json_is_stable() {
     let peers = vec![PeerInfo {
         steam_id64: "76561198000000001".to_owned(),
         display_name: Some("Alice".to_owned()),
@@ -44,7 +44,7 @@ fn control_message_json_fixtures_are_stable() {
     let cases = [
         (
             ControlMessage::Join {
-                room: "golden-room".to_owned(),
+                room: "contract-room".to_owned(),
                 steam_id64: "76561198000000001".to_owned(),
                 display_name: Some("Alice".to_owned()),
                 client: Some(ClientMetadata {
@@ -58,18 +58,18 @@ fn control_message_json_fixtures_are_stable() {
                 pow_proof: None,
                 admission: Some("AbCdEfGhIjKlMn12".to_owned()),
             },
-            include_str!("fixtures/join.json"),
+            include_str!("fixtures/v1/join.json"),
         ),
         (
             ControlMessage::Challenge {
                 token: "token".to_owned(),
                 pow: Some(PowChallenge::sha256("nonce".to_owned(), 18)),
             },
-            include_str!("fixtures/challenge.json"),
+            include_str!("fixtures/v1/challenge.json"),
         ),
         (
             ControlMessage::Ready { peers },
-            include_str!("fixtures/ready.json"),
+            include_str!("fixtures/v1/ready.json"),
         ),
         (
             ControlMessage::RoomUpdate {
@@ -79,22 +79,22 @@ fn control_message_json_fixtures_are_stable() {
                     transport: PeerTransport::Udp,
                 }],
             },
-            include_str!("fixtures/room-update.json"),
+            include_str!("fixtures/v1/room-update.json"),
         ),
         (
             ControlMessage::Error {
                 code: "bad_join".to_owned(),
                 message: "expected join message".to_owned(),
             },
-            include_str!("fixtures/error.json"),
+            include_str!("fixtures/v1/error.json"),
         ),
         (
             ControlMessage::HealthPing { id: 42 },
-            include_str!("fixtures/health-ping.json"),
+            include_str!("fixtures/v1/health-ping.json"),
         ),
         (
             ControlMessage::HealthPong { id: 42 },
-            include_str!("fixtures/health-pong.json"),
+            include_str!("fixtures/v1/health-pong.json"),
         ),
     ];
 

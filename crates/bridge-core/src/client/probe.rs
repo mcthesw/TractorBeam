@@ -14,12 +14,11 @@ use bytes::Bytes;
 use serde::Serialize;
 use tokio::{runtime::Builder, time};
 
-use crate::protocol::{
-    ENVELOPE_HEADER_LEN, Envelope, GAME_PACKET_HEADER_LEN, GamePacket, MessageType,
-};
+use crate::protocol::v2::{DATA_FRAME_OVERHEAD, Frame, decode_frame};
 
 use super::{
     BridgeClient, LogLevel, RelayEndpoint, SessionConfig, SessionMode, TransportChoice,
+    packet_flow::encode_outbound_relay_packet,
     relay_transport::{RelayTransport, complete_relay_join},
     state::{HookIpcState, RuntimeEvent, log_event},
 };
@@ -33,8 +32,7 @@ pub use readiness::{
 
 pub(super) const PROBE_A_STEAM: &str = "76561198000000101";
 pub(super) const PROBE_B_STEAM: &str = "76561198000000102";
-pub const DEFAULT_RELAY_PROBE_PAYLOAD_BYTES: usize =
-    2_048 - ENVELOPE_HEADER_LEN - GAME_PACKET_HEADER_LEN;
+pub const DEFAULT_RELAY_PROBE_PAYLOAD_BYTES: usize = 2_048 - DATA_FRAME_OVERHEAD;
 pub(super) const MAX_RELAY_PROBE_PAYLOAD_BYTES: usize = 60_000;
 const DATA_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -248,7 +246,6 @@ pub(super) fn probe_payload(payload_bytes: usize) -> Bytes {
 
 pub(super) struct ProbePeer {
     transport: RelayTransport,
-    steam_id64: &'static str,
 }
 
 impl ProbePeer {
@@ -269,7 +266,10 @@ impl ProbePeer {
             display_name: display_name.to_owned(),
             session_health: super::session_config::SessionHealthConfig::default(),
         };
-        let mut relay_transport = RelayTransport::connect(relay, transport).await?;
+        let build = crate::build_info::current();
+        let steam = steam_id64.parse::<u64>().map_err(io::Error::other)?;
+        let mut relay_transport =
+            RelayTransport::connect(relay, transport, build.version, build.git_hash, steam).await?;
         complete_relay_join(
             &mut relay_transport.sender,
             &mut relay_transport.receiver,
@@ -278,7 +278,6 @@ impl ProbePeer {
         .await?;
         Ok(Self {
             transport: relay_transport,
-            steam_id64,
         })
     }
 
@@ -293,19 +292,17 @@ impl ProbePeer {
         payload: Bytes,
         source_sequence: u32,
     ) -> io::Result<()> {
-        let packet = GamePacket {
-            from_steam_id64: self.steam_id64.to_owned(),
-            to_steam_id64: to_steam_id64.parse().map_err(io::Error::other)?,
-            source_sequence,
+        let packet = tractor_beam_hook_ipc::GamePacket {
+            peer: to_steam_id64.parse().map_err(io::Error::other)?,
+            sequence: source_sequence,
             channel: 0,
             send_type: 0,
-            payload,
+            payload: payload.to_vec(),
         };
-        let payload = packet.encode().map_err(io::Error::other)?;
-        let bytes = Envelope::new(MessageType::Data, payload)
-            .encode()
-            .map_err(io::Error::other)?;
-        self.transport.sender.send_data_datagram(bytes).await
+        self.transport
+            .sender
+            .send_data_datagram(encode_outbound_relay_packet(packet)?)
+            .await
     }
 
     async fn expect_game(
@@ -317,12 +314,10 @@ impl ProbePeer {
         let wait_for_data = async {
             loop {
                 let raw = self.transport.receiver.recv_datagram().await?;
-                let envelope = Envelope::decode(raw).map_err(io::Error::other)?;
-                if envelope.message_type != MessageType::Data {
+                let Frame::Data(packet) = decode_frame(raw).map_err(io::Error::other)? else {
                     continue;
-                }
-                let packet = GamePacket::decode(&envelope.payload).map_err(io::Error::other)?;
-                if packet.from_steam_id64 != from_steam_id64 {
+                };
+                if packet.from_steam_id64.to_string() != from_steam_id64 {
                     return Err(io::Error::other(format!(
                         "unexpected probe sender {}",
                         packet.from_steam_id64
@@ -356,12 +351,10 @@ impl ProbePeer {
         let wait_for_data = async {
             loop {
                 let raw = self.transport.receiver.recv_datagram().await?;
-                let envelope = Envelope::decode(raw).map_err(io::Error::other)?;
-                if envelope.message_type != MessageType::Data {
+                let Frame::Data(packet) = decode_frame(raw).map_err(io::Error::other)? else {
                     continue;
-                }
-                let packet = GamePacket::decode(&envelope.payload).map_err(io::Error::other)?;
-                if packet.from_steam_id64 == from_steam_id64
+                };
+                if packet.from_steam_id64.to_string() == from_steam_id64
                     && packet.to_steam_id64.to_string() == to_steam_id64
                     && packet.source_sequence == source_sequence
                     && packet.payload == *payload
@@ -398,17 +391,7 @@ fn hook_ipc_report(ipc: &HookIpcState) -> HookReceiveProbeReport {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashMap,
-        net::{SocketAddr, UdpSocket},
-        sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        },
-        thread,
-    };
-
-    use crate::protocol::ControlMessage;
+    use crate::client::test_relay::TestRelay;
 
     use super::*;
 
@@ -443,12 +426,12 @@ mod tests {
     }
 
     #[test]
-    fn probes_local_udp_relay() {
+    fn probes_local_tcp_relay() {
         let relay = TestRelay::spawn();
 
         let report = run_relay_probe(
             RelayEndpoint::new("127.0.0.1", relay.address.port()),
-            TransportChoice::Udp,
+            TransportChoice::Tcp,
             512,
         )
         .unwrap();
@@ -456,125 +439,5 @@ mod tests {
         assert_eq!(report.a_to_b_bytes, 512);
         assert_eq!(report.b_to_a_bytes, 512);
         relay.stop();
-    }
-
-    struct TestRelay {
-        address: SocketAddr,
-        stop: Arc<AtomicBool>,
-        worker: thread::JoinHandle<()>,
-    }
-
-    impl TestRelay {
-        fn spawn() -> Self {
-            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-            socket
-                .set_read_timeout(Some(Duration::from_millis(50)))
-                .unwrap();
-            let address = socket.local_addr().unwrap();
-            let stop = Arc::new(AtomicBool::new(false));
-            let worker_stop = Arc::clone(&stop);
-            let worker = thread::spawn(move || run_test_relay(socket, &worker_stop));
-            Self {
-                address,
-                stop,
-                worker,
-            }
-        }
-
-        fn stop(self) {
-            self.stop.store(true, Ordering::Relaxed);
-            let _ = self.worker.join();
-        }
-    }
-
-    fn run_test_relay(socket: UdpSocket, stop: &AtomicBool) {
-        let mut peers = HashMap::new();
-        let mut buffer = [0_u8; 65_535];
-        while !stop.load(Ordering::Relaxed) {
-            let Ok((size, address)) = socket.recv_from(&mut buffer) else {
-                continue;
-            };
-            let raw = Bytes::copy_from_slice(&buffer[..size]);
-            let Ok(envelope) = Envelope::decode(raw.clone()) else {
-                continue;
-            };
-            match envelope.message_type {
-                MessageType::Join => handle_join(&socket, address, &envelope, &mut peers),
-                MessageType::Data => forward_data(&socket, raw, &envelope, &peers),
-                _ => {}
-            }
-        }
-    }
-
-    fn handle_join(
-        socket: &UdpSocket,
-        address: SocketAddr,
-        envelope: &Envelope,
-        peers: &mut HashMap<String, SocketAddr>,
-    ) {
-        let Ok(control) = ControlMessage::decode(&envelope.payload) else {
-            return;
-        };
-        let response = match control {
-            ControlMessage::Join {
-                steam_id64,
-                challenge: None,
-                ..
-            } => {
-                peers.insert(steam_id64, address);
-                (
-                    MessageType::JoinChallenge,
-                    ControlMessage::Challenge {
-                        token: "token".to_owned(),
-                        pow: None,
-                    },
-                )
-            }
-            ControlMessage::Join {
-                steam_id64,
-                challenge: Some(_),
-                ..
-            } => {
-                peers.insert(steam_id64.clone(), address);
-                (
-                    MessageType::JoinReady,
-                    ControlMessage::Ready {
-                        peers: vec![crate::protocol::PeerInfo {
-                            steam_id64,
-                            display_name: None,
-                            transport: crate::protocol::PeerTransport::Tcp,
-                        }],
-                    },
-                )
-            }
-            _ => return,
-        };
-        send_control(socket, address, response.0, &response.1);
-    }
-
-    fn forward_data(
-        socket: &UdpSocket,
-        raw: Bytes,
-        envelope: &Envelope,
-        peers: &HashMap<String, SocketAddr>,
-    ) {
-        let Ok(game) = GamePacket::decode(&envelope.payload) else {
-            return;
-        };
-        let Some(address) = peers.get(&game.to_steam_id64.to_string()) else {
-            return;
-        };
-        socket.send_to(&raw, address).unwrap();
-    }
-
-    fn send_control(
-        socket: &UdpSocket,
-        address: SocketAddr,
-        message_type: MessageType,
-        message: &ControlMessage,
-    ) {
-        let payload = message.encode().unwrap();
-        let raw = Envelope::new(message_type, payload).encode().unwrap();
-        socket.send_to(&raw, address).unwrap();
     }
 }

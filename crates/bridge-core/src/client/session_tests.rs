@@ -1,17 +1,9 @@
 use std::{
     io,
-    net::{SocketAddr, UdpSocket as StdUdpSocket},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread,
     time::{Duration, Instant},
 };
 
-use bytes::Bytes;
-
-use crate::protocol::{ControlMessage, Envelope, MessageType};
+use crate::client::test_relay::TestRelay;
 
 use super::*;
 
@@ -19,8 +11,10 @@ static SESSION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn session_start_reports_relay_join_timeout() {
-    let _guard = SESSION_TEST_LOCK.lock().unwrap();
-    let relay = SilentRelay::spawn();
+    let _guard = SESSION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = TestRelay::spawn_silent();
 
     let error = spawn_bridge_worker(
         test_session_config(relay.address.port()),
@@ -34,7 +28,9 @@ fn session_start_reports_relay_join_timeout() {
 
 #[test]
 fn session_start_reports_initial_room_peers() {
-    let _guard = SESSION_TEST_LOCK.lock().unwrap();
+    let _guard = SESSION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let relay = TestRelay::spawn();
     let handle = spawn_bridge_worker(
         test_session_config(relay.address.port()),
@@ -46,7 +42,7 @@ fn session_start_reports_initial_room_peers() {
         matches!(
             event,
             RuntimeEvent::RoomPeersUpdated(peers)
-                if peers.len() == 1 && peers[0].steam_id64 == "76561198000000001"
+                if peers.len() == 1 && peers[0].steam_id64 == 76_561_198_000_000_001
         )
     });
 
@@ -57,13 +53,15 @@ fn session_start_reports_initial_room_peers() {
 
 #[test]
 fn runtime_rtt_timeout_is_nonfatal() {
-    let _guard = SESSION_TEST_LOCK.lock().unwrap();
+    let _guard = SESSION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let relay = TestRelay::spawn();
     let handle = spawn_bridge_worker(
         SessionConfig {
             relay: super::super::RelayEndpoint::new("127.0.0.1", relay.address.port()),
             relay_name: None,
-            transport: super::super::TransportChoice::Udp,
+            transport: super::super::TransportChoice::Tcp,
             session_credential: super::super::SessionCredential::generate(),
             mode: super::super::SessionMode::Pure,
             steam_id64: "76561198000000001".to_owned(),
@@ -113,7 +111,7 @@ fn test_session_config(port: u16) -> SessionConfig {
     SessionConfig {
         relay: super::super::RelayEndpoint::new("127.0.0.1", port),
         relay_name: None,
-        transport: super::super::TransportChoice::Udp,
+        transport: super::super::TransportChoice::Tcp,
         session_credential: super::super::SessionCredential::generate(),
         mode: super::super::SessionMode::Pure,
         steam_id64: "76561198000000001".to_owned(),
@@ -135,112 +133,4 @@ fn recv_matching(
         }
     }
     None
-}
-
-struct TestRelay {
-    address: SocketAddr,
-    stop: Arc<AtomicBool>,
-    worker: thread::JoinHandle<()>,
-}
-
-impl TestRelay {
-    fn spawn() -> Self {
-        let socket = StdUdpSocket::bind("127.0.0.1:0").unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_millis(50)))
-            .unwrap();
-        let address = socket.local_addr().unwrap();
-        let stop = Arc::new(AtomicBool::new(false));
-        let worker_stop = Arc::clone(&stop);
-        let worker = thread::spawn(move || run_test_relay(socket, &worker_stop));
-        Self {
-            address,
-            stop,
-            worker,
-        }
-    }
-
-    fn stop(self) {
-        self.stop.store(true, Ordering::Relaxed);
-        let _ = self.worker.join();
-    }
-}
-
-struct SilentRelay {
-    address: SocketAddr,
-    stop: Arc<AtomicBool>,
-    worker: thread::JoinHandle<()>,
-}
-
-impl SilentRelay {
-    fn spawn() -> Self {
-        let socket = StdUdpSocket::bind("127.0.0.1:0").unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_millis(50)))
-            .unwrap();
-        let address = socket.local_addr().unwrap();
-        let stop = Arc::new(AtomicBool::new(false));
-        let worker_stop = Arc::clone(&stop);
-        let worker = thread::spawn(move || {
-            let mut buffer = [0_u8; 4096];
-            while !worker_stop.load(Ordering::Relaxed) {
-                let _ = socket.recv_from(&mut buffer);
-            }
-        });
-        Self {
-            address,
-            stop,
-            worker,
-        }
-    }
-
-    fn stop(self) {
-        self.stop.store(true, Ordering::Relaxed);
-        let _ = self.worker.join();
-    }
-}
-
-fn run_test_relay(socket: StdUdpSocket, stop: &AtomicBool) {
-    let mut buffer = [0_u8; 4096];
-    while !stop.load(Ordering::Relaxed) {
-        let Ok((size, address)) = socket.recv_from(&mut buffer) else {
-            continue;
-        };
-        let Ok(envelope) = Envelope::decode(Bytes::copy_from_slice(&buffer[..size])) else {
-            continue;
-        };
-        if envelope.message_type != MessageType::Join {
-            continue;
-        }
-        let Ok(control) = ControlMessage::decode(&envelope.payload) else {
-            continue;
-        };
-        let response = match control {
-            ControlMessage::Join {
-                challenge: None, ..
-            } => (
-                MessageType::JoinChallenge,
-                ControlMessage::Challenge {
-                    token: "token".to_owned(),
-                    pow: None,
-                },
-            ),
-            ControlMessage::Join {
-                challenge: Some(_), ..
-            } => (
-                MessageType::JoinReady,
-                ControlMessage::Ready {
-                    peers: vec![crate::protocol::PeerInfo {
-                        steam_id64: "76561198000000001".to_owned(),
-                        display_name: None,
-                        transport: crate::protocol::PeerTransport::Tcp,
-                    }],
-                },
-            ),
-            _ => continue,
-        };
-        let payload = response.1.encode().unwrap();
-        let raw = Envelope::new(response.0, payload).encode().unwrap();
-        socket.send_to(&raw, address).unwrap();
-    }
 }

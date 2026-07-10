@@ -11,10 +11,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::client::{
     RelayEndpoint, TransportChoice,
-    relay_transport::RelayTransport,
+    relay_transport::{RelayTransport, send_control},
     state::{RuntimeEvent, log_event},
 };
-use crate::protocol::{ControlMessage, Envelope, MessageType};
+use crate::protocol::v2::{
+    ClientControl, Frame, ServerControl, decode_frame, decode_server_control,
+};
 
 const LIGHT_PING_COUNT: u8 = 5;
 const LIGHT_PING_TIMEOUT: Duration = Duration::from_secs(2);
@@ -125,7 +127,13 @@ fn cancelled_report(target: LightPingTarget) -> LightPingReport {
 async fn light_ping_relay(target: LightPingTarget) -> LightPingReport {
     let connect_result = time::timeout(
         LIGHT_PING_TIMEOUT,
-        RelayTransport::connect(&target.endpoint, target.transport),
+        RelayTransport::connect(
+            &target.endpoint,
+            target.transport,
+            crate::build_info::current().version,
+            crate::build_info::current().git_hash,
+            1,
+        ),
     )
     .await;
     let mut relay = match connect_result {
@@ -156,23 +164,13 @@ async fn light_ping_relay(target: LightPingTarget) -> LightPingReport {
     let mut failure_reason: Option<String> = None;
 
     for id in 1..=LIGHT_PING_COUNT {
-        let message = ControlMessage::HealthPing { id: u64::from(id) };
-        let payload = match message.encode() {
-            Ok(payload) => payload,
-            Err(error) => {
-                failure_reason = Some(format!("encode failed: {error}"));
-                break;
-            }
-        };
-        let raw = match Envelope::new(MessageType::Heartbeat, payload).encode() {
-            Ok(raw) => raw,
-            Err(error) => {
-                failure_reason = Some(format!("envelope failed: {error}"));
-                break;
-            }
-        };
         let started = Instant::now();
-        if let Err(error) = relay.sender.send_datagram(raw).await {
+        if let Err(error) = send_control(
+            &mut relay.sender,
+            &ClientControl::ControlPing { id: u64::from(id) },
+        )
+        .await
+        {
             failure_reason = Some(format!("send failed: {error}"));
             break;
         }
@@ -180,9 +178,9 @@ async fn light_ping_relay(target: LightPingTarget) -> LightPingReport {
 
         match time::timeout(LIGHT_PING_TIMEOUT, relay.receiver.recv_datagram()).await {
             Ok(Ok(data)) => {
-                if let Ok(envelope) = Envelope::decode(data)
-                    && let Ok(ControlMessage::HealthPong { id: pong_id }) =
-                        ControlMessage::decode(&envelope.payload)
+                if let Ok(Frame::ServerControl(payload)) = decode_frame(data)
+                    && let Ok(ServerControl::ControlPong { id: pong_id }) =
+                        decode_server_control(&payload)
                     && pong_id == u64::from(id)
                 {
                     rtts.push(started.elapsed().as_millis());

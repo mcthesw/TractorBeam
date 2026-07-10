@@ -33,14 +33,8 @@ impl SessionCredential {
         &self.0
     }
 
-    pub(super) fn legacy_wire_value(&self) -> String {
-        use std::fmt::Write as _;
-
-        let mut value = String::with_capacity(32);
-        for byte in self.0 {
-            write!(&mut value, "{byte:02x}").expect("writing to a String cannot fail");
-        }
-        value
+    pub(super) fn wire_secret(&self) -> String {
+        self.0.to_base58()
     }
 }
 
@@ -272,7 +266,7 @@ mod tests {
         assert_ne!(first, second);
         let rendered = format!("{first:?}");
         assert!(rendered.contains("REDACTED"));
-        assert!(!rendered.contains(&first.legacy_wire_value()));
+        assert_eq!(rendered, "SessionCredential([REDACTED])");
     }
 
     #[test]

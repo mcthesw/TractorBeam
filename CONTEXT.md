@@ -75,12 +75,20 @@ _Avoid_: server, directory
 The authority that publishes trusted Relay Server metadata.
 _Avoid_: relay, server list
 
+**Session Credential**:
+A high-entropy bearer secret that identifies one Relay Server forwarding scope and authorizes peers to join it.
+_Avoid_: room name, admission, session key
+
 **Room**:
-A named session scope that decides which peers may exchange relayed packets.
-_Avoid_: lobby
+The player-facing co-op group whose peers share one Session Credential; it has no separate user-editable name.
+_Avoid_: room name, relay registry key, lobby code
+
+**Join Code**:
+The single player-shareable value that carries a Relay Server location and one Session Credential.
+_Avoid_: room code, invite code, admission code
 
 **Peer**:
-A player endpoint that has joined a Room through a Relay Server.
+A player endpoint that has joined a forwarding scope with a Session Credential through a Relay Server.
 _Avoid_: user, member
 
 **Diagnostics Bundle**:
@@ -109,11 +117,13 @@ _Avoid_: normal relay mode
 - A **Bridge Client** and **Native Hook** exchange **Local IPC Protocol** messages.
 - A **Bridge Client** and **Relay Server** exchange **Relay Protocol v1** messages.
 - A **Bridge GUI** controls a **Bridge Client**.
-- A **Bridge Client** joins at most one **Room** on one **Relay Server** per active session.
+- A **Bridge Client** joins at most one **Room** using one **Session Credential** on one **Relay Server** per active session.
 - A **Bridge Client** uses one **Transport Choice** to exchange **Protocol** envelopes with a **Relay Server** during an active session.
 - **Input Delay** is adjusted through the **Bridge GUI** and applied by the
   **Native Hook** when Isaac is ready.
-- A **Relay Server** forwards packets only among **Peers** in the same **Room**.
+- A **Relay Server** forwards packets only among **Peers** admitted with the same **Session Credential**.
+- A **Join Code** contains exactly one **Relay Server** location and one **Session Credential**.
+- Creating a new **Room** rotates the **Session Credential**; stopping and restarting the same local session does not.
 - A **Directory Service** publishes metadata about one or more **Relay Servers**.
 - A **Diagnostics Bundle** describes one local **Bridge Client** run.
 - A **Readiness Preflight** runs before a player treats a **Bridge Client**
@@ -135,3 +145,4 @@ _Avoid_: normal relay mode
 - "protocol" and "transport" were used interchangeably. Resolved: use **Protocol** for message formats and **Relay Transport** for network carriage.
 - One "Protocol" previously implied one format shared by all three runtime components. Resolved: use **Local IPC Protocol** for Bridge Client/Native Hook and **Relay Protocol v1** for Bridge Client/Relay Server.
 - "mode" was used for both session behavior and network carriage. Resolved: use **Official Mode**, **Fallback Mode**, and **Pure Mode** for session behavior; use **Transport Choice** for UDP or TCP carriage.
+- "room", "room name", "admission", and "join code" described overlapping parts of one player-visible join flow. Resolved: **Room** remains the player-facing co-op group, but it has no separately editable name; use **Session Credential** for its single high-entropy routing/admission secret and **Join Code** for the value players copy or import.

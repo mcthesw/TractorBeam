@@ -34,8 +34,7 @@ Deferred from Phase 1:
 - [ ] Non-Steam support.
 - [ ] installer packaging.
 - [ ] Directory Service.
-- [ ] end-to-end encryption.
-- [ ] KCP, QUIC, FEC, or camouflage transports.
+- [ ] Optional bounded UDP duplication/deduplication or FEC profiles.
 
 ## Phase 2: Closed Testing
 
@@ -67,21 +66,21 @@ Goal: make the project safe and understandable for ordinary players.
 - [ ] Define public Relay Server policy.
 - [ ] Add Directory Service support for relay revocation and trust metadata.
 
-## Phase 4: Advanced Transports and Hardening
+## Phase 4: UDP Delivery Experiments and Hardening
 
-Goal: explore optional transport and security upgrades without disturbing the
-baseline relay path.
+Goal: explore bounded UDP delivery improvements without disturbing the baseline
+TCP-control and TCP/UDP data paths.
 
-- [ ] Add AEAD end-to-end encryption.
-- [ ] Design room/session keys.
-- [ ] Add Relay Server identity verification.
-- [ ] Add replay protection.
 - [ ] Add proof-of-work or comparable anti-abuse gating.
-- [ ] Research optional FEC/redundancy.
-- [ ] Research optional KCP transport.
-- [ ] Research optional QUIC transport.
-- [ ] Research optional TCP-like camouflage inspired by udp2raw or phantun-style approaches.
+- [ ] Research bounded UDP duplicate-send/deduplication profiles.
+- [ ] Research hop-by-hop UDP FEC around complete Relay data frames.
+- [ ] Measure added bandwidth, recovery rate, tail latency, and Relay CPU before
+      making either profile user-facing.
 - [ ] Research Linux native or Proton support.
+
+Payload encryption is not on the current roadmap. If a future threat model ever
+requires confidentiality or on-path integrity, design it as an explicit Relay
+Protocol v3 rather than reserving unused crypto fields in v2.
 
 ## Local Planning
 

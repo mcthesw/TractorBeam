@@ -1,13 +1,12 @@
 mod build_info;
 mod config;
 mod domain;
-mod egress;
-mod incident;
-mod metrics;
+mod domain_v2;
+mod metrics_v2;
 mod peer_registry;
-mod server;
-mod state;
-mod v1;
+mod server_v2;
+mod state_v2;
+mod v2;
 
 use std::io;
 
@@ -29,5 +28,5 @@ async fn main() -> io::Result<()> {
         "relay starting"
     );
     let config = RelayConfig::load(&args)?;
-    server::run(config).await
+    server_v2::run(config).await
 }

@@ -7,6 +7,7 @@ use std::{
 
 use serde::Serialize;
 use tokio::{runtime::Builder, task::JoinSet, time};
+use tokio_util::sync::CancellationToken;
 
 use crate::client::{
     RelayEndpoint, TransportChoice,
@@ -50,17 +51,30 @@ impl LightPingReport {
 #[derive(Debug)]
 pub struct LightPingHandle {
     pub events: mpsc::Receiver<RuntimeEvent>,
+    cancellation: CancellationToken,
     worker: Option<JoinHandle<()>>,
+}
+
+impl LightPingHandle {
+    pub(crate) fn finish(mut self) {
+        self.cancellation.cancel();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
 }
 
 impl Drop for LightPingHandle {
     fn drop(&mut self) {
+        self.cancellation.cancel();
         drop(self.worker.take());
     }
 }
 
 pub fn spawn_light_ping_probes(targets: Vec<LightPingTarget>) -> io::Result<LightPingHandle> {
     let (event_tx, event_rx) = mpsc::channel::<RuntimeEvent>();
+    let cancellation = CancellationToken::new();
+    let worker_cancellation = cancellation.clone();
     let worker = thread::spawn(move || {
         let runtime = match Builder::new_current_thread().enable_all().build() {
             Ok(runtime) => runtime,
@@ -76,8 +90,13 @@ pub fn spawn_light_ping_probes(targets: Vec<LightPingTarget>) -> io::Result<Ligh
             let mut tasks: JoinSet<LightPingReport> = JoinSet::new();
             for target in targets {
                 let event_tx = event_tx.clone();
+                let cancellation = worker_cancellation.clone();
                 tasks.spawn(async move {
-                    let report = light_ping_relay(target).await;
+                    let cancelled_target = target.clone();
+                    let report = tokio::select! {
+                        () = cancellation.cancelled() => return cancelled_report(cancelled_target),
+                        report = light_ping_relay(target) => report,
+                    };
                     let _ =
                         event_tx.send(RuntimeEvent::LightPingFinished(Box::new(report.clone())));
                     report
@@ -88,8 +107,19 @@ pub fn spawn_light_ping_probes(targets: Vec<LightPingTarget>) -> io::Result<Ligh
     });
     Ok(LightPingHandle {
         events: event_rx,
+        cancellation,
         worker: Some(worker),
     })
+}
+
+fn cancelled_report(target: LightPingTarget) -> LightPingReport {
+    LightPingReport {
+        target,
+        sent: 0,
+        received: 0,
+        median_rtt_ms: None,
+        failure_reason: Some("cancelled".to_owned()),
+    }
 }
 
 async fn light_ping_relay(target: LightPingTarget) -> LightPingReport {

@@ -3,11 +3,8 @@ mod readiness;
 
 use std::{
     fmt::{self, Display},
-    fs,
     future::Future,
     io,
-    net::UdpSocket,
-    path::{Path, PathBuf},
     sync::mpsc::{self, Receiver},
     thread::{self, JoinHandle},
     time::Duration,
@@ -18,14 +15,13 @@ use serde::Serialize;
 use tokio::{runtime::Builder, time};
 
 use crate::protocol::{
-    ENVELOPE_HEADER_LEN, Envelope, GAME_PACKET_HEADER_LEN, GamePacket, LocalPacket, MessageType,
+    ENVELOPE_HEADER_LEN, Envelope, GAME_PACKET_HEADER_LEN, GamePacket, MessageType,
 };
 
 use super::{
     BridgeClient, LogLevel, RelayEndpoint, SessionConfig, SessionMode, TransportChoice,
-    hook_config::HOOK_OUT,
     relay_transport::{RelayTransport, complete_relay_join},
-    state::{RuntimeEvent, log_event, unix_seconds},
+    state::{HookIpcState, RuntimeEvent, log_event, unix_seconds},
 };
 
 pub(super) use light_ping::spawn_light_ping_probes;
@@ -41,7 +37,6 @@ pub const DEFAULT_RELAY_PROBE_PAYLOAD_BYTES: usize =
     2_048 - ENVELOPE_HEADER_LEN - GAME_PACKET_HEADER_LEN;
 pub(super) const MAX_RELAY_PROBE_PAYLOAD_BYTES: usize = 60_000;
 const DATA_TIMEOUT: Duration = Duration::from_secs(3);
-const HOOK_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct RelayProbeReport {
@@ -71,32 +66,41 @@ impl Display for RelayProbeReport {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct HookReceiveProbeReport {
-    pub peer: u64,
-    pub sent_bytes: usize,
-    pub local_in: bool,
-    pub available_hit: bool,
-    pub read_hit: bool,
+    pub connection: String,
+    pub protocol_major: Option<u16>,
+    pub protocol_minor: Option<u16>,
+    pub reconnects: u32,
+    pub hook_data_dropped: u64,
+    pub client_data_dropped: u64,
+    pub malformed_frames: u64,
+    pub last_error: Option<String>,
 }
 
 impl HookReceiveProbeReport {
     #[must_use]
     pub fn short_summary(&self) -> String {
         format!(
-            "Hook receive probe sent: local_in={}, available={}, read={}",
-            self.local_in, self.available_hit, self.read_hit
+            "Hook IPC health: connection={} version={}.{} reconnects={} drops={}/{} malformed={}",
+            self.connection,
+            self.protocol_major
+                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+            self.protocol_minor
+                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+            self.reconnects,
+            self.hook_data_dropped,
+            self.client_data_dropped,
+            self.malformed_frames,
         )
     }
 }
 
 impl Display for HookReceiveProbeReport {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "{}; peer={}, bytes={}",
-            self.short_summary(),
-            self.peer,
-            self.sent_bytes
-        )
+        formatter.write_str(&self.short_summary())?;
+        if let Some(error) = &self.last_error {
+            write!(formatter, "; last_error={error}")?;
+        }
+        Ok(())
     }
 }
 
@@ -116,9 +120,7 @@ impl ProbeHandle {
 
 impl Drop for ProbeHandle {
     fn drop(&mut self) {
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        drop(self.worker.take());
     }
 }
 
@@ -148,7 +150,7 @@ impl BridgeClient {
     }
 
     pub fn run_hook_receive_probe(&mut self) -> io::Result<HookReceiveProbeReport> {
-        let report = run_hook_receive_probe(self.state.hook_log_path_written())?;
+        let report = hook_ipc_report(&self.state.hook_ipc);
         self.log(LogLevel::Info, report.to_string());
         Ok(report)
     }
@@ -158,18 +160,12 @@ pub(super) fn spawn_readiness_probe(relay: RelayEndpoint) -> io::Result<ProbeHan
     readiness::spawn_readiness_probe(relay)
 }
 
-pub(super) fn spawn_hook_receive_probe(hook_log_path: Option<PathBuf>) -> ProbeHandle {
+pub(super) fn spawn_hook_receive_probe(ipc: HookIpcState) -> ProbeHandle {
     let (event_tx, events) = mpsc::channel();
-    let worker = thread::spawn(move || match run_hook_receive_probe(hook_log_path) {
-        Ok(report) => {
-            let _ = event_tx.send(log_event(LogLevel::Info, report.to_string()));
-            let _ = event_tx.send(RuntimeEvent::HookReceiveProbeFinished(Ok(report)));
-        }
-        Err(error) => {
-            let message = format!("Hook receive probe failed: {error}");
-            let _ = event_tx.send(log_event(LogLevel::Error, message.clone()));
-            let _ = event_tx.send(RuntimeEvent::HookReceiveProbeFinished(Err(message)));
-        }
+    let worker = thread::spawn(move || {
+        let report = hook_ipc_report(&ipc);
+        let _ = event_tx.send(log_event(LogLevel::Info, report.to_string()));
+        let _ = event_tx.send(RuntimeEvent::HookReceiveProbeFinished(Ok(report)));
     });
     ProbeHandle {
         events,
@@ -392,82 +388,16 @@ fn block_on_probe<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<
         .block_on(future)
 }
 
-pub(super) fn run_hook_receive_probe(
-    hook_log_path: Option<PathBuf>,
-) -> io::Result<HookReceiveProbeReport> {
-    let hook_log_path = hook_log_path.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Hook log path is unavailable; start a Native Hook session first",
-        )
-    })?;
-    block_on_probe(run_hook_receive_probe_async(hook_log_path))
-}
-
-async fn run_hook_receive_probe_async(
-    hook_log_path: PathBuf,
-) -> io::Result<HookReceiveProbeReport> {
-    let peer = hook_probe_peer();
-    let payload = Bytes::from(format!("tractor-beam-hook-probe-{peer}"));
-    let game = GamePacket {
-        from_steam_id64: peer.to_string(),
-        to_steam_id64: 0,
-        source_sequence: 1,
-        channel: 0,
-        send_type: 0,
-        payload,
-    };
-    let packet = LocalPacket::incoming(peer, 1, game);
-    let bytes = packet.encode().map_err(io::Error::other)?;
-    let socket = UdpSocket::bind("127.0.0.1:0")?;
-    socket.send_to(&bytes, HOOK_OUT)?;
-
-    let mut report = HookReceiveProbeReport {
-        peer,
-        sent_bytes: bytes.len(),
-        local_in: false,
-        available_hit: false,
-        read_hit: false,
-    };
-    let probe_result = time::timeout(HOOK_PROBE_TIMEOUT, async {
-        loop {
-            update_hook_probe_report(&mut report, &hook_log_path);
-            if report.local_in && report.read_hit {
-                return;
-            }
-            time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await;
-    update_hook_probe_report(&mut report, &hook_log_path);
-    if probe_result.is_err() {
-        return Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            format!("hook receive probe timed out: {report}"),
-        ));
-    }
-    Ok(report)
-}
-
-fn hook_probe_peer() -> u64 {
-    4_000_000_000 + (u64::from(std::process::id()) % 1_000) * 100_000 + (unix_seconds() % 100_000)
-}
-
-fn update_hook_probe_report(report: &mut HookReceiveProbeReport, hook_log_path: &Path) {
-    let Ok(contents) = fs::read_to_string(hook_log_path) else {
-        return;
-    };
-    let peer_marker = format!("peer={}", report.peer);
-    for line in contents.lines().rev().take(512) {
-        if !line.contains(&peer_marker) {
-            continue;
-        }
-        report.local_in |= line.contains("local_in");
-        report.available_hit |= line.contains("steam_available_bridge_hit");
-        report.read_hit |= line.contains("steam_read_bridge_hit");
-        if report.local_in && report.available_hit && report.read_hit {
-            break;
-        }
+fn hook_ipc_report(ipc: &HookIpcState) -> HookReceiveProbeReport {
+    HookReceiveProbeReport {
+        connection: ipc.connection.to_string(),
+        protocol_major: ipc.negotiated_major,
+        protocol_minor: ipc.negotiated_minor,
+        reconnects: ipc.reconnects,
+        hook_data_dropped: ipc.hook_data_dropped,
+        client_data_dropped: ipc.client_data_dropped,
+        malformed_frames: ipc.malformed_frames,
+        last_error: ipc.last_error.clone(),
     }
 }
 

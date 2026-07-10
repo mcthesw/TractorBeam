@@ -7,10 +7,15 @@ use tractor_beam_core::{
     SessionStopReason,
 };
 
-use super::BridgeApp;
+use super::{ApplicationOperation, BootstrapState, BridgeApp};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum StatusMessage {
+    Busy,
+    DiagnosticsExported,
+    DiagnosticsExportFailed,
+    LogOpenFailed,
+    SelectionSaveFailed,
     ConfigWarning,
     ConfigError(ConfigError),
     Text(String),
@@ -27,6 +32,11 @@ impl StatusMessage {
 
     fn localized_text(&self) -> Cow<'_, str> {
         match self {
+            Self::Busy => t!("operation.busy"),
+            Self::DiagnosticsExported => t!("diagnostics.exported"),
+            Self::DiagnosticsExportFailed => t!("diagnostics.export_failed"),
+            Self::LogOpenFailed => t!("logs.open_failed"),
+            Self::SelectionSaveFailed => t!("config.selection_save_failed"),
             Self::ConfigWarning => t!("config.warning"),
             Self::ConfigError(error) => Cow::Owned(config_error_message(*error)),
             Self::Text(message) => Cow::Borrowed(message),
@@ -67,9 +77,13 @@ impl BridgeApp {
     }
 
     pub(super) fn status_bar(&self, ui: &mut egui::Ui) {
-        let state = self.client.state();
+        let state = self.client_state();
         ui.horizontal(|ui| {
-            ui.label(format!("{}: {}", t!("status"), status_label(state.status)));
+            ui.label(format!(
+                "{}: {}",
+                t!("status"),
+                self.application_status_label()
+            ));
             if state.status == SessionStatus::Idle
                 && let Some(reason) = &state.last_stop_reason
             {
@@ -94,6 +108,28 @@ impl BridgeApp {
                 ui.colored_label(ui.visuals().error_fg_color, text.as_ref());
             }
         });
+    }
+
+    fn application_status_label(&self) -> Cow<'static, str> {
+        if let Some(operation) = self.application_snapshot.operation {
+            return match operation {
+                ApplicationOperation::Starting => t!("status.starting"),
+                ApplicationOperation::Stopping => t!("status.stopping"),
+                ApplicationOperation::ShuttingDown => t!("status.shutting_down"),
+                ApplicationOperation::RefreshingAccounts
+                | ApplicationOperation::Probing
+                | ApplicationOperation::ReadingInputDelay
+                | ApplicationOperation::WritingInputDelay
+                | ApplicationOperation::OpeningLogs
+                | ApplicationOperation::ExportingDiagnostics
+                | ApplicationOperation::ReadingClipboard => t!("status.working"),
+            };
+        }
+        match self.application_snapshot.bootstrap {
+            BootstrapState::Initializing => t!("status.initializing"),
+            BootstrapState::Failed => t!("status.initialization_failed"),
+            BootstrapState::Ready => status_label(self.client_state().status),
+        }
     }
 }
 
@@ -149,10 +185,7 @@ pub(super) fn input_delay_error_label(error: &InputDelayError) -> String {
         InputDelayError::Hook(error) if error.as_str() == "target_not_found" => {
             t!("input_delay.target_not_found").into_owned()
         }
-        InputDelayError::Hook(_)
-        | InputDelayError::UnexpectedResponse
-        | InputDelayError::ResponseIdMismatch { .. }
-        | InputDelayError::Io(_) => {
+        InputDelayError::Hook(_) | InputDelayError::Io(_) => {
             format!("{}: {error}", t!("input_delay.failed"))
         }
     }

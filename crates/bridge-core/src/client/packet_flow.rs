@@ -5,10 +5,9 @@ use std::{
 };
 
 use bytes::Bytes;
+use tractor_beam_hook_ipc::GamePacket as HookGamePacket;
 
-use crate::protocol::{
-    ControlMessage, Envelope, GamePacket, LocalPacket, LocalPacketType, MessageType,
-};
+use crate::protocol::{ControlMessage, Envelope, GamePacket, MessageType};
 
 use super::{
     Counters, LogLevel,
@@ -130,12 +129,8 @@ impl PacketObserver {
 
 pub(super) fn encode_outbound_relay_packet(
     steam_id64: &str,
-    bytes: Bytes,
+    packet: HookGamePacket,
 ) -> io::Result<OutboundRelayPacket> {
-    let packet = LocalPacket::decode(bytes).map_err(io::Error::other)?;
-    if packet.packet_type != LocalPacketType::Outgoing {
-        return Err(io::Error::other("expected outgoing local packet"));
-    }
     let summary = PacketSummary {
         peer: packet.peer,
         sequence: packet.sequence,
@@ -146,7 +141,14 @@ pub(super) fn encode_outbound_relay_packet(
         wire_bytes: 0,
     };
     let sent_bytes = u64::try_from(packet.payload.len()).unwrap_or(u64::MAX);
-    let game = GamePacket::from_local(steam_id64.to_owned(), packet);
+    let game = GamePacket {
+        from_steam_id64: steam_id64.to_owned(),
+        to_steam_id64: packet.peer,
+        source_sequence: packet.sequence,
+        channel: packet.channel,
+        send_type: packet.send_type,
+        payload: Bytes::from(packet.payload),
+    };
     let payload = game.encode().map_err(io::Error::other)?;
     let raw = Envelope::new(MessageType::Data, payload)
         .encode()
@@ -188,10 +190,10 @@ pub(super) fn decode_inbound_relay_datagram(
     }
 }
 
-pub(super) fn encode_inbound_local_packet(
+pub(super) fn encode_inbound_hook_packet(
     inbound: InboundGamePacket,
     local_sequence: &mut u32,
-) -> io::Result<(Bytes, PacketSummary, u64)> {
+) -> (HookGamePacket, PacketSummary, u64) {
     let game = inbound.game;
     let peer = game.from_steam_id64.parse::<u64>().unwrap_or_default();
     let received_bytes = u64::try_from(game.payload.len()).unwrap_or(u64::MAX);
@@ -204,18 +206,22 @@ pub(super) fn encode_inbound_local_packet(
         payload_bytes: game.payload.len(),
         wire_bytes: 0,
     };
-    let packet = LocalPacket::incoming(peer, *local_sequence, game);
+    let packet = HookGamePacket {
+        peer,
+        sequence: *local_sequence,
+        channel: game.channel,
+        send_type: game.send_type,
+        payload: game.payload.to_vec(),
+    };
     *local_sequence = local_sequence.saturating_add(1);
-    let bytes = packet.encode().map_err(io::Error::other)?;
-    let wire_bytes = bytes.len();
-    Ok((
-        bytes,
+    (
+        packet,
         PacketSummary {
-            wire_bytes,
+            wire_bytes: summary.payload_bytes,
             ..summary
         },
         received_bytes,
-    ))
+    )
 }
 
 pub(super) fn send_error(event_tx: &RuntimeEventSender, message: impl Into<String>) {

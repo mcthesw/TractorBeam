@@ -99,9 +99,6 @@ impl BridgeClient {
         if let Some(error) = &self.state.latest_hook_receive_probe_error {
             output.push_str(&format!("hook_receive_error: {error}\n"));
         }
-        if let Some(warning) = &self.state.latest_hook_receive_probe_warning {
-            output.push_str(&format!("hook_receive_warning: {warning}\n"));
-        }
         if let Some(status) = &self.state.latest_input_delay_status {
             match &status.result {
                 Ok(value) => output.push_str(&format!(
@@ -115,6 +112,27 @@ impl BridgeClient {
             }
         } else {
             output.push_str("input_delay: none\n");
+        }
+        output.push('\n');
+        output.push_str("native hook local IPC:\n");
+        let ipc = &self.state.hook_ipc;
+        output.push_str(&format!("connection: {}\n", ipc.connection));
+        match (ipc.negotiated_major, ipc.negotiated_minor) {
+            (Some(major), Some(minor)) => {
+                output.push_str(&format!("negotiated_version: {major}.{minor}\n"));
+            }
+            _ => output.push_str("negotiated_version: none\n"),
+        }
+        output.push_str(&format!("reconnects: {}\n", ipc.reconnects));
+        output.push_str(&format!(
+            "hook_data_dropped: {}\nclient_data_dropped: {}\nmalformed_frames: {}\nupdated_at: {}\n",
+            ipc.hook_data_dropped,
+            ipc.client_data_dropped,
+            ipc.malformed_frames,
+            ipc.updated_at,
+        ));
+        if let Some(error) = &ipc.last_error {
+            output.push_str(&format!("last_error: {error}\n"));
         }
         output.push('\n');
         output.push_str("native hook startup:\n");

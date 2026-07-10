@@ -47,6 +47,13 @@ impl ClientLogFiles {
             warnings,
         }
     }
+
+    pub(crate) fn open_default_directory() -> io::Result<PathBuf> {
+        let log_files = Self::new();
+        fs::create_dir_all(&log_files.root)?;
+        open::that_detached(&log_files.root)?;
+        Ok(log_files.root)
+    }
 }
 
 impl ClientLogSink for ClientLogFiles {

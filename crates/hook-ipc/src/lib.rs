@@ -1,74 +1,183 @@
-//! Dependency-light framed IPC for Bridge Client <-> Native Hook control calls.
+//! Typed, transport-independent Native Hook <-> Bridge Client IPC contract.
 
-use std::{
-    error::Error,
-    fmt::{self, Display},
-    io::{self, Read, Write},
-};
+use std::{fmt, str::FromStr};
 
-const MAGIC: &[u8; 4] = b"TBI1";
-const VERSION: u8 = 1;
-const REQUEST_HEADER_LEN: usize = 12;
-const RESPONSE_HEADER_LEN: usize = 12;
-const MAX_PAYLOAD_LEN: usize = 256;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Request {
-    ReadInputDelay { id: u32 },
-    WriteInputDelay { id: u32, value: i32 },
+pub const PROTOCOL_MAGIC: [u8; 4] = *b"TBI2";
+pub const PROTOCOL_MAJOR: u16 = 2;
+pub const PROTOCOL_MINOR: u16 = 0;
+pub const FEATURE_GAME_PACKETS: u32 = 1 << 0;
+pub const FEATURE_INPUT_DELAY: u32 = 1 << 1;
+pub const REQUIRED_FEATURES: u32 = FEATURE_GAME_PACKETS | FEATURE_INPUT_DELAY;
+pub const MAX_GAME_PAYLOAD_SIZE: usize = 65_535;
+pub const MAX_SERIALIZED_FRAME_LEN: usize = MAX_GAME_PAYLOAD_SIZE + 128;
+pub const MAX_ENCODED_FRAME_LEN: usize =
+    MAX_SERIALIZED_FRAME_LEN + MAX_SERIALIZED_FRAME_LEN / 254 + 2;
+pub const HOOK_DATA_QUEUE_CAPACITY: usize = 1_024;
+pub const CLIENT_DATA_QUEUE_CAPACITY: usize = 1_024;
+pub const CONTROL_QUEUE_CAPACITY: usize = 32;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub struct SessionId([u8; 16]);
+
+impl SessionId {
+    #[must_use]
+    pub const fn new(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(self) -> [u8; 16] {
+        self.0
+    }
+
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        let mut output = String::with_capacity(32);
+        for byte in self.0 {
+            use fmt::Write as _;
+            let _ = write!(output, "{byte:02x}");
+        }
+        output
+    }
 }
 
-impl Request {
+impl FromStr for SessionId {
+    type Err = ProtocolError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.len() != 32 {
+            return Err(ProtocolError::InvalidSessionId);
+        }
+        let mut bytes = [0_u8; 16];
+        for (index, slot) in bytes.iter_mut().enumerate() {
+            let offset = index * 2;
+            *slot = u8::from_str_radix(&value[offset..offset + 2], 16)
+                .map_err(|_| ProtocolError::InvalidSessionId)?;
+        }
+        Ok(Self(bytes))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum PeerRole {
+    BridgeClient,
+    NativeHook,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Handshake {
+    pub magic: [u8; 4],
+    pub major: u16,
+    pub minor: u16,
+    pub role: PeerRole,
+    pub session_id: SessionId,
+    pub required_features: u32,
+    pub max_game_payload: u32,
+}
+
+impl Handshake {
     #[must_use]
-    pub const fn id(self) -> u32 {
-        match self {
-            Self::ReadInputDelay { id } | Self::WriteInputDelay { id, .. } => id,
+    pub const fn new(role: PeerRole, session_id: SessionId) -> Self {
+        Self {
+            magic: PROTOCOL_MAGIC,
+            major: PROTOCOL_MAJOR,
+            minor: PROTOCOL_MINOR,
+            role,
+            session_id,
+            required_features: REQUIRED_FEATURES,
+            max_game_payload: MAX_GAME_PAYLOAD_SIZE as u32,
         }
     }
 
-    #[must_use]
-    pub const fn read_input_delay(id: u32) -> Self {
-        Self::ReadInputDelay { id }
-    }
-
-    #[must_use]
-    pub const fn write_input_delay(id: u32, value: i32) -> Self {
-        Self::WriteInputDelay { id, value }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Response {
-    Ok { id: u32, value: i32 },
-    Error { id: u32, code: ErrorCode },
-}
-
-impl Response {
-    #[must_use]
-    pub const fn ok(id: u32, value: i32) -> Self {
-        Self::Ok { id, value }
-    }
-
-    #[must_use]
-    pub const fn error(id: u32, code: ErrorCode) -> Self {
-        Self::Error { id, code }
-    }
-
-    #[must_use]
-    pub const fn id(&self) -> u32 {
-        match self {
-            Self::Ok { id, .. } | Self::Error { id, .. } => *id,
+    pub fn validate(
+        self,
+        expected_role: PeerRole,
+        expected_session: SessionId,
+    ) -> Result<NegotiatedProtocol, ProtocolError> {
+        if self.magic != PROTOCOL_MAGIC {
+            return Err(ProtocolError::BadMagic);
         }
+        if self.major != PROTOCOL_MAJOR {
+            return Err(ProtocolError::UnsupportedMajor {
+                expected: PROTOCOL_MAJOR,
+                actual: self.major,
+            });
+        }
+        if self.role != expected_role {
+            return Err(ProtocolError::WrongRole {
+                expected: expected_role,
+                actual: self.role,
+            });
+        }
+        if self.session_id != expected_session {
+            return Err(ProtocolError::SessionMismatch);
+        }
+        if self.required_features & REQUIRED_FEATURES != REQUIRED_FEATURES {
+            return Err(ProtocolError::MissingFeatures {
+                required: REQUIRED_FEATURES,
+                actual: self.required_features,
+            });
+        }
+        if self.max_game_payload != MAX_GAME_PAYLOAD_SIZE as u32 {
+            return Err(ProtocolError::PayloadLimitMismatch {
+                expected: MAX_GAME_PAYLOAD_SIZE as u32,
+                actual: self.max_game_payload,
+            });
+        }
+        Ok(NegotiatedProtocol {
+            major: self.major,
+            minor: PROTOCOL_MINOR,
+            features: self.required_features,
+            max_game_payload: self.max_game_payload,
+        })
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NegotiatedProtocol {
+    pub major: u16,
+    pub minor: u16,
+    pub features: u32,
+    pub max_game_payload: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GamePacket {
+    pub peer: u64,
+    pub sequence: u32,
+    pub channel: i32,
+    pub send_type: i32,
+    pub payload: Vec<u8>,
+}
+
+impl GamePacket {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        if self.payload.len() > MAX_GAME_PAYLOAD_SIZE {
+            return Err(ProtocolError::PayloadTooLarge {
+                actual: self.payload.len(),
+                maximum: MAX_GAME_PAYLOAD_SIZE,
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum InputDelayCommand {
+    Read,
+    Write(i32),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ErrorCode {
     InvalidRequest,
     TargetNotFound,
     ReadFailed,
     WriteFailed,
     InternalError,
+    NotConnected,
 }
 
 impl ErrorCode {
@@ -80,300 +189,315 @@ impl ErrorCode {
             Self::ReadFailed => "read_failed",
             Self::WriteFailed => "write_failed",
             Self::InternalError => "internal_error",
-        }
-    }
-
-    fn from_byte(value: u8) -> Result<Self, FrameError> {
-        match value {
-            1 => Ok(Self::InvalidRequest),
-            2 => Ok(Self::TargetNotFound),
-            3 => Ok(Self::ReadFailed),
-            4 => Ok(Self::WriteFailed),
-            5 => Ok(Self::InternalError),
-            other => Err(FrameError::UnknownStatus(other)),
-        }
-    }
-
-    const fn to_byte(self) -> u8 {
-        match self {
-            Self::InvalidRequest => 1,
-            Self::TargetNotFound => 2,
-            Self::ReadFailed => 3,
-            Self::WriteFailed => 4,
-            Self::InternalError => 5,
+            Self::NotConnected => "not_connected",
         }
     }
 }
 
-impl Display for ErrorCode {
+impl fmt::Display for ErrorCode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FrameError {
-    BadMagic,
-    UnsupportedVersion(u8),
-    UnknownOperation(u8),
-    UnknownStatus(u8),
-    BadPayloadLength { expected: usize, actual: usize },
-    PayloadTooLarge(usize),
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct IpcHealth {
+    pub hook_data_dropped: u64,
+    pub client_data_dropped: u64,
+    pub malformed_frames: u64,
+    pub reconnects: u32,
 }
 
-impl Display for FrameError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum HookToClient {
+    Handshake(Handshake),
+    Ready,
+    Game(GamePacket),
+    InputDelayResult {
+        id: u32,
+        result: Result<i32, ErrorCode>,
+    },
+    Pong {
+        id: u32,
+    },
+    Health(IpcHealth),
+    Goodbye,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ClientToHook {
+    Handshake(Handshake),
+    Game(GamePacket),
+    InputDelay { id: u32, command: InputDelayCommand },
+    Ping { id: u32 },
+    Shutdown,
+}
+
+pub trait WireMessage: Serialize + DeserializeOwned {
+    fn validate_message(&self) -> Result<(), ProtocolError>;
+}
+
+impl WireMessage for HookToClient {
+    fn validate_message(&self) -> Result<(), ProtocolError> {
         match self {
-            Self::BadMagic => formatter.write_str("bad IPC frame magic"),
-            Self::UnsupportedVersion(version) => {
-                write!(formatter, "unsupported IPC frame version: {version}")
-            }
-            Self::UnknownOperation(operation) => {
-                write!(formatter, "unknown IPC operation: {operation}")
-            }
-            Self::UnknownStatus(status) => write!(formatter, "unknown IPC status: {status}"),
-            Self::BadPayloadLength { expected, actual } => write!(
-                formatter,
-                "bad IPC payload length: expected {expected}, got {actual}"
-            ),
-            Self::PayloadTooLarge(length) => write!(formatter, "IPC payload too large: {length}"),
+            Self::Game(packet) => packet.validate(),
+            _ => Ok(()),
         }
     }
 }
 
-impl Error for FrameError {}
-
-pub fn write_request(writer: &mut impl Write, request: Request) -> io::Result<()> {
-    writer.write_all(&encode_request(request))
+impl WireMessage for ClientToHook {
+    fn validate_message(&self) -> Result<(), ProtocolError> {
+        match self {
+            Self::Game(packet) => packet.validate(),
+            _ => Ok(()),
+        }
+    }
 }
 
-pub fn read_request(reader: &mut impl Read) -> io::Result<Request> {
-    let mut header = [0_u8; REQUEST_HEADER_LEN];
-    reader.read_exact(&mut header)?;
-    let payload = read_payload(reader, payload_len(&header).map_err(io::Error::other)?)?;
-    decode_request_parts(&header, &payload).map_err(io::Error::other)
+#[derive(Debug, thiserror::Error)]
+pub enum ProtocolError {
+    #[error("bad local IPC protocol magic")]
+    BadMagic,
+    #[error("unsupported local IPC major version: expected {expected}, got {actual}")]
+    UnsupportedMajor { expected: u16, actual: u16 },
+    #[error("wrong local IPC peer role: expected {expected:?}, got {actual:?}")]
+    WrongRole {
+        expected: PeerRole,
+        actual: PeerRole,
+    },
+    #[error("local IPC session identity mismatch")]
+    SessionMismatch,
+    #[error("local IPC peer is missing required features: required {required:#x}, got {actual:#x}")]
+    MissingFeatures { required: u32, actual: u32 },
+    #[error("local IPC payload limit mismatch: expected {expected}, got {actual}")]
+    PayloadLimitMismatch { expected: u32, actual: u32 },
+    #[error("local IPC payload is too large: {actual} bytes, maximum {maximum}")]
+    PayloadTooLarge { actual: usize, maximum: usize },
+    #[error("local IPC encoded frame is too large: {actual} bytes, maximum {maximum}")]
+    FrameTooLarge { actual: usize, maximum: usize },
+    #[error("local IPC stream ended with an incomplete frame")]
+    TruncatedFrame,
+    #[error("unexpected local IPC message: {0}")]
+    UnexpectedMessage(&'static str),
+    #[error("invalid local IPC session identity")]
+    InvalidSessionId,
+    #[error("local IPC postcard error: {0}")]
+    Postcard(#[from] postcard::Error),
 }
 
-pub fn write_response(writer: &mut impl Write, response: &Response) -> io::Result<()> {
-    writer.write_all(&encode_response(response))
+pub fn encode<T: WireMessage>(message: &T) -> Result<Vec<u8>, ProtocolError> {
+    message.validate_message()?;
+    let encoded = postcard::to_stdvec_cobs(message)?;
+    if encoded.len() > MAX_ENCODED_FRAME_LEN {
+        return Err(ProtocolError::FrameTooLarge {
+            actual: encoded.len(),
+            maximum: MAX_ENCODED_FRAME_LEN,
+        });
+    }
+    Ok(encoded)
 }
 
-pub fn read_response(reader: &mut impl Read) -> io::Result<Response> {
-    let mut header = [0_u8; RESPONSE_HEADER_LEN];
-    reader.read_exact(&mut header)?;
-    let payload = read_payload(reader, payload_len(&header).map_err(io::Error::other)?)?;
-    decode_response_parts(&header, &payload).map_err(io::Error::other)
+pub fn decode<T: WireMessage>(frame: &mut [u8]) -> Result<T, ProtocolError> {
+    if frame.len() > MAX_ENCODED_FRAME_LEN {
+        return Err(ProtocolError::FrameTooLarge {
+            actual: frame.len(),
+            maximum: MAX_ENCODED_FRAME_LEN,
+        });
+    }
+    let message: T = postcard::from_bytes_cobs(frame)?;
+    message.validate_message()?;
+    Ok(message)
+}
+
+#[derive(Debug, Default)]
+pub struct FrameDecoder {
+    frame: Vec<u8>,
+}
+
+impl FrameDecoder {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            frame: Vec::with_capacity(4_096),
+        }
+    }
+
+    pub fn push<T: WireMessage>(&mut self, input: &[u8]) -> Result<Vec<T>, ProtocolError> {
+        let mut messages = Vec::new();
+        for &byte in input {
+            self.frame.push(byte);
+            if self.frame.len() > MAX_ENCODED_FRAME_LEN {
+                self.frame.clear();
+                return Err(ProtocolError::FrameTooLarge {
+                    actual: MAX_ENCODED_FRAME_LEN.saturating_add(1),
+                    maximum: MAX_ENCODED_FRAME_LEN,
+                });
+            }
+            if byte == 0 {
+                let decoded = decode(&mut self.frame);
+                self.frame.clear();
+                messages.push(decoded?);
+            }
+        }
+        Ok(messages)
+    }
+
+    pub fn finish(&self) -> Result<(), ProtocolError> {
+        if self.frame.is_empty() {
+            Ok(())
+        } else {
+            Err(ProtocolError::TruncatedFrame)
+        }
+    }
 }
 
 #[must_use]
-pub fn encode_request(request: Request) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(REQUEST_HEADER_LEN + 4);
-    frame.extend_from_slice(MAGIC);
-    frame.push(VERSION);
-    match request {
-        Request::ReadInputDelay { id } => {
-            frame.push(1);
-            frame.extend_from_slice(&id.to_le_bytes());
-            frame.extend_from_slice(&0_u16.to_le_bytes());
-        }
-        Request::WriteInputDelay { id, value } => {
-            frame.push(2);
-            frame.extend_from_slice(&id.to_le_bytes());
-            frame.extend_from_slice(&4_u16.to_le_bytes());
-            frame.extend_from_slice(&value.to_le_bytes());
-        }
-    }
-    frame
-}
-
-#[must_use]
-pub fn encode_response(response: &Response) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(RESPONSE_HEADER_LEN + 4);
-    frame.extend_from_slice(MAGIC);
-    frame.push(VERSION);
-    match response {
-        Response::Ok { id, value } => {
-            frame.push(0);
-            frame.extend_from_slice(&id.to_le_bytes());
-            frame.extend_from_slice(&4_u16.to_le_bytes());
-            frame.extend_from_slice(&value.to_le_bytes());
-        }
-        Response::Error { id, code } => {
-            frame.push(code.to_byte());
-            frame.extend_from_slice(&id.to_le_bytes());
-            frame.extend_from_slice(&0_u16.to_le_bytes());
-        }
-    }
-    frame
-}
-
-pub fn decode_request(bytes: &[u8]) -> Result<Request, FrameError> {
-    if bytes.len() < REQUEST_HEADER_LEN {
-        return Err(FrameError::BadPayloadLength {
-            expected: REQUEST_HEADER_LEN,
-            actual: bytes.len(),
-        });
-    }
-    let payload_len = payload_len(&bytes[..REQUEST_HEADER_LEN])?;
-    if bytes.len() != REQUEST_HEADER_LEN + payload_len {
-        return Err(FrameError::BadPayloadLength {
-            expected: REQUEST_HEADER_LEN + payload_len,
-            actual: bytes.len(),
-        });
-    }
-    decode_request_parts(&bytes[..REQUEST_HEADER_LEN], &bytes[REQUEST_HEADER_LEN..])
-}
-
-pub fn decode_response(bytes: &[u8]) -> Result<Response, FrameError> {
-    if bytes.len() < RESPONSE_HEADER_LEN {
-        return Err(FrameError::BadPayloadLength {
-            expected: RESPONSE_HEADER_LEN,
-            actual: bytes.len(),
-        });
-    }
-    let payload_len = payload_len(&bytes[..RESPONSE_HEADER_LEN])?;
-    if bytes.len() != RESPONSE_HEADER_LEN + payload_len {
-        return Err(FrameError::BadPayloadLength {
-            expected: RESPONSE_HEADER_LEN + payload_len,
-            actual: bytes.len(),
-        });
-    }
-    decode_response_parts(&bytes[..RESPONSE_HEADER_LEN], &bytes[RESPONSE_HEADER_LEN..])
-}
-
-fn decode_request_parts(header: &[u8], payload: &[u8]) -> Result<Request, FrameError> {
-    validate_header(header)?;
-    let operation = header[5];
-    let id = frame_id(header);
-    match operation {
-        1 => {
-            expect_payload_len(payload, 0)?;
-            Ok(Request::ReadInputDelay { id })
-        }
-        2 => {
-            expect_payload_len(payload, 4)?;
-            Ok(Request::WriteInputDelay {
-                id,
-                value: i32::from_le_bytes(payload.try_into().expect("slice length checked")),
-            })
-        }
-        other => Err(FrameError::UnknownOperation(other)),
-    }
-}
-
-fn decode_response_parts(header: &[u8], payload: &[u8]) -> Result<Response, FrameError> {
-    validate_header(header)?;
-    let status = header[5];
-    let id = frame_id(header);
-    if status == 0 {
-        expect_payload_len(payload, 4)?;
-        return Ok(Response::Ok {
-            id,
-            value: i32::from_le_bytes(payload.try_into().expect("slice length checked")),
-        });
-    }
-    expect_payload_len(payload, 0)?;
-    Ok(Response::Error {
-        id,
-        code: ErrorCode::from_byte(status)?,
-    })
-}
-
-fn validate_header(header: &[u8]) -> Result<(), FrameError> {
-    if &header[0..4] != MAGIC {
-        return Err(FrameError::BadMagic);
-    }
-    let version = header[4];
-    if version != VERSION {
-        return Err(FrameError::UnsupportedVersion(version));
-    }
-    Ok(())
-}
-
-fn payload_len(header: &[u8]) -> Result<usize, FrameError> {
-    let length = u16::from_le_bytes([header[10], header[11]]) as usize;
-    if length > MAX_PAYLOAD_LEN {
-        return Err(FrameError::PayloadTooLarge(length));
-    }
-    Ok(length)
-}
-
-fn read_payload(reader: &mut impl Read, length: usize) -> io::Result<Vec<u8>> {
-    let mut payload = vec![0_u8; length];
-    reader.read_exact(&mut payload)?;
-    Ok(payload)
-}
-
-fn frame_id(header: &[u8]) -> u32 {
-    u32::from_le_bytes(header[6..10].try_into().expect("slice length checked"))
-}
-
-fn expect_payload_len(payload: &[u8], expected: usize) -> Result<(), FrameError> {
-    if payload.len() == expected {
-        Ok(())
-    } else {
-        Err(FrameError::BadPayloadLength {
-            expected,
-            actual: payload.len(),
-        })
-    }
+pub fn endpoint_name(session_id: SessionId) -> String {
+    format!("tractor-beam-{}", session_id.to_hex())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::*;
 
+    const SESSION: SessionId = SessionId::new([0xAB; 16]);
+
     #[test]
-    fn request_roundtrips_read() {
-        let request = Request::read_input_delay(7);
-
-        let decoded = decode_request(&encode_request(request)).unwrap();
-
-        assert_eq!(decoded, request);
+    fn session_id_roundtrips_config_representation() {
+        let encoded = SESSION.to_hex();
+        assert_eq!(encoded.parse::<SessionId>().unwrap(), SESSION);
+        assert_eq!(endpoint_name(SESSION), format!("tractor-beam-{encoded}"));
     }
 
     #[test]
-    fn request_roundtrips_write() {
-        let request = Request::write_input_delay(8, -1);
+    fn handshake_accepts_matching_peer_and_rejects_role_version_and_session() {
+        let handshake = Handshake::new(PeerRole::NativeHook, SESSION);
+        assert_eq!(
+            handshake
+                .validate(PeerRole::NativeHook, SESSION)
+                .unwrap()
+                .major,
+            PROTOCOL_MAJOR
+        );
 
-        let decoded = decode_request(&encode_request(request)).unwrap();
-
-        assert_eq!(decoded, request);
-    }
-
-    #[test]
-    fn response_roundtrips_ok() {
-        let response = Response::ok(9, 4);
-
-        let decoded = decode_response(&encode_response(&response)).unwrap();
-
-        assert_eq!(decoded, response);
-    }
-
-    #[test]
-    fn response_roundtrips_error() {
-        let response = Response::error(10, ErrorCode::TargetNotFound);
-
-        let decoded = decode_response(&encode_response(&response)).unwrap();
-
-        assert_eq!(decoded, response);
-    }
-
-    #[test]
-    fn rejects_bad_magic() {
-        let mut bytes = encode_request(Request::read_input_delay(1));
-        bytes[0] = b'X';
-
-        assert_eq!(decode_request(&bytes), Err(FrameError::BadMagic));
-    }
-
-    #[test]
-    fn rejects_bad_payload_length() {
-        let bytes = encode_request(Request::read_input_delay(1));
-
+        let mut wrong_role = handshake;
+        wrong_role.role = PeerRole::BridgeClient;
         assert!(matches!(
-            decode_request(&bytes[..bytes.len() - 1]),
-            Err(FrameError::BadPayloadLength { .. })
+            wrong_role.validate(PeerRole::NativeHook, SESSION),
+            Err(ProtocolError::WrongRole { .. })
         ));
+        let mut wrong_version = handshake;
+        wrong_version.major = PROTOCOL_MAJOR + 1;
+        assert!(matches!(
+            wrong_version.validate(PeerRole::NativeHook, SESSION),
+            Err(ProtocolError::UnsupportedMajor { .. })
+        ));
+        assert!(matches!(
+            handshake.validate(PeerRole::NativeHook, SessionId::new([0xCD; 16])),
+            Err(ProtocolError::SessionMismatch)
+        ));
+    }
+
+    #[test]
+    fn directional_messages_roundtrip_through_incremental_cobs_decoder() {
+        let first = HookToClient::Handshake(Handshake::new(PeerRole::NativeHook, SESSION));
+        let second = HookToClient::Game(game_packet(40));
+        let mut bytes = encode(&first).unwrap();
+        bytes.extend(encode(&second).unwrap());
+        let split = bytes.len() / 3;
+        let mut decoder = FrameDecoder::new();
+
+        let mut decoded = decoder.push::<HookToClient>(&bytes[..split]).unwrap();
+        decoded.extend(decoder.push::<HookToClient>(&bytes[split..]).unwrap());
+
+        assert_eq!(decoded, vec![first, second]);
+        decoder.finish().unwrap();
+    }
+
+    #[test]
+    fn malformed_unknown_and_oversized_frames_fail_deterministically() {
+        let mut unknown = postcard::to_stdvec_cobs(&u32::MAX).unwrap();
+        assert!(matches!(
+            decode::<HookToClient>(&mut unknown),
+            Err(ProtocolError::Postcard(_))
+        ));
+
+        let mut decoder = FrameDecoder::new();
+        let oversized = vec![1_u8; MAX_ENCODED_FRAME_LEN + 1];
+        assert!(matches!(
+            decoder.push::<HookToClient>(&oversized),
+            Err(ProtocolError::FrameTooLarge { .. })
+        ));
+
+        let mut truncated = FrameDecoder::new();
+        truncated.push::<HookToClient>(&[1, 2, 3]).unwrap();
+        assert!(matches!(
+            truncated.finish(),
+            Err(ProtocolError::TruncatedFrame)
+        ));
+    }
+
+    #[test]
+    fn encoded_size_snapshots_are_below_the_legacy_header_for_common_packets() {
+        let sizes = [16_usize, 40, 1_100, MAX_GAME_PAYLOAD_SIZE].map(|size| {
+            (
+                size,
+                encode(&HookToClient::Game(game_packet(size)))
+                    .unwrap()
+                    .len(),
+            )
+        });
+
+        assert_eq!(
+            sizes,
+            [(16, 37), (40, 61), (1_100, 1_126), (65_535, 65_816)]
+        );
+        assert!(sizes[0].1 - sizes[0].0 < 32);
+        assert!(sizes[1].1 - sizes[1].0 < 32);
+        assert!(sizes[2].1 - sizes[2].0 < 32);
+        assert!(sizes[3].1 <= MAX_ENCODED_FRAME_LEN);
+    }
+
+    #[test]
+    fn codec_throughput_smoke_covers_common_and_maximum_payloads() {
+        for (size, iterations) in [
+            (16_usize, 10_000),
+            (40, 10_000),
+            (1_100, 10_000),
+            (65_535, 128),
+        ] {
+            let started = Instant::now();
+            for _ in 0..iterations {
+                roundtrip_game(size);
+            }
+            let elapsed = started.elapsed();
+            let mebibytes = (size * iterations) as f64 / (1024.0 * 1024.0);
+            eprintln!(
+                "postcard_cobs_roundtrip payload_bytes={size} iterations={iterations} elapsed_ms={} payload_mib_per_second={:.2}",
+                elapsed.as_millis(),
+                mebibytes / elapsed.as_secs_f64()
+            );
+            assert!(elapsed.as_secs() < 10);
+        }
+    }
+
+    fn roundtrip_game(size: usize) {
+        let message = HookToClient::Game(game_packet(size));
+        let mut encoded = encode(&message).unwrap();
+        let decoded = decode::<HookToClient>(&mut encoded).unwrap();
+        assert_eq!(decoded, message);
+    }
+
+    fn game_packet(size: usize) -> GamePacket {
+        GamePacket {
+            peer: u64::MAX,
+            sequence: u32::MAX,
+            channel: -1,
+            send_type: 3,
+            payload: vec![0xA5; size],
+        }
     }
 }

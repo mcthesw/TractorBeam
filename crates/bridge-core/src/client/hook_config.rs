@@ -3,11 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::{SessionConfig, SessionMode};
-
-pub(super) const HOOK_IN: &str = "127.0.0.1:25900";
-pub(super) const HOOK_OUT: &str = "127.0.0.1:25901";
-pub(super) const HOOK_CONTROL: &str = "127.0.0.1:25902";
+use super::{SessionConfig, SessionMode, hook_ipc::HookIpcSession};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct HookConfigWrite {
@@ -17,6 +13,7 @@ pub(super) struct HookConfigWrite {
 pub(super) fn write_hook_config(
     config: &SessionConfig,
     paths: &tractor_beam_isaac_injector::NativeHookPaths,
+    ipc: &HookIpcSession,
 ) -> io::Result<HookConfigWrite> {
     let path = hook_config_path(&paths.hook)?;
     let directory = path.parent().ok_or_else(|| {
@@ -24,14 +21,16 @@ pub(super) fn write_hook_config(
     })?;
     fs::create_dir_all(directory)?;
     let fallback_to_steam = u8::from(config.mode == SessionMode::Fallback);
-    let contents = hook_config_contents(fallback_to_steam);
+    let contents = hook_config_contents(fallback_to_steam, ipc);
     fs::write(&path, contents)?;
     Ok(HookConfigWrite { path })
 }
 
-fn hook_config_contents(fallback_to_steam: u8) -> String {
+fn hook_config_contents(fallback_to_steam: u8, ipc: &HookIpcSession) -> String {
     format!(
-        "mode=replace\nfallback_to_steam={fallback_to_steam}\nsidecar={HOOK_IN}\nbind={HOOK_OUT}\ncontrol={HOOK_CONTROL}\n"
+        "mode=replace\nfallback_to_steam={fallback_to_steam}\nipc_endpoint={}\nipc_session={}\n",
+        ipc.endpoint,
+        ipc.session_id.to_hex()
     )
 }
 
@@ -69,11 +68,13 @@ mod tests {
     }
 
     #[test]
-    fn hook_config_contents_includes_control_endpoint() {
-        let contents = hook_config_contents(1);
+    fn hook_config_contents_includes_local_ipc_identity() {
+        let ipc = HookIpcSession::test();
+        let contents = hook_config_contents(1, &ipc);
 
-        assert!(contents.contains("sidecar=127.0.0.1:25900\n"));
-        assert!(contents.contains("bind=127.0.0.1:25901\n"));
-        assert!(contents.contains("control=127.0.0.1:25902\n"));
+        assert!(contents.contains(&format!("ipc_endpoint={}\n", ipc.endpoint)));
+        assert!(contents.contains(&format!("ipc_session={}\n", ipc.session_id.to_hex())));
+        assert!(!contents.contains("sidecar="));
+        assert!(!contents.contains("control="));
     }
 }

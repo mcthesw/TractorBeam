@@ -11,9 +11,7 @@ use std::{
 #[cfg(test)]
 use std::path::PathBuf;
 
-use bytes::Bytes;
 use tokio::{
-    net::UdpSocket,
     runtime::Builder,
     sync::mpsc::{self as tokio_mpsc, Receiver as TokioReceiver, Sender as TokioSender},
     task::JoinSet,
@@ -24,20 +22,27 @@ use tokio_util::sync::CancellationToken;
 use crate::protocol::{ControlMessage, MessageType};
 
 use super::{
-    LogLevel, SessionConfig,
-    hook_config::{HOOK_IN, HOOK_OUT},
-    hook_lifecycle,
+    LogLevel, SessionConfig, SessionMode,
+    hook_ipc::{self, HookIpcSession, InputDelayCall},
     packet_flow::{
         InboundGamePacket, InboundRelayDatagram, OutboundRelayPacket, PacketObserver,
-        decode_inbound_relay_datagram, encode_inbound_local_packet, encode_outbound_relay_packet,
+        decode_inbound_relay_datagram, encode_inbound_hook_packet, encode_outbound_relay_packet,
         hook_counter, relay_counter, send_error,
     },
+    process_lifecycle,
     relay_transport::{RelayTransport, complete_relay_join, send_control},
     session_health::{SessionHealth, SessionHealthSnapshot},
     state::{
         HookStartupPhase, HookStartupState, RuntimeEvent, RuntimeEventSender, SessionStopReason,
-        error_counter, log_event, send_event, unix_seconds,
+        error_counter, log_event, send_critical_event, send_event, unix_seconds,
     },
+};
+
+mod data_plane;
+
+use data_plane::{
+    RelayTransportTaskContext, emit_health_summary, hook_in_task, hook_out_task,
+    relay_transport_task,
 };
 
 const EVENT_QUEUE_CAPACITY: usize = 512;
@@ -47,7 +52,6 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(6);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
-const HOOK_BUFFER_SIZE: usize = 65_535;
 
 type SharedSessionHealth = Arc<Mutex<SessionHealth>>;
 
@@ -55,25 +59,29 @@ type SharedSessionHealth = Arc<Mutex<SessionHealth>>;
 pub(super) struct SessionHandle {
     cancellation: CancellationToken,
     pub(super) events: Receiver<RuntimeEvent>,
+    ipc_control: Option<SyncSender<InputDelayCall>>,
     worker: Option<JoinHandle<()>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct SessionNativeHook {
-    paths: tractor_beam_isaac_injector::NativeHookPaths,
+pub(super) struct SessionNativeHook {
+    pub(super) paths: tractor_beam_isaac_injector::NativeHookPaths,
+    pub(super) ipc: HookIpcSession,
+}
+
+impl SessionNativeHook {
+    pub(super) fn new(
+        paths: tractor_beam_isaac_injector::NativeHookPaths,
+        ipc: HookIpcSession,
+    ) -> Self {
+        Self { paths, ipc }
+    }
 }
 
 struct RuntimeTasks {
     essential: JoinSet<io::Result<()>>,
+    support: JoinSet<io::Result<()>>,
     health: Option<SharedSessionHealth>,
-}
-
-struct RelayTransportTaskContext {
-    event_tx: RuntimeEventSender,
-    cancellation: CancellationToken,
-    health: Option<SharedSessionHealth>,
-    health_snapshot_interval: Duration,
-    runtime_rtt_interval: Duration,
 }
 
 #[cfg(test)]
@@ -81,7 +89,13 @@ pub(super) fn spawn_bridge_worker(
     config: SessionConfig,
     native_hook_paths: tractor_beam_isaac_injector::NativeHookPaths,
 ) -> io::Result<SessionHandle> {
-    let (handle, startup_rx) = spawn_bridge_worker_handle(config, native_hook_paths);
+    let (handle, startup_rx) = spawn_bridge_worker_handle(
+        config,
+        Some(SessionNativeHook::new(
+            native_hook_paths,
+            HookIpcSession::test(),
+        )),
+    );
     let cancellation = handle.cancellation.clone();
 
     match startup_rx.recv_timeout(STARTUP_TIMEOUT) {
@@ -118,19 +132,25 @@ pub(super) fn spawn_bridge_worker(
 
 pub(super) fn spawn_bridge_worker_background(
     config: SessionConfig,
-    native_hook_paths: tractor_beam_isaac_injector::NativeHookPaths,
+    native_hook: Option<SessionNativeHook>,
 ) -> SessionHandle {
-    let (handle, _startup_rx) = spawn_bridge_worker_handle(config, native_hook_paths);
+    let (handle, _startup_rx) = spawn_bridge_worker_handle(config, native_hook);
     handle
 }
 
 fn spawn_bridge_worker_handle(
     config: SessionConfig,
-    native_hook_paths: tractor_beam_isaac_injector::NativeHookPaths,
+    native_hook: Option<SessionNativeHook>,
 ) -> (SessionHandle, Receiver<io::Result<()>>) {
     let cancellation = CancellationToken::new();
     let (event_tx, event_rx) = mpsc::channel();
     let (startup_tx, startup_rx) = mpsc::sync_channel(1);
+    let (ipc_control, ipc_control_rx) = if native_hook.is_some() {
+        let (sender, receiver) = hook_ipc::control_channel();
+        (Some(sender), Some(receiver))
+    } else {
+        (None, None)
+    };
     let worker_cancellation = cancellation.clone();
 
     let worker = thread::spawn(move || {
@@ -170,9 +190,8 @@ fn spawn_bridge_worker_handle(
 
         runtime.block_on(supervise_session(
             config,
-            SessionNativeHook {
-                paths: native_hook_paths,
-            },
+            native_hook,
+            ipc_control_rx,
             worker_cancellation,
             event_tx,
             startup_tx,
@@ -184,6 +203,7 @@ fn spawn_bridge_worker_handle(
         SessionHandle {
             cancellation,
             events: event_rx,
+            ipc_control,
             worker: Some(worker),
         },
         startup_rx,
@@ -191,6 +211,20 @@ fn spawn_bridge_worker_handle(
 }
 
 impl SessionHandle {
+    pub(super) fn request_input_delay(
+        &self,
+        id: u32,
+        command: tractor_beam_hook_ipc::InputDelayCommand,
+    ) -> io::Result<Result<i32, tractor_beam_hook_ipc::ErrorCode>> {
+        let Some(control) = &self.ipc_control else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "Native Hook local IPC is unavailable",
+            ));
+        };
+        hook_ipc::request_input_delay(control, id, command)
+    }
+
     pub(super) fn stop(mut self) -> Vec<RuntimeEvent> {
         self.cancellation.cancel();
         if let Some(worker) = self.worker.take() {
@@ -198,20 +232,35 @@ impl SessionHandle {
         }
         self.events.try_iter().collect()
     }
+
+    #[cfg(test)]
+    pub(super) fn with_test_events(events: Vec<RuntimeEvent>) -> Self {
+        let (event_tx, event_rx) = mpsc::channel();
+        for event in events {
+            event_tx
+                .send(event)
+                .expect("test session event receiver should remain connected");
+        }
+        Self {
+            cancellation: CancellationToken::new(),
+            events: event_rx,
+            ipc_control: None,
+            worker: None,
+        }
+    }
 }
 
 impl Drop for SessionHandle {
     fn drop(&mut self) {
         self.cancellation.cancel();
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        drop(self.worker.take());
     }
 }
 
 async fn supervise_session(
     config: SessionConfig,
-    native_hook: SessionNativeHook,
+    native_hook: Option<SessionNativeHook>,
+    ipc_control_rx: Option<Receiver<InputDelayCall>>,
     cancellation: CancellationToken,
     std_event_tx: mpsc::Sender<RuntimeEvent>,
     startup_tx: SyncSender<io::Result<()>>,
@@ -219,38 +268,57 @@ async fn supervise_session(
     let (event_tx, event_rx) = tokio_mpsc::channel(EVENT_QUEUE_CAPACITY);
     let event_forwarder = tokio::spawn(forward_events(event_rx, std_event_tx));
 
-    match start_runtime_tasks(&config, native_hook, &cancellation, &event_tx).await {
+    match start_runtime_tasks(
+        &config,
+        native_hook,
+        ipc_control_rx,
+        &cancellation,
+        &event_tx,
+    )
+    .await
+    {
         Ok(mut runtime_tasks) => {
             send_startup(&startup_tx, Ok(()));
             send_event(
                 &event_tx,
-                log_event(LogLevel::Info, "Local bridge is running"),
+                log_event(LogLevel::Info, "Session runtime is running"),
             );
-            send_event(
-                &event_tx,
-                log_event(
-                    LogLevel::Debug,
-                    format!(
-                        "Bridge sockets ready: hook_in={HOOK_IN} hook_out={HOOK_OUT} relay={} transport={} packet_queue={PACKET_QUEUE_CAPACITY}",
-                        config.relay, config.transport
+            if config.mode != SessionMode::Official {
+                send_event(
+                    &event_tx,
+                    log_event(
+                        LogLevel::Debug,
+                        format!(
+                            "Bridge local IPC ready: version={}.{} relay={} transport={} packet_queue={PACKET_QUEUE_CAPACITY}",
+                            tractor_beam_hook_ipc::PROTOCOL_MAJOR,
+                            tractor_beam_hook_ipc::PROTOCOL_MINOR,
+                            config.relay,
+                            config.transport
+                        ),
                     ),
-                ),
-            );
+                );
+            }
 
-            let stop_reason =
-                wait_for_essential_task(&cancellation, &mut runtime_tasks.essential).await;
+            let stop_reason = wait_for_session_end(
+                &cancellation,
+                &mut runtime_tasks.essential,
+                &mut runtime_tasks.support,
+            )
+            .await;
             cancellation.cancel();
             if let Some(message) = stop_reason {
-                send_event(
+                send_critical_event(
                     &event_tx,
                     RuntimeEvent::SessionEnded(SessionStopReason::RuntimeEnded {
                         message: message.clone(),
                     }),
-                );
+                )
+                .await;
                 send_event(&event_tx, log_event(LogLevel::Warn, message));
             }
             shutdown_tasks(runtime_tasks.essential, &event_tx).await;
-            emit_health_summary(&event_tx, &runtime_tasks.health);
+            shutdown_tasks(runtime_tasks.support, &event_tx).await;
+            emit_health_summary(&event_tx, &runtime_tasks.health).await;
         }
         Err(error) => {
             let kind = error.kind();
@@ -269,29 +337,37 @@ async fn supervise_session(
                     ..HookStartupState::default()
                 })),
             );
-            send_event(
+            send_critical_event(
                 &event_tx,
                 RuntimeEvent::SessionEnded(SessionStopReason::RuntimeEnded {
                     message: message.clone(),
                 }),
-            );
+            )
+            .await;
             send_event(&event_tx, RuntimeEvent::CounterDelta(error_counter()));
         }
     }
 
-    send_event(&event_tx, RuntimeEvent::Stopped);
+    send_critical_event(&event_tx, RuntimeEvent::Stopped).await;
     drop(event_tx);
     let _ = event_forwarder.await;
 }
 
 async fn start_runtime_tasks(
     config: &SessionConfig,
-    native_hook: SessionNativeHook,
+    native_hook: Option<SessionNativeHook>,
+    ipc_control_rx: Option<Receiver<InputDelayCall>>,
     cancellation: &CancellationToken,
     event_tx: &RuntimeEventSender,
 ) -> io::Result<RuntimeTasks> {
     tokio::select! {
-        result = start_runtime_tasks_inner(config, native_hook, cancellation, event_tx) => result,
+        result = start_runtime_tasks_inner(
+            config,
+            native_hook,
+            ipc_control_rx,
+            cancellation,
+            event_tx,
+        ) => result,
         () = cancellation.cancelled() => Err(io::Error::new(
             io::ErrorKind::Interrupted,
             "bridge runtime startup cancelled",
@@ -301,16 +377,53 @@ async fn start_runtime_tasks(
 
 async fn start_runtime_tasks_inner(
     config: &SessionConfig,
-    native_hook: SessionNativeHook,
+    native_hook: Option<SessionNativeHook>,
+    ipc_control_rx: Option<Receiver<InputDelayCall>>,
     cancellation: &CancellationToken,
     event_tx: &RuntimeEventSender,
 ) -> io::Result<RuntimeTasks> {
-    let hook_in_socket = UdpSocket::bind(HOOK_IN)
-        .await
-        .map_err(|error| socket_bind_error(HOOK_IN, error))?;
-    let hook_out_socket = UdpSocket::bind("127.0.0.1:0")
-        .await
-        .map_err(|error| socket_bind_error("127.0.0.1:0", error))?;
+    if config.mode != SessionMode::Official && native_hook.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Native Hook paths are required outside Official mode",
+        ));
+    }
+
+    if config.mode == SessionMode::Official {
+        let mut support = JoinSet::new();
+        support.spawn(process_lifecycle::run(
+            None,
+            event_tx.clone(),
+            cancellation.clone(),
+        ));
+        return Ok(RuntimeTasks {
+            essential: JoinSet::new(),
+            support,
+            health: None,
+        });
+    }
+
+    let native_hook = native_hook.expect("Native Hook presence was validated above");
+    let ipc_control_rx = ipc_control_rx.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Native Hook local IPC control channel is required outside Official mode",
+        )
+    })?;
+    let (hook_packets_rx, to_hook, ipc_worker) = hook_ipc::start(
+        native_hook.ipc,
+        ipc_control_rx,
+        event_tx.clone(),
+        cancellation.clone(),
+    )?;
+    let mut tasks = JoinSet::new();
+    tasks.spawn(ipc_worker);
+    let mut support = JoinSet::new();
+    support.spawn(process_lifecycle::run(
+        Some(native_hook.paths),
+        event_tx.clone(),
+        cancellation.clone(),
+    ));
     let mut relay = RelayTransport::connect(&config.relay, config.transport).await?;
     let peers = complete_relay_join(&mut relay.sender, &mut relay.receiver, config).await?;
     let peer_count = peers.len();
@@ -332,10 +445,8 @@ async fn start_runtime_tasks_inner(
             Instant::now(),
         )))
     });
-    let mut tasks = JoinSet::new();
-
     tasks.spawn(hook_in_task(
-        hook_in_socket,
+        hook_packets_rx,
         config.steam_id64.clone(),
         outbound_tx,
         event_tx.clone(),
@@ -359,210 +470,18 @@ async fn start_runtime_tasks_inner(
         },
     ));
     tasks.spawn(hook_out_task(
-        hook_out_socket,
+        to_hook,
         inbound_rx,
         event_tx.clone(),
         cancellation.clone(),
         health.clone(),
     ));
 
-    tokio::spawn(hook_lifecycle::injector_task(
-        native_hook.paths,
-        event_tx.clone(),
-        cancellation.clone(),
-    ));
-
     Ok(RuntimeTasks {
         essential: tasks,
+        support,
         health,
     })
-}
-
-fn socket_bind_error(endpoint: &str, error: io::Error) -> io::Error {
-    io::Error::new(
-        error.kind(),
-        format!("failed to bind local endpoint {endpoint}/UDP: {error}"),
-    )
-}
-
-async fn hook_in_task(
-    socket: UdpSocket,
-    steam_id64: String,
-    outbound_tx: TokioSender<OutboundRelayPacket>,
-    event_tx: RuntimeEventSender,
-    cancellation: CancellationToken,
-    health: Option<SharedSessionHealth>,
-) -> io::Result<()> {
-    let mut buffer = vec![0_u8; HOOK_BUFFER_SIZE];
-    loop {
-        tokio::select! {
-            () = cancellation.cancelled() => return Ok(()),
-            received = socket.recv_from(&mut buffer) => {
-                let (size, _) = received?;
-                observe_health(&health, |health| health.observe_hook_in_recv(size, Instant::now()));
-                match encode_outbound_relay_packet(&steam_id64, Bytes::copy_from_slice(&buffer[..size])) {
-                    Ok(packet) => {
-                        let accepted = outbound_tx.try_send(packet).is_ok();
-                        observe_health(&health, |health| health.observe_outbound_enqueue(accepted));
-                        if !accepted {
-                            send_error(&event_tx, "Relay outbound queue is full; dropping hook packet");
-                        }
-                    }
-                    Err(error) => send_error(&event_tx, format!("Bad hook packet: {error}")),
-                }
-            }
-        }
-    }
-}
-
-async fn relay_transport_task(
-    mut relay: RelayTransport,
-    mut outbound_rx: TokioReceiver<OutboundRelayPacket>,
-    inbound_tx: TokioSender<InboundGamePacket>,
-    context: RelayTransportTaskContext,
-) -> io::Result<()> {
-    let mut observer = PacketObserver::default();
-    let mut heartbeat = time::interval(HEARTBEAT_INTERVAL);
-    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    let mut health_snapshot = time::interval(context.health_snapshot_interval);
-    health_snapshot.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    let mut runtime_rtt = time::interval(context.runtime_rtt_interval);
-    runtime_rtt.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-    loop {
-        tokio::select! {
-            () = context.cancellation.cancelled() => {
-                return Ok(());
-            }
-            Some(packet) = outbound_rx.recv() => {
-                let started = Instant::now();
-                relay.sender.send_data_datagram(packet.raw).await?;
-                observe_health(&context.health, |health| {
-                    health.observe_relay_send_duration(started.elapsed());
-                });
-                send_event(&context.event_tx, RuntimeEvent::CounterDelta(hook_counter(packet.sent_bytes)));
-                observer.observe_hook_packet(&context.event_tx, &packet.summary);
-            }
-            raw = relay.receiver.recv_datagram() => {
-                let raw = raw?;
-                observe_health(&context.health, |health| {
-                    health.observe_relay_recv(raw.len(), Instant::now());
-                });
-                match decode_inbound_relay_datagram(raw) {
-                    Ok(Some(InboundRelayDatagram::Game(packet))) => {
-                        observe_health(&context.health, |health| {
-                            let peer = packet.game.from_steam_id64.parse::<u64>().unwrap_or_default();
-                            health.observe_source_sequence(peer, packet.game.source_sequence);
-                        });
-                        let accepted = inbound_tx.try_send(packet).is_ok();
-                        observe_health(&context.health, |health| health.observe_inbound_enqueue(accepted));
-                        if !accepted {
-                            send_error(&context.event_tx, "Hook inbound queue is full; dropping relay packet");
-                        }
-                    }
-                    Ok(Some(InboundRelayDatagram::HealthPong { id })) => {
-                        observe_health(&context.health, |health| health.observe_health_pong(id, Instant::now()));
-                    }
-                    Ok(Some(InboundRelayDatagram::RoomUpdate { peers })) => {
-                        send_event(&context.event_tx, RuntimeEvent::RoomPeersUpdated(peers));
-                    }
-                    Ok(None) => {}
-                    Err(error) => send_error(&context.event_tx, format!("Bad relay packet: {error}")),
-                }
-            }
-            _ = heartbeat.tick() => {
-                send_control(&mut relay.sender, MessageType::Heartbeat, &ControlMessage::Heartbeat).await?;
-            }
-            _ = health_snapshot.tick(), if context.health.is_some() => {
-                emit_health_snapshot(&context.event_tx, &context.health);
-            }
-            _ = runtime_rtt.tick(), if context.health.is_some() => {
-                if let Some(id) = next_health_ping(&context.health) {
-                    send_control(&mut relay.sender, MessageType::Heartbeat, &ControlMessage::HealthPing { id }).await?;
-                }
-            }
-        }
-    }
-}
-
-async fn hook_out_task(
-    socket: UdpSocket,
-    mut inbound_rx: TokioReceiver<InboundGamePacket>,
-    event_tx: RuntimeEventSender,
-    cancellation: CancellationToken,
-    health: Option<SharedSessionHealth>,
-) -> io::Result<()> {
-    let mut local_sequence = 1_u32;
-    let mut observer = PacketObserver::default();
-    loop {
-        tokio::select! {
-            () = cancellation.cancelled() => return Ok(()),
-            Some(packet) = inbound_rx.recv() => {
-                match encode_inbound_local_packet(packet, &mut local_sequence) {
-                    Ok((bytes, summary, received_bytes)) => {
-                        let started = Instant::now();
-                        socket.send_to(&bytes, HOOK_OUT).await?;
-                        observe_health(&health, |health| {
-                            health.observe_hook_out_send_duration(started.elapsed());
-                        });
-                        send_event(&event_tx, RuntimeEvent::CounterDelta(relay_counter(received_bytes)));
-                        observer.observe_relay_packet(&event_tx, &summary);
-                    }
-                    Err(error) => send_error(&event_tx, format!("Bad inbound game packet: {error}")),
-                }
-            }
-        }
-    }
-}
-
-fn observe_health(health: &Option<SharedSessionHealth>, observe: impl FnOnce(&mut SessionHealth)) {
-    let Some(health) = health else {
-        return;
-    };
-    if let Ok(mut health) = health.lock() {
-        observe(&mut health);
-    }
-}
-
-fn next_health_ping(health: &Option<SharedSessionHealth>) -> Option<u64> {
-    health
-        .as_ref()
-        .and_then(|health| health.lock().ok()?.next_health_ping(Instant::now()))
-}
-
-fn emit_health_snapshot(event_tx: &RuntimeEventSender, health: &Option<SharedSessionHealth>) {
-    if let Some(snapshot) = current_health_snapshot(health) {
-        send_event(
-            event_tx,
-            log_event(LogLevel::Info, snapshot.compact_log_line("Session health")),
-        );
-        send_event(
-            event_tx,
-            RuntimeEvent::SessionHealthSnapshot(Box::new(snapshot)),
-        );
-    }
-}
-
-fn emit_health_summary(event_tx: &RuntimeEventSender, health: &Option<SharedSessionHealth>) {
-    if let Some(snapshot) = current_health_snapshot(health) {
-        send_event(
-            event_tx,
-            log_event(
-                LogLevel::Info,
-                snapshot.compact_log_line("Session health summary"),
-            ),
-        );
-        send_event(
-            event_tx,
-            RuntimeEvent::SessionHealthSummary(Box::new(snapshot)),
-        );
-    }
-}
-
-fn current_health_snapshot(health: &Option<SharedSessionHealth>) -> Option<SessionHealthSnapshot> {
-    health
-        .as_ref()
-        .and_then(|health| Some(health.lock().ok()?.snapshot(Instant::now())))
 }
 
 #[cfg(test)]
@@ -573,18 +492,35 @@ fn test_native_hook_paths() -> tractor_beam_isaac_injector::NativeHookPaths {
     }
 }
 
-async fn wait_for_essential_task(
+async fn wait_for_session_end(
     cancellation: &CancellationToken,
-    tasks: &mut JoinSet<io::Result<()>>,
+    essential: &mut JoinSet<io::Result<()>>,
+    support: &mut JoinSet<io::Result<()>>,
 ) -> Option<String> {
     tokio::select! {
         () = cancellation.cancelled() => None,
-        result = tasks.join_next() => match result {
-            Some(Ok(Ok(()))) => Some("Bridge session task exited".to_owned()),
-            Some(Ok(Err(error))) => Some(format!("Bridge session task failed: {error}")),
-            Some(Err(error)) => Some(format!("Bridge session task panicked: {error}")),
-            None => Some("Bridge session tasks exited".to_owned()),
-        },
+        result = essential.join_next(), if !essential.is_empty() => {
+            task_exit_message("Bridge session task", cancellation, result)
+        }
+        result = support.join_next(), if !support.is_empty() => {
+            task_exit_message("Bridge lifecycle task", cancellation, result)
+        }
+    }
+}
+
+fn task_exit_message(
+    task_name: &str,
+    cancellation: &CancellationToken,
+    result: Option<Result<io::Result<()>, tokio::task::JoinError>>,
+) -> Option<String> {
+    if cancellation.is_cancelled() {
+        return None;
+    }
+    match result {
+        Some(Ok(Ok(()))) => Some(format!("{task_name} exited")),
+        Some(Ok(Err(error))) => Some(format!("{task_name} failed: {error}")),
+        Some(Err(error)) => Some(format!("{task_name} panicked: {error}")),
+        None => Some(format!("{task_name}s exited")),
     }
 }
 

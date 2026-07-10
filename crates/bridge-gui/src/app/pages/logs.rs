@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 
+use chrono::{Local, TimeZone as _};
 use eframe::egui::{self, ComboBox};
 use rust_i18n::t;
 use tractor_beam_core::LogLevel;
@@ -60,7 +61,12 @@ impl BridgeApp {
                 )
                 .clicked()
             {
-                self.export_diagnostics();
+                self.export_troubleshooting_package();
+            }
+            if self.last_troubleshooting_package.is_some()
+                && ui.button(t!("diagnostics.reveal")).clicked()
+            {
+                self.reveal_troubleshooting_package();
             }
         });
         ui.data_mut(|data| {
@@ -85,7 +91,7 @@ impl BridgeApp {
                         continue;
                     }
                     ui.horizontal_top(|ui| {
-                        ui.monospace(format!("[{}]", entry.timestamp));
+                        ui.monospace(format!("[{}]", format_log_timestamp(entry.timestamp_ms)));
                         ui.colored_label(log_level_color(ui, entry.level), entry.level.to_string());
                         ui.add(egui::Label::new(entry.message.as_str()).wrap());
                     });
@@ -93,6 +99,17 @@ impl BridgeApp {
                 }
             });
     }
+}
+
+fn format_log_timestamp(timestamp_ms: u64) -> String {
+    let timestamp_ms = i64::try_from(timestamp_ms).unwrap_or(i64::MAX);
+    Local
+        .timestamp_millis_opt(timestamp_ms)
+        .single()
+        .map_or_else(
+            || "0000-00-00 00:00:00.000".to_owned(),
+            |timestamp| timestamp.format("%Y-%m-%d %H:%M:%S%.3f").to_string(),
+        )
 }
 
 fn log_level_color(ui: &egui::Ui, level: LogLevel) -> egui::Color32 {
@@ -122,5 +139,31 @@ fn level_name(level: LogLevel) -> Cow<'static, str> {
         LogLevel::Info => t!("log_level.info"),
         LogLevel::Debug => t!("log_level.debug"),
         LogLevel::Trace => t!("log_level.trace"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_log_timestamp;
+
+    #[test]
+    fn local_log_timestamp_has_stable_millisecond_shape() {
+        let formatted = format_log_timestamp(1_767_225_600_123);
+        assert_eq!(formatted.len(), 23);
+        assert_eq!(&formatted[4..5], "-");
+        assert_eq!(&formatted[7..8], "-");
+        assert_eq!(&formatted[10..11], " ");
+        assert_eq!(&formatted[13..14], ":");
+        assert_eq!(&formatted[16..17], ":");
+        assert_eq!(&formatted[19..20], ".");
+        assert!(formatted.ends_with(".123"));
+    }
+
+    #[test]
+    fn timestamps_within_one_second_remain_distinct() {
+        assert_ne!(
+            format_log_timestamp(1_767_225_600_001),
+            format_log_timestamp(1_767_225_600_999)
+        );
     }
 }

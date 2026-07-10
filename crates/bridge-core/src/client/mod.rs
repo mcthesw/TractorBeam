@@ -19,13 +19,11 @@ mod session_health;
 mod state;
 
 pub use config::{
-    CLIENT_CONFIG_FILE, ClientConfig, ClientConfigSelection, LoadedClientConfig, LocalDate,
-    RelayPreset, app_data_config_path, bundle_config_path, load_client_config,
-    resolve_room_template, save_client_config_selection,
+    CLIENT_CONFIG_FILE, ClientConfig, ClientConfigSelection, LoadedClientConfig, RelayPreset,
+    app_data_config_path, bundle_config_path, load_client_config, save_client_config_selection,
 };
-pub use diagnostics::diagnostics_directory;
 pub use input_delay::{InputDelayError, InputDelayOperation, InputDelayReport, InputDelayStatus};
-pub use join_code::{JoinCode, JoinCodeError};
+pub use join_code::{JoinCode, JoinCodeError, SessionCredential};
 pub use logging::{
     ClientLogSink, ClientSessionLog, ClientSessionLogContext, emit_client_log_event,
 };

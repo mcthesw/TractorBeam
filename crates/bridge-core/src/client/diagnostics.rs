@@ -1,8 +1,16 @@
-use std::{fs, io, path::PathBuf};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{self, Read as _, Write as _},
+    path::{Path, PathBuf},
+};
 
-use directories::ProjectDirs;
+use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 use super::{BridgeClient, PRODUCT_NAME, state::unix_seconds};
+
+const MAX_PACKAGE_FILES: usize = 16;
+const MAX_PACKAGE_ENTRY_BYTES: usize = 256 * 1024;
+const MAX_PACKAGE_TOTAL_BYTES: usize = 2 * 1024 * 1024;
 
 impl BridgeClient {
     pub fn open_log_directory(&mut self) -> io::Result<PathBuf> {
@@ -21,16 +29,77 @@ impl BridgeClient {
         Ok(directory)
     }
 
-    pub fn export_diagnostics(&mut self) -> io::Result<PathBuf> {
-        let directory = diagnostics_directory();
-        fs::create_dir_all(&directory)?;
-        let path = directory.join(format!("tractor-beam-{}.txt", unix_seconds()));
-        fs::write(&path, self.redacted_diagnostics_text())?;
+    pub fn export_troubleshooting_package(&mut self, path: &Path) -> io::Result<PathBuf> {
+        let parent = path.parent().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "package path has no parent")
+        })?;
+        fs::create_dir_all(parent)?;
+        let mut entries = Vec::new();
+        let mut warnings = Vec::new();
+        push_text_entry(
+            &mut entries,
+            "summary.txt",
+            self.redacted_diagnostics_text(),
+            &mut warnings,
+        );
+        collect_optional_file(
+            &mut entries,
+            "logs/bridge-client.log",
+            self.log_sink.process_log_path(),
+            &mut warnings,
+        );
+        for (index, session_path) in self
+            .log_sink
+            .recent_session_logs()
+            .into_iter()
+            .take(8)
+            .enumerate()
+        {
+            collect_optional_file(
+                &mut entries,
+                &format!("logs/sessions/session-{:02}.log", index + 1),
+                Some(session_path),
+                &mut warnings,
+            );
+        }
+        collect_optional_file(
+            &mut entries,
+            "logs/tractor-beam-hook.log",
+            self.state.hook_log_path_written(),
+            &mut warnings,
+        );
+        collect_optional_file(
+            &mut entries,
+            "logs/isaac-online-excerpt.log",
+            Some(
+                crate::diagnostics::isaac_online_logs_directory()
+                    .join(crate::diagnostics::ONLINE_LOG),
+            ),
+            &mut warnings,
+        );
+        let manifest = package_manifest(&entries, &warnings);
+        push_text_entry(&mut entries, "manifest.txt", manifest, &mut warnings);
+        enforce_total_bound(&mut entries, &mut warnings);
+
+        let temporary_path = temporary_package_path(path);
+        if temporary_path.exists() {
+            fs::remove_file(&temporary_path)?;
+        }
+        let result = write_package(&temporary_path, &entries).and_then(|()| {
+            if path.exists() {
+                fs::remove_file(path)?;
+            }
+            fs::rename(&temporary_path, path)
+        });
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary_path);
+        }
+        result?;
         self.log(
             super::LogLevel::Info,
-            format!("Diagnostics exported to {}", path.display()),
+            format!("Troubleshooting Package saved to {}", path.display()),
         );
-        Ok(path)
+        Ok(path.to_path_buf())
     }
 
     #[must_use]
@@ -230,10 +299,8 @@ impl BridgeClient {
                     output.push_str("\n--- ");
                     output.push_str(file);
                     output.push_str(" ---\n");
-                    match fs::read_to_string(&path) {
-                        Ok(contents) => {
-                            output.push_str(crate::diagnostics::file_excerpt(&contents))
-                        }
+                    match read_text_excerpt(&path) {
+                        Ok(contents) => output.push_str(&contents),
                         Err(error) => output.push_str(&format!("unavailable: {error}\n")),
                     }
                     if !output.ends_with('\n') {
@@ -252,8 +319,8 @@ impl BridgeClient {
         output.push_str("\n--- ");
         output.push_str(file);
         output.push_str(" ---\n");
-        match fs::read_to_string(&path) {
-            Ok(contents) => output.push_str(crate::diagnostics::file_excerpt(&contents)),
+        match read_text_excerpt(&path) {
+            Ok(contents) => output.push_str(&contents),
             Err(error) => output.push_str(&format!("unavailable: {error}\n")),
         }
         if !output.ends_with('\n') {
@@ -263,14 +330,16 @@ impl BridgeClient {
         for entry in &self.state.logs {
             output.push_str(&format!(
                 "[{}] {} {}\n",
-                entry.timestamp, entry.level, entry.message
+                format_evidence_timestamp(entry.timestamp_ms),
+                entry.level,
+                entry.message
             ));
         }
         output.push_str("\nprocess log:\n");
         if let Some(path) = self.log_sink.process_log_path() {
             output.push_str(&format!("--- {} ---\n", path.display()));
-            match fs::read_to_string(&path) {
-                Ok(contents) => output.push_str(crate::diagnostics::file_excerpt(&contents)),
+            match read_text_excerpt(&path) {
+                Ok(contents) => output.push_str(&contents),
                 Err(error) => output.push_str(&format!("unavailable: {error}\n")),
             }
         } else {
@@ -284,8 +353,8 @@ impl BridgeClient {
             output.push_str("\n--- ");
             output.push_str(&path.display().to_string());
             output.push_str(" ---\n");
-            match fs::read_to_string(&path) {
-                Ok(contents) => output.push_str(crate::diagnostics::file_excerpt(&contents)),
+            match read_text_excerpt(&path) {
+                Ok(contents) => output.push_str(&contents),
                 Err(error) => output.push_str(&format!("unavailable: {error}\n")),
             }
             if !output.ends_with('\n') {
@@ -296,9 +365,186 @@ impl BridgeClient {
     }
 }
 
-#[must_use]
-pub fn diagnostics_directory() -> PathBuf {
-    ProjectDirs::from("io.github", "mcthesw", PRODUCT_NAME)
-        .map(|project| project.data_local_dir().join("diagnostics"))
-        .unwrap_or_else(|| std::env::temp_dir().join(PRODUCT_NAME).join("diagnostics"))
+fn collect_optional_file(
+    entries: &mut Vec<(String, String)>,
+    archive_name: &str,
+    path: Option<PathBuf>,
+    warnings: &mut Vec<String>,
+) {
+    let Some(path) = path else {
+        warnings.push(format!("{archive_name}: unavailable"));
+        return;
+    };
+    match read_text_excerpt(&path) {
+        Ok(contents) => push_text_entry(entries, archive_name, contents, warnings),
+        Err(error) => warnings.push(format!("{archive_name}: unavailable ({error})")),
+    }
+}
+
+fn read_text_excerpt(path: &Path) -> io::Result<String> {
+    let file = File::open(path)?;
+    let mut bytes = Vec::with_capacity(MAX_PACKAGE_ENTRY_BYTES.min(64 * 1024));
+    file.take(u64::try_from(MAX_PACKAGE_ENTRY_BYTES + 1).expect("entry bound fits u64"))
+        .read_to_end(&mut bytes)?;
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(tail_bounded(&text, MAX_PACKAGE_ENTRY_BYTES).0)
+}
+
+fn push_text_entry(
+    entries: &mut Vec<(String, String)>,
+    archive_name: &str,
+    contents: String,
+    warnings: &mut Vec<String>,
+) {
+    if entries.len() >= MAX_PACKAGE_FILES {
+        warnings.push(format!(
+            "{archive_name}: omitted because the package file limit was reached"
+        ));
+        return;
+    }
+    let redacted = crate::diagnostics::redact_text(&contents);
+    let (bounded, truncated) = tail_bounded(&redacted, MAX_PACKAGE_ENTRY_BYTES);
+    if truncated {
+        warnings.push(format!(
+            "{archive_name}: truncated to the most recent {MAX_PACKAGE_ENTRY_BYTES} bytes"
+        ));
+    }
+    entries.push((archive_name.to_owned(), bounded));
+}
+
+fn tail_bounded(value: &str, max_bytes: usize) -> (String, bool) {
+    if value.len() <= max_bytes {
+        return (value.to_owned(), false);
+    }
+    let mut start = value.len() - max_bytes;
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    (value[start..].to_owned(), true)
+}
+
+fn enforce_total_bound(entries: &mut Vec<(String, String)>, warnings: &mut Vec<String>) {
+    let mut remaining = MAX_PACKAGE_TOTAL_BYTES;
+    entries.retain_mut(|(name, contents)| {
+        if remaining == 0 {
+            warnings.push(format!(
+                "{name}: omitted because the package size limit was reached"
+            ));
+            return false;
+        }
+        if contents.len() > remaining {
+            let (bounded, _) = tail_bounded(contents, remaining);
+            *contents = bounded;
+            warnings.push(format!("{name}: truncated by the package size limit"));
+        }
+        remaining = remaining.saturating_sub(contents.len());
+        true
+    });
+}
+
+fn package_manifest(entries: &[(String, String)], warnings: &[String]) -> String {
+    let mut manifest = format!(
+        "Tractor Beam Troubleshooting Package\ngenerated_at: {}\nfiles:\n",
+        format_evidence_timestamp(unix_seconds().saturating_mul(1_000))
+    );
+    for (name, contents) in entries {
+        manifest.push_str(&format!("- {name}: {} bytes\n", contents.len()));
+    }
+    manifest.push_str("warnings:\n");
+    if warnings.is_empty() {
+        manifest.push_str("- none\n");
+    } else {
+        for warning in warnings {
+            manifest.push_str("- ");
+            manifest.push_str(warning);
+            manifest.push('\n');
+        }
+    }
+    manifest
+}
+
+fn temporary_package_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("tractor-beam-troubleshooting.zip");
+    path.with_file_name(format!(".{name}.{}.tmp", std::process::id()))
+}
+
+fn write_package(path: &Path, entries: &[(String, String)]) -> io::Result<()> {
+    let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    let mut archive = ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    for (name, contents) in entries {
+        archive
+            .start_file(name, options)
+            .map_err(io::Error::other)?;
+        archive.write_all(contents.as_bytes())?;
+    }
+    let file: File = archive.finish().map_err(io::Error::other)?;
+    file.sync_all()
+}
+
+fn format_evidence_timestamp(timestamp_ms: u64) -> String {
+    use chrono::{DateTime, FixedOffset, Utc};
+
+    let timestamp_ms = i64::try_from(timestamp_ms).unwrap_or(i64::MAX);
+    DateTime::<Utc>::from_timestamp_millis(timestamp_ms).map_or_else(
+        || "invalid-timestamp".to_owned(),
+        |timestamp| {
+            timestamp
+                .with_timezone(&FixedOffset::east_opt(0).expect("UTC offset is valid"))
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read as _;
+
+    use super::*;
+    use crate::client::{BridgeClient, LoadedClientConfig, LogLevel, state::log_entry};
+
+    #[test]
+    fn troubleshooting_package_is_a_redacted_bounded_zip() {
+        let mut client = BridgeClient::with_config(LoadedClientConfig::default());
+        client.state.logs.push(log_entry(
+            LogLevel::Info,
+            "session_credential=secret-session resume_credential=secret-resume path_token=secret-path connection_id=42 C:\\Users\\alice\\save",
+        ));
+        let directory = std::env::temp_dir().join(format!(
+            "tractor-beam-package-test-{}-{}",
+            std::process::id(),
+            unix_seconds()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("support.zip");
+
+        assert_eq!(client.export_troubleshooting_package(&path).unwrap(), path);
+        assert!(path.exists());
+        assert!(!temporary_package_path(&path).exists());
+
+        let file = File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(archive.len() <= MAX_PACKAGE_FILES);
+        let mut combined = String::new();
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            assert!(entry.size() <= MAX_PACKAGE_ENTRY_BYTES as u64);
+            entry.read_to_string(&mut combined).unwrap();
+        }
+        assert!(combined.contains("Tractor Beam Troubleshooting Package"));
+        for secret in [
+            "secret-session",
+            "secret-resume",
+            "secret-path",
+            "connection_id=42",
+            "alice",
+        ] {
+            assert!(!combined.contains(secret), "package leaked {secret}");
+        }
+
+        fs::remove_dir_all(directory).ok();
+    }
 }

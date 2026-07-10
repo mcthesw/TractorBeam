@@ -5,6 +5,8 @@ use std::{
 
 use serde::Serialize;
 
+use super::SessionCredential;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum SessionMode {
     Official,
@@ -158,8 +160,7 @@ pub struct SessionConfig {
     pub relay: RelayEndpoint,
     pub relay_name: Option<String>,
     pub transport: TransportChoice,
-    pub room: String,
-    pub admission: String,
+    pub session_credential: SessionCredential,
     pub mode: SessionMode,
     pub steam_id64: String,
     pub display_name: String,
@@ -170,12 +171,6 @@ impl SessionConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.mode != SessionMode::Official {
             self.relay.validate()?;
-        }
-        if self.room.trim().is_empty() {
-            return Err(ConfigError::MissingRoom);
-        }
-        if self.admission.trim().is_empty() {
-            return Err(ConfigError::MissingAdmission);
         }
         if self.steam_id64.trim().is_empty() {
             return Err(ConfigError::MissingSteamId);
@@ -194,8 +189,6 @@ impl SessionConfig {
 pub enum ConfigError {
     MissingRelayHost,
     InvalidRelayPort,
-    MissingRoom,
-    MissingAdmission,
     MissingSteamId,
     InvalidSteamId,
     InvalidSessionHealth,
@@ -206,8 +199,6 @@ impl Display for ConfigError {
         let message = match self {
             Self::MissingRelayHost => "relay host is required",
             Self::InvalidRelayPort => "relay port is invalid",
-            Self::MissingRoom => "room is required",
-            Self::MissingAdmission => "admission is required",
             Self::MissingSteamId => "SteamID64 is required",
             Self::InvalidSteamId => "SteamID64 must contain digits only",
             Self::InvalidSessionHealth => "session health config is invalid",

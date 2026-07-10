@@ -38,12 +38,10 @@ fn pending_selection_keeps_only_latest_value() {
     let pending = Mutex::new(None);
     let first = ClientConfigSelection {
         selected_relay: Some("first".to_owned()),
-        room: Some("room-a".to_owned()),
         selected_steam_id64: None,
     };
     let latest = ClientConfigSelection {
         selected_relay: Some("latest".to_owned()),
-        room: Some("room-b".to_owned()),
         selected_steam_id64: Some("76561198000000001".to_owned()),
     };
 
@@ -58,24 +56,24 @@ fn command_submitted_before_another_operation_finishes_is_rejected() {
     let snapshot = Arc::new(SnapshotStore {
         value: Mutex::new(ApplicationSnapshot {
             bootstrap: BootstrapState::Ready,
-            admission_generation: 7,
+            command_generation: 7,
             ..ApplicationSnapshot::default()
         }),
         wake: Arc::new(|| {}),
     });
     let queued = QueuedCommand {
-        admission_generation: 7,
+        command_generation: 7,
         command: ApplicationCommand::ClearLogs,
     };
     assert!(command_is_current(&snapshot, &queued));
 
     update_snapshot(&snapshot, |snapshot| {
         snapshot.operation = Some(ApplicationOperation::Starting);
-        snapshot.admission_generation = snapshot.admission_generation.saturating_add(1);
+        snapshot.command_generation = snapshot.command_generation.saturating_add(1);
     });
     update_snapshot(&snapshot, |snapshot| {
         snapshot.operation = None;
-        snapshot.admission_generation = snapshot.admission_generation.saturating_add(1);
+        snapshot.command_generation = snapshot.command_generation.saturating_add(1);
     });
 
     assert!(!command_is_current(&snapshot, &queued));

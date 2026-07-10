@@ -49,7 +49,7 @@ pub(crate) enum ApplicationOperation {
     ReadingInputDelay,
     WritingInputDelay,
     OpeningLogs,
-    ExportingDiagnostics,
+    ExportingTroubleshootingPackage,
     ReadingClipboard,
     ShuttingDown,
 }
@@ -62,7 +62,7 @@ pub(crate) struct ApplicationSnapshot {
     pub(crate) runtime: RuntimeState,
     pub(crate) loaded_config: Option<LoadedClientConfig>,
     pub(crate) shutdown_complete: bool,
-    admission_generation: u64,
+    command_generation: u64,
 }
 
 impl ApplicationSnapshot {
@@ -92,7 +92,7 @@ pub(crate) enum ApplicationEvent {
     InputDelayReadFinished(Result<InputDelayReport, InputDelayError>),
     InputDelayWriteFinished(Result<InputDelayReport, InputDelayError>),
     LogDirectoryOpened(Result<PathBuf, String>),
-    DiagnosticsExported(Result<PathBuf, String>),
+    TroubleshootingPackageExported(Result<Option<PathBuf>, String>),
     ClipboardReadFinished(Result<String, String>),
     SelectionSaveFailed(String),
     CommandRejected,
@@ -110,7 +110,7 @@ enum ApplicationCommand {
     ReadInputDelay,
     WriteInputDelay(i32),
     OpenLogDirectory,
-    ExportDiagnostics,
+    ExportTroubleshootingPackage,
     ClearLogs,
     ReadClipboard,
 }
@@ -123,7 +123,7 @@ struct StartRequest {
 
 #[derive(Debug)]
 struct QueuedCommand {
-    admission_generation: u64,
+    command_generation: u64,
     command: ApplicationCommand,
 }
 
@@ -241,8 +241,8 @@ impl ApplicationHandle {
         self.submit(ApplicationCommand::OpenLogDirectory)
     }
 
-    pub(crate) fn export_diagnostics(&self) -> bool {
-        self.submit(ApplicationCommand::ExportDiagnostics)
+    pub(crate) fn export_troubleshooting_package(&self) -> bool {
+        self.submit(ApplicationCommand::ExportTroubleshootingPackage)
     }
 
     pub(crate) fn clear_logs(&self) -> bool {
@@ -259,7 +259,7 @@ impl ApplicationHandle {
 
     fn submit(&self, command: ApplicationCommand) -> bool {
         let queued = QueuedCommand {
-            admission_generation: lock(&self.snapshot.value).admission_generation,
+            command_generation: lock(&self.snapshot.value).command_generation,
             command,
         };
         match self.command_tx.try_send(queued) {
@@ -377,7 +377,7 @@ fn bootstrap(
     bootstrap_factory: &mut BootstrapFactory,
 ) -> Option<BridgeClient> {
     update_snapshot(snapshot, |snapshot| {
-        snapshot.admission_generation = snapshot.admission_generation.saturating_add(1);
+        snapshot.command_generation = snapshot.command_generation.saturating_add(1);
         snapshot.bootstrap = BootstrapState::Initializing;
         snapshot.bootstrap_error = None;
         snapshot.operation = None;
@@ -386,7 +386,7 @@ fn bootstrap(
     match bootstrap_factory() {
         Ok((client, loaded_config)) => {
             update_snapshot(snapshot, |snapshot| {
-                snapshot.admission_generation = snapshot.admission_generation.saturating_add(1);
+                snapshot.command_generation = snapshot.command_generation.saturating_add(1);
                 snapshot.bootstrap = BootstrapState::Ready;
                 snapshot.loaded_config = Some(loaded_config);
                 snapshot.runtime = client.state().clone();
@@ -396,7 +396,7 @@ fn bootstrap(
         Err(error) => {
             tracing::error!(error = %error, "Application bootstrap failed");
             update_snapshot(snapshot, |snapshot| {
-                snapshot.admission_generation = snapshot.admission_generation.saturating_add(1);
+                snapshot.command_generation = snapshot.command_generation.saturating_add(1);
                 snapshot.bootstrap = BootstrapState::Failed;
                 snapshot.bootstrap_error = Some(error.to_string());
                 snapshot.loaded_config = None;
@@ -521,20 +521,25 @@ fn handle_command(
                 ApplicationEvent::LogDirectoryOpened(result),
             );
         }
-        ApplicationCommand::ExportDiagnostics => {
+        ApplicationCommand::ExportTroubleshootingPackage => {
             set_operation(
                 snapshot,
                 client,
-                Some(ApplicationOperation::ExportingDiagnostics),
+                Some(ApplicationOperation::ExportingTroubleshootingPackage),
             );
-            let result = client
-                .export_diagnostics()
-                .map_err(|error| error.to_string());
+            let result = choose_troubleshooting_package_path()
+                .map(|path| {
+                    client
+                        .export_troubleshooting_package(&path)
+                        .map(Some)
+                        .map_err(|error| error.to_string())
+                })
+                .unwrap_or(Ok(None));
             set_operation(snapshot, client, None);
             send_application_event(
                 event_tx,
                 snapshot,
-                ApplicationEvent::DiagnosticsExported(result),
+                ApplicationEvent::TroubleshootingPackageExported(result),
             );
         }
         ApplicationCommand::ClearLogs => {
@@ -558,6 +563,24 @@ fn handle_command(
     }
 }
 
+#[cfg(windows)]
+fn choose_troubleshooting_package_path() -> Option<PathBuf> {
+    let filename = format!(
+        "tractor-beam-troubleshooting-{}.zip",
+        chrono::Local::now().format("%Y%m%d-%H%M%S")
+    );
+    rfd::FileDialog::new()
+        .set_title("Save Tractor Beam Troubleshooting Package")
+        .set_file_name(filename)
+        .add_filter("ZIP archive", &["zip"])
+        .save_file()
+}
+
+#[cfg(not(windows))]
+fn choose_troubleshooting_package_path() -> Option<PathBuf> {
+    None
+}
+
 fn read_clipboard_text() -> Result<String, String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|error| error.to_string())?;
     clipboard.get_text().map_err(|error| error.to_string())
@@ -579,7 +602,7 @@ fn set_operation(
 ) {
     update_snapshot(snapshot, |snapshot| {
         if snapshot.operation != operation {
-            snapshot.admission_generation = snapshot.admission_generation.saturating_add(1);
+            snapshot.command_generation = snapshot.command_generation.saturating_add(1);
         }
         snapshot.operation = operation;
         snapshot.runtime = client.state().clone();
@@ -591,7 +614,7 @@ fn command_is_current(snapshot: &Arc<SnapshotStore>, command: &QueuedCommand) ->
     snapshot.bootstrap == BootstrapState::Ready
         && snapshot.operation.is_none()
         && !snapshot.shutdown_complete
-        && snapshot.admission_generation == command.admission_generation
+        && snapshot.command_generation == command.command_generation
 }
 
 fn failed_bootstrap_command_is_current(
@@ -602,7 +625,7 @@ fn failed_bootstrap_command_is_current(
     snapshot.bootstrap == BootstrapState::Failed
         && snapshot.operation.is_none()
         && !snapshot.shutdown_complete
-        && snapshot.admission_generation == command.admission_generation
+        && snapshot.command_generation == command.command_generation
 }
 
 fn publish_client(snapshot: &Arc<SnapshotStore>, client: &BridgeClient) {

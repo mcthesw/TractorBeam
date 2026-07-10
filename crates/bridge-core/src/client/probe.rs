@@ -21,7 +21,7 @@ use crate::protocol::{
 use super::{
     BridgeClient, LogLevel, RelayEndpoint, SessionConfig, SessionMode, TransportChoice,
     relay_transport::{RelayTransport, complete_relay_join},
-    state::{HookIpcState, RuntimeEvent, log_event, unix_seconds},
+    state::{HookIpcState, RuntimeEvent, log_event},
 };
 
 pub(super) use light_ping::spawn_light_ping_probes;
@@ -198,14 +198,12 @@ async fn run_relay_probe_async(
     transport: TransportChoice,
     payload_bytes: usize,
 ) -> io::Result<RelayProbeReport> {
-    let room = format!("bb-probe-{}-{}", std::process::id(), unix_seconds());
-    let admission = crate::JoinCode::generate_admission();
+    let session_credential = crate::SessionCredential::generate();
     let relay_display = relay.to_string();
     let mut peer_a = ProbePeer::join(
         &relay,
         transport,
-        &room,
-        &admission,
+        session_credential,
         PROBE_A_STEAM,
         "Probe A",
     )
@@ -213,8 +211,7 @@ async fn run_relay_probe_async(
     let mut peer_b = ProbePeer::join(
         &relay,
         transport,
-        &room,
-        &admission,
+        session_credential,
         PROBE_B_STEAM,
         "Probe B",
     )
@@ -234,7 +231,7 @@ async fn run_relay_probe_async(
     Ok(RelayProbeReport {
         relay: relay_display,
         transport,
-        room,
+        room: "ephemeral probe room".to_owned(),
         a_to_b_bytes: payload.len(),
         b_to_a_bytes: payload.len(),
         payload_bytes: payload.len(),
@@ -258,8 +255,7 @@ impl ProbePeer {
     pub(super) async fn join(
         relay: &RelayEndpoint,
         transport: TransportChoice,
-        room: &str,
-        admission: &str,
+        session_credential: super::SessionCredential,
         steam_id64: &'static str,
         display_name: &str,
     ) -> io::Result<Self> {
@@ -267,8 +263,7 @@ impl ProbePeer {
             relay: relay.clone(),
             relay_name: None,
             transport,
-            room: room.to_owned(),
-            admission: admission.to_owned(),
+            session_credential,
             mode: SessionMode::Pure,
             steam_id64: steam_id64.to_owned(),
             display_name: display_name.to_owned(),

@@ -86,6 +86,21 @@ status.idle:
 status.running:
   zh_CN: "运行中"
   en_US: "Running"
+status.reconnecting:
+  zh_CN: "正在重连"
+  en_US: "Reconnecting"
+status.attempt:
+  zh_CN: "尝试"
+  en_US: "attempt"
+status.resumed:
+  zh_CN: "已恢复连接"
+  en_US: "Connection resumed"
+status.rejoined:
+  zh_CN: "已重新加入"
+  en_US: "Rejoined"
+status.recovery_exhausted:
+  zh_CN: "重连失败"
+  en_US: "Recovery exhausted"
 status.initializing:
   zh_CN: "正在初始化"
   en_US: "Initializing"
@@ -117,14 +132,17 @@ logs.open_failed:
   zh_CN: "无法打开日志文件夹"
   en_US: "Could not open the log folder"
 diagnostics.export:
-  zh_CN: "导出诊断"
-  en_US: "Export diagnostics"
+  zh_CN: "导出排障包"
+  en_US: "Troubleshooting Package"
 diagnostics.exported:
-  zh_CN: "诊断已导出"
-  en_US: "Diagnostics exported"
+  zh_CN: "排障包已保存"
+  en_US: "Troubleshooting Package saved"
 diagnostics.export_failed:
-  zh_CN: "无法导出诊断"
-  en_US: "Could not export diagnostics"
+  zh_CN: "无法保存排障包，可打开日志文件夹手动获取日志"
+  en_US: "Could not save the package; open the log folder to collect logs manually"
+diagnostics.reveal:
+  zh_CN: "在文件夹中显示"
+  en_US: "Reveal"
 retry:
   zh_CN: "重试"
   en_US: "Retry"
@@ -143,6 +161,9 @@ counters.sent_bytes:
 counters.received_bytes:
   zh_CN: "接收字节"
   en_US: "Received bytes"
+counters.reconnect_dropped:
+  zh_CN: "重连期间丢弃"
+  en_US: "Dropped while reconnecting"
 errors:
   zh_CN: "错误"
   en_US: "Errors"
@@ -272,6 +293,36 @@ input_delay.failed:
 input_delay.negative_hint:
   zh_CN: "（非负数才有意义）"
   en_US: " (only non-negative values are meaningful)"
+help.connection_profile:
+  zh_CN: "UDP 通常延迟更低，但部分网络可能无法使用或被丢包，建议运行测试后选用"
+  en_US: "UDP usually offers lower latency, but may be unavailable or suffer packet loss on some networks; run the connection test before choosing it"
+help.relay_server:
+  zh_CN: "中继模式进行转发的服务器，建议选择延迟最低的"
+  en_US: "The server that forwards traffic in Relay modes; choose the one with the lowest latency"
+help.steam_account:
+  zh_CN: "使用本次运行需要的账号，未检测到时可手动填写 SteamID64 和显示名称"
+  en_US: "The account used for this run; enter its SteamID64 and display name manually when it is not detected"
+help.join_code:
+  zh_CN: "联机码包含 Relay 位置和房间凭据。房主复制后发给其他玩家；加入者导入收到的联机码；新房间会立即生成新的凭据并使当前联机码失效"
+  en_US: "The Join Code contains the Relay location and Room credential. Hosts copy and share it; joining players import it; New Room immediately creates a new credential and invalidates the current code"
+help.mode:
+  zh_CN: "Official 只使用游戏原有的联机方式；Fallback 优先使用 Tractor Beam，并允许官方联机作为后备；Pure 只使用 Tractor Beam"
+  en_US: "Official uses only the game's original networking; Fallback prefers Tractor Beam and keeps official networking as a backup; Pure uses only Tractor Beam"
+help.input_delay:
+  zh_CN: "网络状态不好的情况下调低会导致体验严重下降，谨慎调整"
+  en_US: "Lowering this on a poor network can severely degrade the experience; adjust with care"
+help.session_quality:
+  zh_CN: "根据最近的延迟、丢包和收包节奏概括当前联机状态"
+  en_US: "Summarizes the current session from recent latency, drops, and packet timing"
+help.counters:
+  zh_CN: "从本次启动以来累计的数据量和错误，仅用于判断数据是否正常流动"
+  en_US: "Totals since this app start, useful for checking whether data is flowing normally"
+help.probe.relay_readiness:
+  zh_CN: "测试当前选择relay的连通性、延迟和抖动，需要约30秒"
+  en_US: "Tests the selected Relay's reachability, latency, and jitter; takes about 30 seconds"
+help.probe.hook_receive:
+  zh_CN: "显示程序与游戏 Hook 的本机通信状态，不涉及外部网络"
+  en_US: "Shows local communication between the app and game Hook without involving the external network"
 yes:
   zh_CN: "是"
   en_US: "Yes"
@@ -341,12 +392,33 @@ join_code.imported:
 join_code.invalid:
   zh_CN: "联机码无效"
   en_US: "Invalid join code"
+join_code.required:
+  zh_CN: "请粘贴联机码"
+  en_US: "Paste a Join Code"
+join_code.dialog_title:
+  zh_CN: "导入联机码"
+  en_US: "Import Join Code"
+join_code.paste_hint:
+  zh_CN: "在下方粘贴联机码，然后确认导入。"
+  en_US: "Paste the Join Code below, then confirm the import."
+join_code.confirm:
+  zh_CN: "导入"
+  en_US: "Import"
+join_code.cancel:
+  zh_CN: "取消"
+  en_US: "Cancel"
 clipboard.empty:
   zh_CN: "剪切板为空"
   en_US: "Clipboard empty"
 room.generate:
-  zh_CN: "生成新房间"
-  en_US: "New room"
+  zh_CN: "新房间"
+  en_US: "New Room"
+room.generated:
+  zh_CN: "已创建新房间，请重新分享联机码。"
+  en_US: "New room created. Share the new Join Code."
+room.reconnecting:
+  zh_CN: "重连中"
+  en_US: "Reconnecting"
 hook.progress:
   zh_CN: "注入进度"
   en_US: "Injection progress"

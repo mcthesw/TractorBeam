@@ -10,7 +10,6 @@ pub struct ClientSessionLogContext {
     pub relay_name: Option<String>,
     pub relay: RelayEndpoint,
     pub transport: TransportChoice,
-    pub room: String,
     pub mode: SessionMode,
 }
 
@@ -92,23 +91,22 @@ pub fn emit_client_log_event(
     let relay_name = context.and_then(|context| context.relay_name.as_deref());
     let relay = context.map(|context| context.relay.to_string());
     let transport = context.map(|context| context.transport.to_string());
-    let room = context.map(|context| context.room.as_str());
     let mode = context.map(|context| context.mode.to_string());
     match level {
         LogLevel::Trace => tracing::trace!(
-            session_id, relay_name, relay, transport, room, mode, "{}", message
+            session_id, relay_name, relay, transport, mode, "{}", message
         ),
         LogLevel::Debug => tracing::debug!(
-            session_id, relay_name, relay, transport, room, mode, "{}", message
+            session_id, relay_name, relay, transport, mode, "{}", message
         ),
         LogLevel::Info => tracing::info!(
-            session_id, relay_name, relay, transport, room, mode, "{}", message
+            session_id, relay_name, relay, transport, mode, "{}", message
         ),
         LogLevel::Warn => tracing::warn!(
-            session_id, relay_name, relay, transport, room, mode, "{}", message
+            session_id, relay_name, relay, transport, mode, "{}", message
         ),
         LogLevel::Error => tracing::error!(
-            session_id, relay_name, relay, transport, room, mode, "{}", message
+            session_id, relay_name, relay, transport, mode, "{}", message
         ),
     }
 }

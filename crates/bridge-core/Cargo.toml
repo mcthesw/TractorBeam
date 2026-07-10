@@ -28,6 +28,7 @@ tokio-util = { version = "0.7.17", features = ["codec"] }
 toml = "1.1.2"
 toml_edit = "0.22.24"
 tracing = "0.1.44"
+zip = { version = "=8.2.0", default-features = false, features = ["deflate"] }
 
 [target."cfg(windows)".dependencies]
 winreg = "0.56.0"

@@ -53,7 +53,7 @@ pub fn redact_text(input: &str) -> String {
 fn sensitive_patterns() -> Vec<Regex> {
     [
         r"(?i)\b\d{17}\b",
-        r"(?i)(room|token|password|secret)\s*[:=]\s*[^\s]+",
+        r"(?i)(room|token|password|secret|session_credential|resume_credential|path_token|connection_id)\s*[:=]\s*[^\s]+",
         r"(?i)(ipc_session|ipc_endpoint)\s*[:=]\s*[^\s]+",
         r"(?i)\broom\s+[^\s]+",
         r"(?i)\b(?:\d{1,3}\.){3}\d{1,3}:\d{2,5}\b",

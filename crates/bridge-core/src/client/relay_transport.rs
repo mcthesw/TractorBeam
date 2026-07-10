@@ -129,8 +129,13 @@ async fn complete_relay_join_inner(
                 let pow_proof = pow
                     .as_ref()
                     .map(|challenge| {
-                        PowProof::solve(challenge, &token, &config.room, &config.steam_id64)
-                            .ok_or_else(|| io::Error::other("unsupported proof-of-work challenge"))
+                        PowProof::solve(
+                            challenge,
+                            &token,
+                            &config.session_credential.legacy_wire_value(),
+                            &config.steam_id64,
+                        )
+                        .ok_or_else(|| io::Error::other("unsupported proof-of-work challenge"))
                     })
                     .transpose()?;
                 send_join(sender, config, Some(token), pow_proof).await?
@@ -153,14 +158,18 @@ async fn send_join(
     pow_proof: Option<PowProof>,
 ) -> io::Result<()> {
     let build = crate::build_info::current();
+    // Temporary migration bridge: the active runtime remains v1 until the v2
+    // Client/Relay transport phases land. Both old v1 fields receive the same
+    // credential-derived value; no user-visible room label is reintroduced.
+    let credential = config.session_credential.legacy_wire_value();
     let message = ControlMessage::Join {
-        room: config.room.clone(),
+        room: credential.clone(),
         steam_id64: config.steam_id64.clone(),
         display_name: Some(config.display_name.clone()),
         client: Some(ClientMetadata::for_build(build.version, build.git_hash)),
         challenge,
         pow_proof,
-        admission: Some(config.admission.clone()),
+        admission: Some(credential),
     };
     send_control(sender, MessageType::Join, &message).await
 }

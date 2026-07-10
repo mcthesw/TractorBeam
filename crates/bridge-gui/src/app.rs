@@ -9,8 +9,8 @@ use eframe::egui::{self, ScrollArea};
 use rust_i18n::t;
 use tractor_beam_core::{
     ClientConfigSelection, ConnectionProfile, InputDelayError, JoinCode, LightPingTarget,
-    LocalDate, RelayEndpoint, RelayPreset, RuntimeState, SessionConfig, SessionHealthConfig,
-    SessionMode, SteamIdentity, TransportChoice, resolve_room_template,
+    RelayEndpoint, RelayPreset, RuntimeState, SessionConfig, SessionCredential,
+    SessionHealthConfig, SessionMode, SteamIdentity, TransportChoice,
 };
 
 use crate::{
@@ -54,33 +54,6 @@ impl ShutdownGate {
     }
 }
 
-fn generate_room_id() -> String {
-    let date = resolve_room_template("{date:%Y%m%d}", LocalDate::today())
-        .unwrap_or_else(|_| "20260101".to_owned());
-    format!("{date}-{}", random_room_suffix())
-}
-
-fn random_room_suffix() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    let mut seed = seq.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ nanos;
-    const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
-    let mut out = String::with_capacity(4);
-    for _ in 0..4 {
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        out.push(CHARSET[(seed % CHARSET.len() as u64) as usize] as char);
-    }
-    out
-}
-
 fn initial_selected_account(
     accounts: &[SteamIdentity],
     selected_steam_id64: Option<&str>,
@@ -112,8 +85,7 @@ pub struct BridgeApp {
     relay_host: String,
     relay_port: u16,
     transport: TransportChoice,
-    room: String,
-    admission: String,
+    session_credential: SessionCredential,
     mode: SessionMode,
     selected_account: Option<usize>,
     manual_steam_id: String,
@@ -122,8 +94,10 @@ pub struct BridgeApp {
     input_delay_value: String,
     input_delay_message: Option<String>,
     start_error_dialog_open: bool,
+    join_code_dialog_open: bool,
     join_code_input: String,
     join_code_message: Option<String>,
+    last_troubleshooting_package: Option<std::path::PathBuf>,
     session_health: SessionHealthConfig,
 }
 
@@ -148,8 +122,7 @@ impl BridgeApp {
             relay_host: String::new(),
             relay_port: 25_910,
             transport: TransportChoice::Tcp,
-            room: generate_room_id(),
-            admission: JoinCode::generate_admission(),
+            session_credential: SessionCredential::generate(),
             mode: SessionMode::Pure,
             selected_account: None,
             manual_steam_id: String::new(),
@@ -158,8 +131,10 @@ impl BridgeApp {
             input_delay_value: String::new(),
             input_delay_message: None,
             start_error_dialog_open: false,
+            join_code_dialog_open: false,
             join_code_input: String::new(),
             join_code_message: None,
+            last_troubleshooting_package: None,
             session_health: SessionHealthConfig::default(),
         }
     }
@@ -174,11 +149,6 @@ impl BridgeApp {
         self.relay_presets = loaded_config.config.relays.clone();
         self.selected_relay = loaded_config.config.selected_relay_index();
         self.transport = loaded_config.config.default_transport;
-        self.room = loaded_config
-            .config
-            .room
-            .clone()
-            .unwrap_or_else(generate_room_id);
         self.mode = loaded_config.config.default_mode;
         self.session_health = loaded_config.config.session_health;
         self.selected_account = initial_selected_account(
@@ -222,8 +192,7 @@ impl BridgeApp {
             relay: RelayEndpoint::new(self.relay_host.trim(), self.relay_port),
             relay_name: self.selected_relay_preset().map(|relay| relay.name.clone()),
             transport: self.transport,
-            room: self.room.trim().to_owned(),
-            admission: self.admission.clone(),
+            session_credential: self.session_credential,
             mode: self.mode,
             steam_id64,
             display_name,
@@ -257,7 +226,6 @@ impl BridgeApp {
     fn config_selection(&self) -> ClientConfigSelection {
         ClientConfigSelection {
             selected_relay: self.selected_relay_preset().map(|relay| relay.id.clone()),
-            room: Some(self.room.clone()),
             selected_steam_id64: {
                 let (id, _) = self.current_identity();
                 if id.is_empty() { None } else { Some(id) }
@@ -277,8 +245,8 @@ impl BridgeApp {
         }
     }
 
-    fn export_diagnostics(&mut self) {
-        if !self.application.export_diagnostics() {
+    fn export_troubleshooting_package(&mut self) {
+        if !self.application.export_troubleshooting_package() {
             self.show_busy_status();
         }
     }
@@ -433,24 +401,33 @@ impl BridgeApp {
                     self.status_message = Some(StatusMessage::LogOpenFailed);
                 }
             },
-            ApplicationEvent::DiagnosticsExported(result) => match result {
-                Ok(path) => {
-                    tracing::info!(path = %path.display(), "Diagnostics export completed");
+            ApplicationEvent::TroubleshootingPackageExported(result) => match result {
+                Ok(Some(path)) => {
+                    tracing::info!(path = %path.display(), "Troubleshooting Package export completed");
+                    self.last_troubleshooting_package = Some(path);
                     self.status_message = Some(StatusMessage::DiagnosticsExported);
                 }
+                Ok(None) => {}
                 Err(error) => {
-                    tracing::warn!(error = %error, "Could not export diagnostics");
+                    tracing::warn!(error = %error, "Could not export Troubleshooting Package");
                     self.status_message = Some(StatusMessage::DiagnosticsExportFailed);
                 }
             },
             ApplicationEvent::ClipboardReadFinished(result) => match result {
                 Ok(text) if !text.trim().is_empty() => {
                     self.join_code_input = text;
-                    self.import_join_code();
+                    let _ = self.import_join_code();
                 }
-                Ok(_) => self.join_code_message = Some(t!("clipboard.empty").into_owned()),
+                Ok(_) => {
+                    self.join_code_input.clear();
+                    self.join_code_message = None;
+                    self.join_code_dialog_open = true;
+                }
                 Err(error) => {
-                    self.join_code_message = Some(format!("{}: {error}", t!("clipboard.empty")));
+                    tracing::debug!(error = %error, "Clipboard text unavailable; opening manual Join Code input");
+                    self.join_code_input.clear();
+                    self.join_code_message = None;
+                    self.join_code_dialog_open = true;
                 }
             },
             ApplicationEvent::SelectionSaveFailed(error) => {
@@ -535,21 +512,21 @@ impl BridgeApp {
             .is_none_or(|relay| relay.supports(transport))
     }
 
-    fn copy_join_code(&self) -> String {
+    fn copy_join_code(&self) -> Result<String, tractor_beam_core::JoinCodeError> {
         let relay_id = self.selected_relay_preset().map(|relay| relay.id.clone());
         JoinCode {
             relay_id,
             relay_host: self.relay_host.trim().to_owned(),
             relay_port: self.relay_port,
-            room: self.room.trim().to_owned(),
-            admission: self.admission.clone(),
+            session_credential: self.session_credential,
         }
         .encode()
     }
 
-    fn import_join_code(&mut self) {
+    fn import_join_code(&mut self) -> bool {
         let input = if self.join_code_input.trim().is_empty() {
-            return;
+            self.join_code_message = Some(t!("join_code.required").into_owned());
+            return false;
         } else {
             self.join_code_input.trim().to_owned()
         };
@@ -573,16 +550,72 @@ impl BridgeApp {
                     self.relay_host = code.relay_host.clone();
                     self.relay_port = code.relay_port;
                 }
-                self.room = code.room.clone();
-                self.admission = code.admission.clone();
+                self.session_credential = code.session_credential;
                 self.join_code_message = Some(t!("join_code.imported").into_owned());
                 self.status_message = None;
                 self.persist_selection();
+                true
             }
             Err(error) => {
                 self.join_code_message = Some(format!("{}: {error}", t!("join_code.invalid")));
+                false
             }
         }
+    }
+
+    fn reveal_troubleshooting_package(&mut self) {
+        let Some(path) = self.last_troubleshooting_package.as_ref() else {
+            return;
+        };
+        let target = path.parent().unwrap_or(path);
+        if let Err(error) = open::that_detached(target) {
+            tracing::warn!(error = %error, path = %path.display(), "Could not reveal Troubleshooting Package");
+            self.status_message = Some(StatusMessage::LogOpenFailed);
+        }
+    }
+
+    fn join_code_dialog(&mut self, context: &egui::Context) {
+        if !self.join_code_dialog_open {
+            return;
+        }
+        let mut open = true;
+        let mut cancel = false;
+        let mut confirm = false;
+        egui::Window::new(t!("join_code.dialog_title"))
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .collapsible(false)
+            .default_width(520.0)
+            .open(&mut open)
+            .resizable(false)
+            .show(context, |ui| {
+                ui.label(t!("join_code.paste_hint"));
+                let response = ui.add(
+                    egui::TextEdit::multiline(&mut self.join_code_input)
+                        .desired_rows(4)
+                        .desired_width(f32::INFINITY),
+                );
+                response.request_focus();
+                if let Some(message) = &self.join_code_message {
+                    ui.colored_label(ui.visuals().error_fg_color, message);
+                }
+                ui.horizontal(|ui| {
+                    if ui.button(t!("join_code.confirm")).clicked() {
+                        confirm = true;
+                    }
+                    if ui.button(t!("join_code.cancel")).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if confirm && self.import_join_code() {
+            open = false;
+        }
+        if cancel {
+            open = false;
+            self.join_code_input.clear();
+            self.join_code_message = None;
+        }
+        self.join_code_dialog_open = open;
     }
 }
 
@@ -626,6 +659,7 @@ impl eframe::App for BridgeApp {
         });
 
         self.start_error_dialog(ui.ctx());
+        self.join_code_dialog(ui.ctx());
     }
 }
 

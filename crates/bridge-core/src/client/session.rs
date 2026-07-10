@@ -19,7 +19,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::protocol::{ControlMessage, MessageType};
+use crate::protocol::v2::ClientControl;
 
 use super::{
     LogLevel, SessionConfig, SessionMode,
@@ -30,11 +30,11 @@ use super::{
         hook_counter, relay_counter, send_error,
     },
     process_lifecycle,
-    relay_transport::{RelayTransport, complete_relay_join, send_control},
+    relay_transport::{RelayTransport, send_control},
     session_health::{SessionHealth, SessionHealthSnapshot},
     state::{
-        HookStartupPhase, HookStartupState, RuntimeEvent, RuntimeEventSender, SessionStopReason,
-        error_counter, log_event, send_critical_event, send_event, unix_seconds,
+        HookStartupPhase, HookStartupState, RelayLinkState, RuntimeEvent, RuntimeEventSender,
+        SessionStopReason, error_counter, log_event, send_critical_event, send_event, unix_seconds,
     },
 };
 
@@ -424,10 +424,13 @@ async fn start_runtime_tasks_inner(
         event_tx.clone(),
         cancellation.clone(),
     ));
-    let mut relay = RelayTransport::connect(&config.relay, config.transport).await?;
-    let peers = complete_relay_join(&mut relay.sender, &mut relay.receiver, config).await?;
+    let (relay, peers) = RelayTransport::connect_session(config).await?;
     let peer_count = peers.len();
     send_event(event_tx, RuntimeEvent::RoomPeersUpdated(peers));
+    send_event(
+        event_tx,
+        RuntimeEvent::RelayLinkChanged(RelayLinkState::Connected),
+    );
     send_event(
         event_tx,
         log_event(
@@ -447,7 +450,6 @@ async fn start_runtime_tasks_inner(
     });
     tasks.spawn(hook_in_task(
         hook_packets_rx,
-        config.steam_id64.clone(),
         outbound_tx,
         event_tx.clone(),
         cancellation.clone(),

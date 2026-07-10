@@ -213,6 +213,9 @@ impl BridgeClient {
                 state::RuntimeEvent::RoomPeersUpdated(peers) => {
                     self.state.room_peers = peers;
                 }
+                state::RuntimeEvent::RelayLinkChanged(link) => {
+                    self.state.relay_link = link;
+                }
             }
         }
         if should_clear {
@@ -253,6 +256,7 @@ impl BridgeClient {
         self.state.hook_ipc = state::HookIpcState::default();
         self.state.client_incidents.clear();
         self.state.room_peers.clear();
+        self.state.relay_link = state::RelayLinkState::Inactive;
         self.active_session_log = self
             .log_sink
             .start_session(ClientSessionLogContext {
@@ -495,7 +499,8 @@ impl BridgeClient {
                 | state::RuntimeEvent::ReadinessProbeFinished(_)
                 | state::RuntimeEvent::HookReceiveProbeFinished(_)
                 | state::RuntimeEvent::LightPingFinished(_)
-                | state::RuntimeEvent::RoomPeersUpdated(_) => {}
+                | state::RuntimeEvent::RoomPeersUpdated(_)
+                | state::RuntimeEvent::RelayLinkChanged(_) => {}
             }
         }
     }

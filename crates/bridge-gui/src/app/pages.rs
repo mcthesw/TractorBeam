@@ -9,7 +9,7 @@ use rust_i18n::t;
 use tractor_beam_core::{
     ConnectionProfile, HookIpcConnectionState, HookReceiveProbeReport, HookStartupPhase,
     ReadinessProbeCaseReport, ReadinessProbeReport, RuntimeState, SessionCredential, SessionMode,
-    SessionQuality, SessionStatus, TransportChoice, protocol::PeerTransport,
+    SessionQuality, SessionStatus, TransportChoice, protocol::v2::PeerPresence,
 };
 
 use super::{
@@ -265,14 +265,16 @@ impl BridgeApp {
             return;
         }
         let (my_id, _) = self.current_identity();
+        let my_id = my_id.parse::<u64>().ok();
         egui::Grid::new("room_members")
             .num_columns(3)
             .striped(true)
             .spacing([16.0, 4.0])
             .show(ui, |ui| {
                 for peer in peers {
-                    let is_self = peer.steam_id64 == my_id;
-                    let name = peer.display_name.as_deref().unwrap_or(&peer.steam_id64);
+                    let is_self = Some(peer.steam_id64) == my_id;
+                    let fallback_name = peer.steam_id64.to_string();
+                    let name = peer.display_name.as_deref().unwrap_or(&fallback_name);
                     let display = if is_self {
                         format!("▶ {name}")
                     } else {
@@ -284,7 +286,14 @@ impl BridgeApp {
                         ui.visuals().text_color()
                     };
                     ui.colored_label(color, display);
-                    ui.label(peer_transport_label(peer.transport));
+                    if peer.presence == PeerPresence::Reconnecting {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(185, 124, 0),
+                            t!("room.reconnecting"),
+                        );
+                    } else {
+                        ui.label(t!("status.running"));
+                    }
                     ui.end_row();
                 }
             });
@@ -489,13 +498,6 @@ fn input_delay_controls_enabled(state: &RuntimeState) -> bool {
             Some(SessionMode::Fallback | SessionMode::Pure)
         )
         && state.hook_ipc.connection == HookIpcConnectionState::Connected
-}
-
-fn peer_transport_label(transport: PeerTransport) -> Cow<'static, str> {
-    match transport {
-        PeerTransport::Udp => t!("transport.udp"),
-        PeerTransport::Tcp => t!("transport.tcp"),
-    }
 }
 
 fn readiness_probe_table(ui: &mut egui::Ui, report: &ReadinessProbeReport) {

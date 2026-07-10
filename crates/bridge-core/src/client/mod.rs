@@ -17,6 +17,8 @@ mod session;
 mod session_config;
 mod session_health;
 mod state;
+#[cfg(test)]
+mod test_relay;
 
 pub use config::{
     CLIENT_CONFIG_FILE, ClientConfig, ClientConfigSelection, LoadedClientConfig, RelayPreset,
@@ -41,8 +43,8 @@ pub use session_config::{
 pub use session_health::{SessionHealthSnapshot, SessionHealthSummary, SessionQuality};
 pub use state::{
     ClientIncidentKind, ClientIncidentSnapshot, Counters, HookIpcConnectionState, HookIpcState,
-    HookStartupPhase, HookStartupState, LogEntry, LogLevel, RuntimeState, SessionStatus,
-    SessionStopReason,
+    HookStartupPhase, HookStartupState, LogEntry, LogLevel, RelayLinkState, RuntimeState,
+    SessionStatus, SessionStopReason,
 };
 
 pub const PRODUCT_NAME: &str = "Tractor Beam";

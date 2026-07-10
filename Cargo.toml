@@ -6,6 +6,7 @@ members = [
     "crates/isaac-injector",
     "crates/native-hook",
     "crates/hook-ipc",
+    "crates/relay-protocol",
 ]
 resolver = "3"
 

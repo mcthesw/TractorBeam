@@ -3,6 +3,7 @@
 rust_i18n::i18n!("locales", fallback = "en_US");
 
 mod app;
+mod application;
 mod i18n;
 mod logging;
 
@@ -12,8 +13,6 @@ const DEFAULT_WINDOW_SIZE: [f32; 2] = [480.0, 720.0];
 const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 480.0];
 
 fn main() -> eframe::Result<()> {
-    let log_sink: Box<dyn tractor_beam_core::ClientLogSink> =
-        Box::new(logging::ClientLogFiles::new());
     let app_title = format!(
         "{} {}",
         tractor_beam_core::PRODUCT_NAME,
@@ -30,8 +29,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         &app_title,
         options,
-        Box::new(move |creation_context| {
-            Ok(Box::new(app::BridgeApp::new(creation_context, log_sink)))
-        }),
+        Box::new(|creation_context| Ok(Box::new(app::BridgeApp::new(creation_context)))),
     )
 }

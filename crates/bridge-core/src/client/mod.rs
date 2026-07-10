@@ -3,12 +3,14 @@
 mod config;
 mod diagnostics;
 mod hook_config;
+mod hook_ipc;
 mod hook_lifecycle;
 mod input_delay;
 mod join_code;
 mod logging;
 mod packet_flow;
 mod probe;
+mod process_lifecycle;
 mod relay_transport;
 mod runtime;
 mod session;
@@ -40,8 +42,9 @@ pub use session_config::{
 };
 pub use session_health::{SessionHealthSnapshot, SessionHealthSummary, SessionQuality};
 pub use state::{
-    ClientIncidentKind, ClientIncidentSnapshot, Counters, HookStartupPhase, HookStartupState,
-    LogEntry, LogLevel, RuntimeState, SessionStatus, SessionStopReason,
+    ClientIncidentKind, ClientIncidentSnapshot, Counters, HookIpcConnectionState, HookIpcState,
+    HookStartupPhase, HookStartupState, LogEntry, LogLevel, RuntimeState, SessionStatus,
+    SessionStopReason,
 };
 
 pub const PRODUCT_NAME: &str = "Tractor Beam";

@@ -18,31 +18,6 @@ use super::*;
 static SESSION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
-fn session_reports_malformed_hook_packet_and_stops() {
-    let _guard = SESSION_TEST_LOCK.lock().unwrap();
-    let relay = TestRelay::spawn();
-    let handle = spawn_bridge_worker(
-        test_session_config(relay.address.port()),
-        test_native_hook_paths(),
-    )
-    .unwrap();
-
-    let sender = StdUdpSocket::bind("127.0.0.1:0").unwrap();
-    sender.send_to(b"not-a-local-packet", HOOK_IN).unwrap();
-
-    let event = recv_matching(&handle.events, |event| {
-        matches!(
-            event,
-            RuntimeEvent::Log(level, message) if *level == LogLevel::Warn && message.contains("Bad hook packet")
-        )
-    });
-    assert!(event.is_some());
-
-    handle.stop();
-    relay.stop();
-}
-
-#[test]
 fn session_start_reports_relay_join_timeout() {
     let _guard = SESSION_TEST_LOCK.lock().unwrap();
     let relay = SilentRelay::spawn();
@@ -115,6 +90,24 @@ fn runtime_rtt_timeout_is_nonfatal() {
     assert!(event.is_some());
     handle.stop();
     relay.stop();
+}
+
+#[tokio::test]
+async fn official_mode_owns_a_cancellable_process_lifecycle_task() {
+    let mut config = test_session_config(1);
+    config.mode = super::super::SessionMode::Official;
+    let cancellation = CancellationToken::new();
+    let (event_tx, _event_rx) = tokio_mpsc::channel(EVENT_QUEUE_CAPACITY);
+
+    let tasks = start_runtime_tasks_inner(&config, None, None, &cancellation, &event_tx)
+        .await
+        .expect("Official lifecycle should start without Hook or Relay sockets");
+
+    assert!(tasks.essential.is_empty());
+    assert_eq!(tasks.support.len(), 1);
+    assert!(tasks.health.is_none());
+    cancellation.cancel();
+    shutdown_tasks(tasks.support, &event_tx).await;
 }
 
 fn test_session_config(port: u16) -> SessionConfig {

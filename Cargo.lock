@@ -712,6 +712,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cobs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fa961b519f0b462e3a3b4a34b64d119eeaca1d59af726fe450bbba07a9fc0a1"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "color"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -955,6 +964,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "doctest-file"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2db04e74f0a9a93103b50e90b96024c9b2bdca8bce6a632ec71b88736d3d359"
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1094,6 +1109,18 @@ checksum = "cd4ec073c9898516584d8c6cfdcee95b530b3d941cd5031ef4050aa36812308b"
 dependencies = [
  "bytemuck",
 ]
+
+[[package]]
+name = "embedded-io"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef1a6892d9eef45c8fa6b9e0086428a2cca8491aca8f787c534a3d6d0bcb3ced"
+
+[[package]]
+name = "embedded-io"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
 name = "endi"
@@ -1796,6 +1823,19 @@ dependencies = [
  "hashbrown 0.17.1",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "interprocess"
+version = "2.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "069323743400cb7ab06a8fe5c1ed911d36b6919ec531661d034c89083629595b"
+dependencies = [
+ "doctest-file",
+ "libc",
+ "recvmsg",
+ "widestring",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2730,6 +2770,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "postcard"
+version = "1.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6764c3b5dd454e283a30e6dfe78e9b31096d9e32036b5d1eaac7a6119ccb9a24"
+dependencies = [
+ "cobs",
+ "embedded-io 0.4.0",
+ "embedded-io 0.6.1",
+ "serde",
+]
+
+[[package]]
 name = "potential_utf"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2853,6 +2905,12 @@ dependencies = [
  "bytemuck",
  "font-types",
 ]
+
+[[package]]
+name = "recvmsg"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3edd4d5d42c92f0a659926464d4cce56b562761267ecf0f469d85b7de384175"
 
 [[package]]
 name = "redox_syscall"
@@ -3702,6 +3760,7 @@ dependencies = [
  "chrono",
  "directories",
  "futures-util",
+ "interprocess",
  "open",
  "rand",
  "regex",
@@ -3716,6 +3775,7 @@ dependencies = [
  "tracing",
  "tractor-beam-hook-ipc",
  "tractor-beam-isaac-injector",
+ "tractor-beam-relay-protocol",
  "winreg",
 ]
 
@@ -3726,6 +3786,7 @@ dependencies = [
  "arboard",
  "directories",
  "eframe",
+ "open",
  "rust-i18n",
  "serde_yaml",
  "tracing",
@@ -3737,6 +3798,11 @@ dependencies = [
 [[package]]
 name = "tractor-beam-hook-ipc"
 version = "0.2.1"
+dependencies = [
+ "postcard",
+ "serde",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "tractor-beam-isaac-injector"
@@ -3752,6 +3818,7 @@ dependencies = [
 name = "tractor-beam-native-hook"
 version = "0.2.1"
 dependencies = [
+ "interprocess",
  "tractor-beam-hook-ipc",
  "windows-sys 0.61.2",
 ]
@@ -3766,12 +3833,24 @@ dependencies = [
  "ipnet",
  "rand",
  "serde",
+ "sha2",
  "tokio",
  "tokio-util",
  "toml 1.1.2+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
- "tractor-beam-core",
+ "tractor-beam-relay-protocol",
+]
+
+[[package]]
+name = "tractor-beam-relay-protocol"
+version = "0.2.1"
+dependencies = [
+ "bytes",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4206,6 +4285,12 @@ name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
+
+[[package]]
+name = "widestring"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
 name = "winapi"

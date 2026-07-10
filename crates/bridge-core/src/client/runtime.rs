@@ -2,7 +2,7 @@ use std::{fs, io};
 
 use super::{
     ConfigError, InputDelayError, LoadedClientConfig, RelayEndpoint, SessionConfig, SessionMode,
-    hook_config,
+    hook_config, hook_ipc,
     logging::{ClientLogSink, ClientSessionLog, ClientSessionLogContext, TracingClientLogSink},
     probe, session,
     state::{self, log_entry, trim_logs},
@@ -12,7 +12,7 @@ use crate::client::{LogLevel, RuntimeState};
 #[derive(Debug)]
 pub struct BridgeClient {
     pub(super) state: RuntimeState,
-    session: Option<session::SessionHandle>,
+    pub(super) session: Option<session::SessionHandle>,
     pub(super) loaded_config: LoadedClientConfig,
     pub(super) log_sink: Box<dyn ClientLogSink>,
     active_session_log: Option<Box<dyn ClientSessionLog>>,
@@ -134,19 +134,13 @@ impl BridgeClient {
                         Ok(report) => {
                             self.state.latest_hook_receive_probe = Some(report);
                             self.state.latest_hook_receive_probe_error = None;
-                            self.state.latest_hook_receive_probe_warning = None;
                         }
                         Err(message) => {
                             self.state.latest_hook_receive_probe = None;
                             self.state.latest_hook_receive_probe_error = Some(message.clone());
-                            self.state.latest_hook_receive_probe_warning = None;
                             self.log(LogLevel::Error, message);
                         }
                     }
-                }
-                state::RuntimeEvent::HookReceiveProbeWarning(message) => {
-                    self.state.latest_hook_receive_probe_warning = Some(message);
-                    self.state.latest_hook_receive_probe_error = None;
                 }
                 state::RuntimeEvent::HookStartup(startup) => {
                     let mut startup = *startup;
@@ -155,6 +149,19 @@ impl BridgeClient {
                             self.state.hook_launch_parameters_path_written.clone();
                     }
                     self.state.hook_startup = startup;
+                }
+                state::RuntimeEvent::HookIpc(ipc) => {
+                    let ipc = *ipc;
+                    if ipc.connection == state::HookIpcConnectionState::Connected
+                        && self.state.hook_startup.injected
+                    {
+                        self.state.hook_startup.phase = state::HookStartupPhase::Ready;
+                        self.state.hook_startup.endpoint_ready = true;
+                        self.state.hook_startup.message =
+                            Some("Native Hook local IPC is ready".to_owned());
+                        self.state.hook_startup.updated_at = state::unix_seconds();
+                    }
+                    self.state.hook_ipc = ipc;
                 }
                 state::RuntimeEvent::SessionHealthSnapshot(snapshot) => {
                     if let Some(incident) = self.state.record_session_health_incident(&snapshot) {
@@ -171,7 +178,9 @@ impl BridgeClient {
                     self.state.latest_session_health_summary = Some(snapshot);
                 }
                 state::RuntimeEvent::SessionEnded(reason) => {
-                    self.state.last_stop_reason = Some(reason.clone());
+                    if self.state.last_stop_reason.is_none() {
+                        self.state.last_stop_reason = Some(reason.clone());
+                    }
                 }
                 state::RuntimeEvent::Stopped => {
                     self.state.status = state::SessionStatus::Idle;
@@ -234,7 +243,6 @@ impl BridgeClient {
         self.state.last_stop_reason = None;
         self.state.latest_hook_receive_probe = None;
         self.state.latest_hook_receive_probe_error = None;
-        self.state.latest_hook_receive_probe_warning = None;
         self.state.latest_session_health = None;
         self.state.latest_session_health_summary = None;
         self.state.latest_input_delay_status = None;
@@ -242,6 +250,7 @@ impl BridgeClient {
         self.state.hook_launch_parameters_path_written = None;
         self.state.hook_launch_parameters_cleanup = None;
         self.state.hook_startup = state::HookStartupState::default();
+        self.state.hook_ipc = state::HookIpcState::default();
         self.state.client_incidents.clear();
         self.state.room_peers.clear();
         self.active_session_log = self
@@ -255,7 +264,7 @@ impl BridgeClient {
             })
             .ok();
 
-        let session = if config.mode != SessionMode::Official {
+        let native_hook = if config.mode != SessionMode::Official {
             let native_hook_paths = match tractor_beam_isaac_injector::resolve_native_hook_paths() {
                 Ok(paths) => paths,
                 Err(error) => {
@@ -265,7 +274,8 @@ impl BridgeClient {
                     return Err(io::Error::other(message).into());
                 }
             };
-            let write = match hook_config::write_hook_config(config, &native_hook_paths) {
+            let ipc = hook_ipc::HookIpcSession::generate();
+            let write = match hook_config::write_hook_config(config, &native_hook_paths, &ipc) {
                 Ok(write) => write,
                 Err(error) => {
                     let message = format!("Native Hook launch parameter write failed: {error}");
@@ -280,7 +290,7 @@ impl BridgeClient {
                 injector_path: Some(native_hook_paths.injector.clone()),
                 hook_path: Some(native_hook_paths.hook.clone()),
                 launch_parameters_path: Some(write.path.clone()),
-                endpoint: Some(format!("{}/UDP", hook_config::HOOK_OUT)),
+                endpoint: Some("local IPC".to_owned()),
                 message: Some(format!(
                     "Hook launch parameters written to {}",
                     write.path.display()
@@ -295,25 +305,21 @@ impl BridgeClient {
                     write.path.display()
                 ),
             );
-            Some(session::spawn_bridge_worker_background(
-                config.clone(),
-                native_hook_paths,
-            ))
+            Some(session::SessionNativeHook::new(native_hook_paths, ipc))
         } else {
             self.state.hook_launch_parameters_path_written = None;
             None
         };
+        let session = session::spawn_bridge_worker_background(config.clone(), native_hook);
 
         if let Err(error) = crate::steam::launch_isaac() {
-            if let Some(handle) = session {
-                self.apply_stopped_session_events(handle.stop());
-            }
+            self.apply_stopped_session_events(session.stop());
             self.cleanup_hook_launch_parameters("Steam launch failed");
             self.active_session_log = None;
             return Err(error.into());
         }
 
-        self.session = session;
+        self.session = Some(session);
         self.state.status = state::SessionStatus::Running;
         self.state.active_session_mode = Some(config.mode);
         self.log(
@@ -341,13 +347,28 @@ impl BridgeClient {
     pub fn stop_session(&mut self) {
         if let Some(handle) = self.session.take() {
             self.apply_stopped_session_events(handle.stop());
-            self.state.last_stop_reason = Some(state::SessionStopReason::UserStopped);
+            if self.state.last_stop_reason.is_none() {
+                self.state.last_stop_reason = Some(state::SessionStopReason::UserStopped);
+            }
             self.cleanup_hook_launch_parameters("user stopped session");
         }
         self.state.status = state::SessionStatus::Idle;
         self.state.active_session_mode = None;
         self.active_session_log = None;
         self.log(LogLevel::Info, "Session stopped");
+    }
+
+    pub fn shutdown(&mut self) {
+        self.stop_session();
+        if let Some(handle) = self.readiness_probe.take() {
+            handle.finish();
+        }
+        if let Some(handle) = self.hook_receive_probe.take() {
+            handle.finish();
+        }
+        if let Some(handle) = self.light_ping_probe.take() {
+            handle.finish();
+        }
     }
 
     pub fn start_readiness_probe(&mut self, relay: RelayEndpoint) -> Result<(), ClientError> {
@@ -385,9 +406,8 @@ impl BridgeClient {
             )
             .into());
         }
-        self.hook_receive_probe = Some(probe::spawn_hook_receive_probe(
-            self.state.hook_log_path_written(),
-        ));
+        self.hook_receive_probe =
+            Some(probe::spawn_hook_receive_probe(self.state.hook_ipc.clone()));
         self.state.hook_probe_running = true;
         self.state.latest_hook_receive_probe_error = None;
         self.log(LogLevel::Info, "Hook receive probe started");
@@ -465,10 +485,6 @@ impl BridgeClient {
                     self.state.latest_session_health = Some(snapshot.clone());
                     self.state.latest_session_health_summary = Some(snapshot);
                 }
-                state::RuntimeEvent::HookReceiveProbeWarning(message) => {
-                    self.state.latest_hook_receive_probe_warning = Some(message);
-                    self.state.latest_hook_receive_probe_error = None;
-                }
                 state::RuntimeEvent::HookStartup(startup) => {
                     let mut startup = *startup;
                     if startup.launch_parameters_path.is_none() {
@@ -477,8 +493,11 @@ impl BridgeClient {
                     }
                     self.state.hook_startup = startup;
                 }
+                state::RuntimeEvent::HookIpc(ipc) => self.state.hook_ipc = *ipc,
                 state::RuntimeEvent::SessionEnded(reason) => {
-                    self.state.last_stop_reason = Some(reason);
+                    if self.state.last_stop_reason.is_none() {
+                        self.state.last_stop_reason = Some(reason);
+                    }
                 }
                 state::RuntimeEvent::Stopped
                 | state::RuntimeEvent::ReadinessProbeFinished(_)
@@ -505,7 +524,7 @@ impl BridgeClient {
         if let Some(paths) = paths {
             startup.injector_path = Some(paths.injector.clone());
             startup.hook_path = Some(paths.hook.clone());
-            startup.endpoint = Some(format!("{}/UDP", hook_config::HOOK_OUT));
+            startup.endpoint = Some("local IPC".to_owned());
         }
         self.state.hook_startup = startup;
         self.log(LogLevel::Error, message);
@@ -571,16 +590,11 @@ impl Default for BridgeClient {
 
 impl Drop for BridgeClient {
     fn drop(&mut self) {
-        if let Some(handle) = self.session.take() {
-            handle.stop();
-        }
+        self.session = None;
         self.remove_hook_launch_parameters_silent();
-        if let Some(handle) = self.readiness_probe.take() {
-            handle.finish();
-        }
-        if let Some(handle) = self.hook_receive_probe.take() {
-            handle.finish();
-        }
+        self.readiness_probe = None;
+        self.hook_receive_probe = None;
+        self.light_ping_probe = None;
     }
 }
 
@@ -600,225 +614,5 @@ pub enum ClientError {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{
-        env, fs,
-        path::PathBuf,
-        process,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
-    use crate::client::{
-        SessionHealthConfig, SessionHealthSnapshot, SessionQuality, TransportChoice,
-    };
-
-    use super::*;
-
-    #[test]
-    fn exposes_runtime_name() {
-        assert_eq!(runtime_name(), "bridge-core");
-    }
-
-    #[test]
-    fn validates_relay_endpoint() {
-        assert!(
-            RelayEndpoint::new("relay.example.com", 25_910)
-                .validate()
-                .is_ok()
-        );
-        assert_eq!(
-            RelayEndpoint::new("", 25_910).validate(),
-            Err(ConfigError::MissingRelayHost)
-        );
-    }
-
-    #[test]
-    fn validates_session_config() {
-        let config = SessionConfig {
-            relay: RelayEndpoint::new("relay.example.com", 25_910),
-            relay_name: None,
-            transport: TransportChoice::Udp,
-            room: "room".to_owned(),
-            admission: crate::JoinCode::generate_admission(),
-            mode: SessionMode::Pure,
-            steam_id64: "76561198000000001".to_owned(),
-            display_name: "Alice".to_owned(),
-            session_health: SessionHealthConfig::default(),
-        };
-
-        assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn redacts_exported_diagnostics_text() {
-        let mut client = BridgeClient::new();
-        client.log(LogLevel::Info, "Relay endpoint: 203.0.113.10:25910");
-        client.log(LogLevel::Info, "Starting Pure session in room 123");
-        client.log(LogLevel::Info, "SteamID64 76561198000000001");
-
-        let text = client.redacted_diagnostics_text();
-
-        assert!(!text.contains("203.0.113.10"));
-        assert!(!text.contains("76561198000000001"));
-        assert!(!text.contains("room 123"));
-    }
-
-    #[test]
-    fn diagnostics_include_session_health_evidence() {
-        let mut client = BridgeClient::new();
-        client.state.latest_session_health = Some(SessionHealthSnapshot {
-            quality: SessionQuality::Good,
-            ..SessionHealthSnapshot::default()
-        });
-
-        let text = client.diagnostics_text();
-
-        assert!(text.contains("session health:"));
-        assert!(text.contains("quality=good"));
-        assert!(text.contains("\"quality\": \"good\""));
-    }
-
-    #[test]
-    fn diagnostics_include_native_hook_startup_evidence() {
-        let mut client = BridgeClient::new();
-        client.state.hook_launch_parameters_path_written =
-            Some(PathBuf::from("bundle/native-hook/isaac_bridge_config.txt"));
-        client.state.hook_launch_parameters_cleanup = Some(
-            "removed path=bundle/native-hook/isaac_bridge_config.txt reason=user stopped session"
-                .to_owned(),
-        );
-        client.state.hook_startup = state::HookStartupState {
-            phase: state::HookStartupPhase::WaitingForHookEndpoint,
-            process_name: Some("isaac-ng.exe".to_owned()),
-            pid: Some(42),
-            injector_path: Some(PathBuf::from("bundle/tractor-beam-isaac-injector.exe")),
-            hook_path: Some(PathBuf::from(
-                "bundle/native-hook/tractor_beam_native_hook.dll",
-            )),
-            launch_parameters_path: Some(PathBuf::from(
-                "bundle/native-hook/isaac_bridge_config.txt",
-            )),
-            endpoint: Some("127.0.0.1:25901/UDP".to_owned()),
-            injected: true,
-            endpoint_ready: false,
-            access_denied: false,
-            message: Some("waiting for endpoint".to_owned()),
-            updated_at: 123,
-        };
-
-        let text = client.diagnostics_text();
-
-        assert!(text.contains("native hook startup:"));
-        assert!(text.contains("phase: waiting_for_hook_endpoint"));
-        assert!(text.contains("process_name: isaac-ng.exe"));
-        assert!(text.contains("injector_path: bundle/tractor-beam-isaac-injector.exe"));
-        assert!(text.contains("hook_path: bundle/native-hook/tractor_beam_native_hook.dll"));
-        assert!(
-            text.contains("launch_parameters_path: bundle/native-hook/isaac_bridge_config.txt")
-        );
-        assert!(text.contains("launch_parameters_cleanup: removed path="));
-    }
-
-    #[test]
-    fn cleanup_hook_launch_parameters_keeps_first_successful_result() {
-        let directory = unique_test_dir("hook-launch-cleanup");
-        let path = directory.join("isaac_bridge_config.txt");
-        fs::write(&path, "sidecar=127.0.0.1:25900\n").expect("write launch parameters");
-        let mut client = BridgeClient::new();
-        client.state.hook_launch_parameters_path_written = Some(path.clone());
-
-        client.cleanup_hook_launch_parameters("user stopped session");
-
-        assert!(!path.exists());
-        let cleanup = client
-            .state
-            .hook_launch_parameters_cleanup
-            .clone()
-            .expect("cleanup result should be recorded");
-        assert!(cleanup.starts_with("removed "));
-        assert!(cleanup.contains("reason=user stopped session"));
-
-        client.cleanup_hook_launch_parameters("session ended");
-
-        assert_eq!(
-            client.state.hook_launch_parameters_cleanup.as_deref(),
-            Some(cleanup.as_str())
-        );
-        let _ = fs::remove_dir_all(directory);
-    }
-
-    #[test]
-    fn cleanup_hook_launch_parameters_records_already_missing() {
-        let directory = unique_test_dir("hook-launch-cleanup-missing");
-        let path = directory.join("isaac_bridge_config.txt");
-        let mut client = BridgeClient::new();
-        client.state.hook_launch_parameters_path_written = Some(path);
-
-        client.cleanup_hook_launch_parameters("session ended");
-
-        let cleanup = client
-            .state
-            .hook_launch_parameters_cleanup
-            .as_deref()
-            .expect("cleanup result should be recorded");
-        assert!(cleanup.starts_with("already_missing "));
-        assert!(cleanup.contains("reason=session ended"));
-        let _ = fs::remove_dir_all(directory);
-    }
-
-    #[test]
-    fn hook_receive_warning_clears_previous_probe_error() {
-        let mut client = BridgeClient::new();
-        client.state.latest_hook_receive_probe_error = Some("previous error".to_owned());
-
-        client.apply_stopped_session_events(vec![state::RuntimeEvent::HookReceiveProbeWarning(
-            "sampling warning".to_owned(),
-        )]);
-
-        assert_eq!(
-            client.state.latest_hook_receive_probe_warning.as_deref(),
-            Some("sampling warning")
-        );
-        assert!(client.state.latest_hook_receive_probe_error.is_none());
-    }
-
-    #[test]
-    fn startup_failure_record_keeps_artifact_and_launch_parameter_paths() {
-        let mut client = BridgeClient::new();
-        let paths = tractor_beam_isaac_injector::NativeHookPaths {
-            injector: PathBuf::from("bundle/tractor-beam-isaac-injector.exe"),
-            hook: PathBuf::from("bundle/native-hook/tractor_beam_native_hook.dll"),
-        };
-        client.state.hook_launch_parameters_path_written =
-            Some(PathBuf::from("bundle/native-hook/isaac_bridge_config.txt"));
-
-        client.record_hook_startup_failure(Some(&paths), "Bridge worker startup failed");
-
-        assert_eq!(
-            client.state.hook_startup.phase,
-            state::HookStartupPhase::Failed
-        );
-        assert_eq!(
-            client.state.hook_startup.injector_path.as_ref(),
-            Some(&paths.injector)
-        );
-        assert_eq!(
-            client.state.hook_startup.hook_path.as_ref(),
-            Some(&paths.hook)
-        );
-        assert_eq!(
-            client.state.hook_startup.launch_parameters_path.as_deref(),
-            Some(PathBuf::from("bundle/native-hook/isaac_bridge_config.txt").as_path())
-        );
-    }
-
-    fn unique_test_dir(name: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock should be after unix epoch")
-            .as_nanos();
-        let path = env::temp_dir().join(format!("tractor-beam-{name}-{}-{nonce}", process::id()));
-        fs::create_dir_all(&path).expect("create test directory");
-        path
-    }
-}
+#[path = "runtime_tests.rs"]
+mod tests;

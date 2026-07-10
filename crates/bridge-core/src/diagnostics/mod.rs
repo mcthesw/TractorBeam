@@ -54,6 +54,7 @@ fn sensitive_patterns() -> Vec<Regex> {
     [
         r"(?i)\b\d{17}\b",
         r"(?i)(room|token|password|secret)\s*[:=]\s*[^\s]+",
+        r"(?i)(ipc_session|ipc_endpoint)\s*[:=]\s*[^\s]+",
         r"(?i)\broom\s+[^\s]+",
         r"(?i)\b(?:\d{1,3}\.){3}\d{1,3}:\d{2,5}\b",
         r"(?i)[A-Z]:\\Users\\[^\\\s]+",
@@ -78,13 +79,14 @@ mod tests {
 
     #[test]
     fn redacts_known_sensitive_fields() {
-        let text = "room=abc token=secret 76561198000000001 203.0.113.10:25910";
+        let text = "room=abc token=secret ipc_session=00112233445566778899aabbccddeeff ipc_endpoint=tractor-beam-00112233445566778899aabbccddeeff 76561198000000001 203.0.113.10:25910";
         let redacted = redact_text(text);
 
         assert!(!redacted.contains("abc"));
         assert!(!redacted.contains("secret"));
         assert!(!redacted.contains("76561198000000001"));
         assert!(!redacted.contains("203.0.113.10"));
+        assert!(!redacted.contains("00112233445566778899aabbccddeeff"));
     }
 
     #[test]

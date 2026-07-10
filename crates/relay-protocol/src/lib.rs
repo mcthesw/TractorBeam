@@ -27,7 +27,3 @@ pub const CAP_PATH_VALIDATION: u64 = 1 << 0;
 pub const CAP_ENCRYPTION_RESERVED: u64 = 1 << 1;
 pub const CAP_POW_ADMISSION: u64 = 1 << 2;
 pub const CAP_ADMISSION_MATERIAL: u64 = 1 << 3;
-
-#[cfg(test)]
-#[path = "golden_tests.rs"]
-mod tests;

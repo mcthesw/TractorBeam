@@ -101,6 +101,12 @@ Restart the Relay Server after config changes.
   changing relay internals.
 - If CPU or traffic spikes, collect the Relay Server logs privately and check
   `blocked`, `rate_limited`, and room-level counters before changing defaults.
+- To decide whether a future wire protocol is justified, use the aggregate
+  `payload_size_buckets`, `wire_size_buckets`, `max_payload_bytes`, and
+  `max_wire_bytes` fields in `relay stats`. `payload_over_ipv4_safe` counts
+  game payloads above 1390 bytes; `wire_over_ipv4_udp` counts complete v1
+  datagrams above 1472 bytes. These counters reset every stats interval and do
+  not contain packet contents or player identities.
 - The Relay Server keeps only in-memory Room state, so a restart drops all active
   Rooms.
 

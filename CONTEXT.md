@@ -27,12 +27,20 @@ The desktop presentation layer used by players to configure and control a Tracto
 _Avoid_: client, sidecar
 
 **Bridge Core**:
-The Rust code crate that contains the Bridge Client runtime, protocol, diagnostics, Steam detection, and local configuration helpers.
+The Rust code crate that contains the Bridge Client runtime, diagnostics, Steam detection, and local configuration helpers. It consumes shared protocol crates but does not own their wire contracts.
 _Avoid_: GUI, relay, hook
 
 **Protocol**:
-The versioned message language and packet formats shared by the Bridge Client, Native Hook, and Relay Server. It describes what is sent, not how it is carried.
+The versioned message language and packet formats at one component boundary. Local IPC Protocol is shared by the Bridge Client and Native Hook; Relay Protocol is shared by the Bridge Client and Relay Server. They are independent contracts. Protocol describes what is sent, not how it is carried.
 _Avoid_: transport, runtime, socket loop
+
+**Local IPC Protocol**:
+The typed `TBI2` message contract used only between one Bridge Client session and its Native Hook over a Local Socket/Windows Named Pipe.
+_Avoid_: Relay Protocol, UDP protocol, socket loop
+
+**Relay Protocol v1**:
+The byte-stable `BBR1` Envelope, control messages, and `BBG1` game-packet contract shared by the Bridge Client and Relay Server. It is independent of Local IPC Protocol.
+_Avoid_: Local IPC Protocol, Relay Transport, room state
 
 **Relay Transport**:
 The network carriage selected to move Protocol envelopes between a Bridge Client and a Relay Server.
@@ -98,6 +106,8 @@ _Avoid_: normal relay mode
 
 - A **Client Bundle** contains one **Bridge GUI**, one **Bridge Client**, one **Native Hook**, and one **Injector**.
 - **Bridge Core** provides the code used by the **Bridge GUI** to control a **Bridge Client** session.
+- A **Bridge Client** and **Native Hook** exchange **Local IPC Protocol** messages.
+- A **Bridge Client** and **Relay Server** exchange **Relay Protocol v1** messages.
 - A **Bridge GUI** controls a **Bridge Client**.
 - A **Bridge Client** joins at most one **Room** on one **Relay Server** per active session.
 - A **Bridge Client** uses one **Transport Choice** to exchange **Protocol** envelopes with a **Relay Server** during an active session.
@@ -123,4 +133,5 @@ _Avoid_: normal relay mode
 - "sidecar" was used for the early local bridge process. Resolved: use **Bridge Client** for the product term.
 - "server" was used for both relay forwarding and future trusted server discovery. Resolved: use **Relay Server** for forwarding and **Directory Service** for trusted metadata.
 - "protocol" and "transport" were used interchangeably. Resolved: use **Protocol** for message formats and **Relay Transport** for network carriage.
+- One "Protocol" previously implied one format shared by all three runtime components. Resolved: use **Local IPC Protocol** for Bridge Client/Native Hook and **Relay Protocol v1** for Bridge Client/Relay Server.
 - "mode" was used for both session behavior and network carriage. Resolved: use **Official Mode**, **Fallback Mode**, and **Pure Mode** for session behavior; use **Transport Choice** for UDP or TCP carriage.

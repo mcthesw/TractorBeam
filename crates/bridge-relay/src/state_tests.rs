@@ -3,8 +3,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tractor_beam_core::protocol::{ClientMetadata, ControlMessage, PowChallenge, PowProof};
-
 use super::*;
 use crate::incident::{MISSING_TARGET_INITIAL_LOGS, MISSING_TARGET_LOG_INTERVAL};
 
@@ -16,12 +14,19 @@ const fn peer(value: u64) -> PeerId {
     PeerId::new(value)
 }
 
+fn test_state(config: RelayConfig) -> RelayState {
+    RelayState::new(config, SupportedProtocol { major: 1, minor: 0 })
+}
+
 fn admission() -> Option<String> {
     Some("AbCdEfGhIjKlMn12".to_owned())
 }
 
-fn client() -> Option<ClientMetadata> {
-    Some(ClientMetadata::current())
+fn client() -> Option<ClientIdentity> {
+    Some(ClientIdentity {
+        protocol_major: 1,
+        protocol_minor: 0,
+    })
 }
 
 fn join_request(peer_id: PeerId, room: &str, steam_id64: &str, now: Instant) -> JoinRequest {
@@ -36,15 +41,15 @@ fn join_request(peer_id: PeerId, room: &str, steam_id64: &str, now: Instant) -> 
     }
 }
 
-fn challenge(message: ControlMessage) -> (String, Option<PowChallenge>) {
-    let ControlMessage::Challenge { token, pow } = message else {
+fn challenge(message: JoinResponse) -> (String, Option<AdmissionChallenge>) {
+    let JoinResponse::Challenge { token, pow } = message else {
         panic!("expected challenge message");
     };
     (token, pow)
 }
 
-fn error_code(message: ControlMessage) -> String {
-    let ControlMessage::Error { code, .. } = message else {
+fn error_code(message: JoinResponse) -> String {
+    let JoinResponse::Rejected(RelayRejection { code, .. }) = message else {
         panic!("expected error message");
     };
     code
@@ -62,7 +67,7 @@ fn join_peer(
         challenge(state.challenge_join(join_request(peer_id, room, steam_id64, now)));
     let pow_proof = pow
         .as_ref()
-        .and_then(|pow| PowProof::solve(pow, &token, room, steam_id64));
+        .and_then(|pow| AdmissionProof::solve(pow, &token, room, steam_id64));
     assert!(matches!(
         state
             .complete_join(JoinCompletion {
@@ -76,7 +81,7 @@ fn join_peer(
                 now,
             })
             .response,
-        ControlMessage::Ready { .. }
+        JoinResponse::Ready { .. }
     ));
 }
 
@@ -86,7 +91,7 @@ fn matches_blocked_cidrs() {
         blocked_cidrs: vec!["127.0.0.0/8".parse().unwrap()],
         ..RelayConfig::default()
     };
-    let state = RelayState::new(config);
+    let state = test_state(config);
 
     assert!(state.is_blocked(address(25_910)));
     assert!(!state.is_blocked("192.0.2.1:25910".parse().unwrap()));
@@ -99,7 +104,7 @@ fn packet_rate_limit_caps_packets_per_peer() {
         byte_rate_limit_burst: 1024,
         ..RelayConfig::default()
     };
-    let mut state = RelayState::new(config);
+    let mut state = test_state(config);
     let now = Instant::now();
 
     assert!(state.allow_packet(peer(1), 1, now));
@@ -116,7 +121,7 @@ fn byte_token_bucket_caps_sustained_peer_traffic() {
         byte_rate_limit_burst: 20,
         ..RelayConfig::default()
     };
-    let mut state = RelayState::new(config);
+    let mut state = test_state(config);
     let now = Instant::now();
 
     assert!(state.allow_packet(peer(1), 15, now));
@@ -133,7 +138,7 @@ fn byte_token_bucket_denial_does_not_consume_packet_budget() {
         byte_rate_limit_burst: 10,
         ..RelayConfig::default()
     };
-    let mut state = RelayState::new(config);
+    let mut state = test_state(config);
     let now = Instant::now();
     let half_second = now + Duration::from_millis(500);
 
@@ -148,7 +153,7 @@ fn cleanup_reports_idle_unjoined_rate_peers() {
         peer_idle_seconds: 1,
         ..RelayConfig::default()
     };
-    let mut state = RelayState::new(config);
+    let mut state = test_state(config);
     let now = Instant::now();
 
     assert!(state.allow_packet(peer(1), 1, now));
@@ -165,7 +170,7 @@ fn health_pong_rate_limit_caps_replies_per_source_ip() {
         health_pongs_per_second_per_ip: 2,
         ..RelayConfig::default()
     };
-    let mut state = RelayState::new(config);
+    let mut state = test_state(config);
     let source = Ipv4Addr::LOCALHOST.into();
     let now = Instant::now();
 
@@ -181,7 +186,7 @@ fn rejects_room_names_over_limit() {
         max_room_name_len: 4,
         ..RelayConfig::default()
     };
-    let mut state = RelayState::new(config);
+    let mut state = test_state(config);
 
     let response = state.challenge_join(join_request(
         peer(1),
@@ -195,7 +200,7 @@ fn rejects_room_names_over_limit() {
 
 #[test]
 fn rejects_missing_client_metadata() {
-    let mut state = RelayState::new(RelayConfig::default());
+    let mut state = test_state(RelayConfig::default());
     let mut request = join_request(peer(1), "room", "76561198000000001", Instant::now());
     request.client = None;
 
@@ -206,8 +211,8 @@ fn rejects_missing_client_metadata() {
 
 #[test]
 fn rejects_unsupported_client_protocol() {
-    let mut state = RelayState::new(RelayConfig::default());
-    let mut metadata = ClientMetadata::current();
+    let mut state = test_state(RelayConfig::default());
+    let mut metadata = client().unwrap();
     metadata.protocol_major = metadata.protocol_major.saturating_add(1);
     let mut request = join_request(peer(1), "room", "76561198000000001", Instant::now());
     request.client = Some(metadata);
@@ -218,8 +223,21 @@ fn rejects_unsupported_client_protocol() {
 }
 
 #[test]
+fn rejects_unsupported_client_protocol_minor() {
+    let mut state = test_state(RelayConfig::default());
+    let mut metadata = client().unwrap();
+    metadata.protocol_minor = metadata.protocol_minor.saturating_add(1);
+    let mut request = join_request(peer(1), "room", "76561198000000001", Instant::now());
+    request.client = Some(metadata);
+
+    let response = state.challenge_join(request);
+
+    assert_eq!(error_code(response), "unsupported_protocol");
+}
+
+#[test]
 fn rejects_missing_client_metadata_on_challenge_completion() {
-    let mut state = RelayState::new(RelayConfig::default());
+    let mut state = test_state(RelayConfig::default());
     let now = Instant::now();
     let (token, _pow) =
         challenge(state.challenge_join(join_request(peer(1), "room", "76561198000000001", now)));
@@ -244,7 +262,7 @@ fn rejects_new_rooms_over_limit() {
         max_rooms: 1,
         ..RelayConfig::default()
     };
-    let mut state = RelayState::new(config);
+    let mut state = test_state(config);
     let now = Instant::now();
 
     join_peer(
@@ -267,7 +285,7 @@ fn rejects_new_peers_over_room_limit() {
         max_peers_per_room: 1,
         ..RelayConfig::default()
     };
-    let mut state = RelayState::new(config);
+    let mut state = test_state(config);
     let now = Instant::now();
 
     join_peer(
@@ -286,7 +304,7 @@ fn rejects_new_peers_over_room_limit() {
 
 #[test]
 fn replaces_duplicate_steam_id_in_same_room() {
-    let mut state = RelayState::new(RelayConfig::default());
+    let mut state = test_state(RelayConfig::default());
     let now = Instant::now();
 
     join_peer(
@@ -312,7 +330,7 @@ fn replaces_duplicate_steam_id_in_same_room() {
 
 #[test]
 fn finds_target_peer_by_steam_id() {
-    let mut state = RelayState::new(RelayConfig::default());
+    let mut state = test_state(RelayConfig::default());
     let now = Instant::now();
 
     join_peer(
@@ -341,7 +359,7 @@ fn finds_target_peer_by_steam_id() {
 
 #[test]
 fn room_summaries_count_peer_transports() {
-    let mut state = RelayState::new(RelayConfig::default());
+    let mut state = test_state(RelayConfig::default());
     let now = Instant::now();
 
     join_peer(
@@ -374,7 +392,7 @@ fn room_summaries_count_peer_transports() {
 
 #[test]
 fn missing_target_incidents_snapshot_room_peers_and_are_sampled() {
-    let mut state = RelayState::new(RelayConfig::default());
+    let mut state = test_state(RelayConfig::default());
     let now = Instant::now();
     join_peer(
         &mut state,
@@ -428,7 +446,7 @@ fn missing_target_incidents_snapshot_room_peers_and_are_sampled() {
 
 #[test]
 fn rejects_missing_admission_material() {
-    let mut state = RelayState::new(RelayConfig::default());
+    let mut state = test_state(RelayConfig::default());
     let mut request = join_request(peer(1), "room", "76561198000000001", Instant::now());
     request.admission = None;
 
@@ -439,7 +457,7 @@ fn rejects_missing_admission_material() {
 
 #[test]
 fn rejects_mismatched_room_admission_material() {
-    let mut state = RelayState::new(RelayConfig::default());
+    let mut state = test_state(RelayConfig::default());
     let now = Instant::now();
 
     join_peer(
@@ -464,7 +482,7 @@ fn rejects_missing_pow_proof_when_required() {
         pow_difficulty_bits: 4,
         ..RelayConfig::default()
     };
-    let mut state = RelayState::new(config);
+    let mut state = test_state(config);
     let now = Instant::now();
     let (token, _pow) =
         challenge(state.challenge_join(join_request(peer(1), "room", "76561198000000001", now)));
@@ -495,10 +513,16 @@ fn rejects_bad_pow_proof() {
         pow_difficulty_bits: 4,
         ..RelayConfig::default()
     };
-    let mut state = RelayState::new(config);
+    let mut state = test_state(config);
     let now = Instant::now();
     let (token, _pow) =
         challenge(state.challenge_join(join_request(peer(1), "room", "76561198000000001", now)));
+    state
+        .pending
+        .get_mut(&peer(1))
+        .and_then(|pending| pending.pow.as_mut())
+        .expect("pending pow challenge")
+        .algorithm = "unsupported".to_owned();
 
     let outcome = state.complete_join(JoinCompletion {
         peer_id: peer(1),
@@ -506,7 +530,7 @@ fn rejects_bad_pow_proof() {
         steam_id64: "76561198000000001".to_owned(),
         client: client(),
         challenge: token,
-        pow_proof: Some(PowProof {
+        pow_proof: Some(AdmissionProof {
             nonce: "bad".to_owned(),
         }),
         transport: PeerTransport::Udp,
@@ -522,7 +546,7 @@ fn rejects_unexpected_pow_proof_when_pow_is_disabled() {
         pow_difficulty_bits: 0,
         ..RelayConfig::default()
     };
-    let mut state = RelayState::new(config);
+    let mut state = test_state(config);
     let now = Instant::now();
     let (token, _pow) =
         challenge(state.challenge_join(join_request(peer(1), "room", "76561198000000001", now)));
@@ -533,7 +557,7 @@ fn rejects_unexpected_pow_proof_when_pow_is_disabled() {
         steam_id64: "76561198000000001".to_owned(),
         client: client(),
         challenge: token,
-        pow_proof: Some(PowProof {
+        pow_proof: Some(AdmissionProof {
             nonce: "unexpected".to_owned(),
         }),
         transport: PeerTransport::Udp,

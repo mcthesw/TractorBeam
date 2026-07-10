@@ -1,10 +1,13 @@
+mod build_info;
 mod config;
+mod domain;
 mod egress;
 mod incident;
 mod metrics;
 mod peer_registry;
 mod server;
 mod state;
+mod v1;
 
 use std::io;
 
@@ -18,14 +21,11 @@ async fn main() -> io::Result<()> {
 
     let args = Args::parse();
     if args.should_print_version() {
-        println!(
-            "tractor-beam-relay {}",
-            tractor_beam_core::build_info::version_label()
-        );
+        println!("tractor-beam-relay {}", build_info::version_label());
         return Ok(());
     }
     tracing::info!(
-        version = %tractor_beam_core::build_info::version_label(),
+        version = %build_info::version_label(),
         "relay starting"
     );
     let config = RelayConfig::load(&args)?;

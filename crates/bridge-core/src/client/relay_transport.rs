@@ -152,11 +152,12 @@ async fn send_join(
     challenge: Option<String>,
     pow_proof: Option<PowProof>,
 ) -> io::Result<()> {
+    let build = crate::build_info::current();
     let message = ControlMessage::Join {
         room: config.room.clone(),
         steam_id64: config.steam_id64.clone(),
         display_name: Some(config.display_name.clone()),
-        client: Some(ClientMetadata::current()),
+        client: Some(ClientMetadata::for_build(build.version, build.git_hash)),
         challenge,
         pow_proof,
         admission: Some(config.admission.clone()),

@@ -15,17 +15,16 @@ use tokio::{
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::{debug, info, warn};
-use tractor_beam_core::protocol::{ControlMessage, Envelope, GamePacket, MessageType};
+use tractor_beam_relay_protocol::{ControlMessage, Envelope, GamePacket, MessageType};
 
 use crate::{
     config::RelayConfig,
-    egress::{EgressTable, PeerOutput},
+    domain::{JoinOutcome, JoinResponse, PeerId, PeerTransport, RoomBroadcast},
+    egress::{EgressTable, send_control_frame, send_data_frame, tcp_egress_channel},
     metrics::{PacketOutcome, RelayMetrics},
     peer_registry::PeerRegistry,
-    state::{
-        JoinCompletion, JoinOutcome, JoinRequest, PeerId, PeerTransport, RelayState, RoomBroadcast,
-        error_message,
-    },
+    state::RelayState,
+    v1::{self, JoinCommand, error_message},
 };
 
 type SharedState = Arc<Mutex<RelayState>>;
@@ -68,7 +67,10 @@ async fn run_with_listeners(
     config: RelayConfig,
 ) -> io::Result<()> {
     let udp_socket = udp_socket.map(Arc::new);
-    let state = Arc::new(Mutex::new(RelayState::new(config.clone())));
+    let state = Arc::new(Mutex::new(RelayState::new(
+        config.clone(),
+        v1::supported_protocol(),
+    )));
     let egress = Arc::new(Mutex::new(EgressTable::default()));
     let metrics = Arc::new(Mutex::new(RelayMetrics::new(
         config.tcp_egress_queue_capacity,
@@ -492,70 +494,34 @@ async fn handle_join(
     envelope: &Envelope,
     now: Instant,
 ) -> io::Result<PacketOutcome> {
-    let message = ControlMessage::decode(&envelope.payload)
-        .unwrap_or_else(|error| error_message("bad_join", error.to_string()));
     let outcome = {
         let mut state = state.lock().await;
-        match message {
-            ControlMessage::Join {
-                room,
-                steam_id64,
-                display_name: _,
-                client,
-                challenge: Some(challenge),
-                pow_proof,
-                admission: _,
-            } => state.complete_join(JoinCompletion {
-                peer_id: source.peer_id,
-                room,
-                steam_id64,
-                client,
-                challenge,
-                pow_proof,
-                transport: source.transport,
-                now,
-            }),
-            ControlMessage::Join {
-                room,
-                steam_id64,
-                display_name,
-                client,
-                challenge: None,
-                pow_proof: _,
-                admission,
-            } => JoinOutcome {
-                response: state.challenge_join(JoinRequest {
-                    peer_id: source.peer_id,
-                    room,
-                    steam_id64,
-                    display_name,
-                    client,
-                    admission,
-                    now,
-                }),
+        match v1::decode_join(&envelope.payload, source.peer_id, source.transport, now) {
+            JoinCommand::Complete(completion) => state.complete_join(completion),
+            JoinCommand::Begin(request) => JoinOutcome {
+                response: state.challenge_join(request),
                 broadcast: None,
             },
-            _ => JoinOutcome {
-                response: error_message("bad_join", "expected join message"),
+            JoinCommand::Rejected(rejection) => JoinOutcome {
+                response: JoinResponse::Rejected(rejection),
                 broadcast: None,
             },
         }
     };
-    let response_type = match &outcome.response {
-        ControlMessage::Challenge { .. } => MessageType::JoinChallenge,
-        ControlMessage::Ready { .. } => MessageType::JoinReady,
-        ControlMessage::Error { .. } => MessageType::Error,
-        _ => MessageType::Error,
-    };
+    let JoinOutcome {
+        response,
+        broadcast,
+    } = outcome;
+    let (response_type, response) = v1::encode_join_response(response);
     send_control(
         udp_socket.clone(),
         Arc::clone(&egress),
         source.peer_id,
         response_type,
-        &outcome.response,
+        &response,
     )
     .await?;
-    if let Some(broadcast) = outcome.broadcast {
+    if let Some(broadcast) = broadcast {
         broadcast_room_update(udp_socket, egress, broadcast).await?;
     }
     Ok(PacketOutcome::default())
@@ -566,9 +532,7 @@ async fn broadcast_room_update(
     egress: SharedEgress,
     update: RoomBroadcast,
 ) -> io::Result<()> {
-    let message = ControlMessage::RoomUpdate {
-        peers: update.peers,
-    };
+    let message = v1::room_update(update.peers);
     let raw = Envelope::new(
         MessageType::RoomUpdate,
         message.encode().map_err(io::Error::other)?,
@@ -576,7 +540,7 @@ async fn broadcast_room_update(
     .encode()
     .map_err(io::Error::other)?;
     for peer_id in update.recipients {
-        send_control_to_peer(
+        send_control_frame(
             udp_socket.clone(),
             Arc::clone(&egress),
             peer_id,
@@ -648,6 +612,7 @@ async fn forward_data(
             return Ok(outcome);
         }
     };
+    outcome.record_game_size(game.payload.len(), raw.len());
 
     let (target_peer, missing_target_incident) = {
         let mut state = state.lock().await;
@@ -688,7 +653,7 @@ async fn forward_data(
     };
 
     if target_peer != source.peer_id {
-        match send_data_to_peer(udp_socket, egress, target_peer, raw.clone()).await {
+        match send_data_frame(udp_socket, egress, target_peer, raw.clone()).await {
             Ok(()) => {
                 outcome.forwarded_packets = outcome.forwarded_packets.saturating_add(1);
                 outcome.forwarded_bytes = outcome
@@ -714,10 +679,6 @@ async fn forward_data(
     Ok(outcome)
 }
 
-fn tcp_egress_channel(capacity: usize) -> (mpsc::Sender<Bytes>, mpsc::Receiver<Bytes>) {
-    mpsc::channel(capacity)
-}
-
 async fn send_control(
     udp_socket: SharedUdpSocket,
     egress: SharedEgress,
@@ -729,52 +690,7 @@ async fn send_control(
     let raw = Envelope::new(message_type, payload)
         .encode()
         .map_err(io::Error::other)?;
-    send_control_to_peer(udp_socket, egress, peer_id, raw).await
-}
-
-async fn send_control_to_peer(
-    udp_socket: SharedUdpSocket,
-    egress: SharedEgress,
-    peer_id: PeerId,
-    raw: Bytes,
-) -> io::Result<()> {
-    let output = egress.lock().await.send_control(peer_id, raw)?;
-    send_peer_output(udp_socket, peer_id, output).await
-}
-
-async fn send_data_to_peer(
-    udp_socket: SharedUdpSocket,
-    egress: SharedEgress,
-    peer_id: PeerId,
-    raw: Bytes,
-) -> io::Result<()> {
-    let output = egress.lock().await.send_data(peer_id, raw)?;
-    send_peer_output(udp_socket, peer_id, output).await
-}
-
-async fn send_peer_output(
-    udp_socket: SharedUdpSocket,
-    peer_id: PeerId,
-    output: PeerOutput,
-) -> io::Result<()> {
-    match output {
-        PeerOutput::Udp { address, frame } => {
-            let Some(socket) = udp_socket else {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotConnected,
-                    format!("UDP listener is disabled for {peer_id}"),
-                ));
-            };
-            socket.send_to(&frame, address).await?;
-            Ok(())
-        }
-        PeerOutput::Tcp { sender, frame } => sender.try_send(frame).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::WouldBlock,
-                format!("TCP egress queue is full for {peer_id}"),
-            )
-        }),
-    }
+    send_control_frame(udp_socket, egress, peer_id, raw).await
 }
 
 #[cfg(test)]

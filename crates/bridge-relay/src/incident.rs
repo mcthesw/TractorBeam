@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::state::{PeerId, PeerTransport};
+use crate::domain::{PeerId, PeerTransport};
 
 pub(crate) const MISSING_TARGET_INITIAL_LOGS: u32 = 10;
 pub(crate) const MISSING_TARGET_LOG_INTERVAL: Duration = Duration::from_secs(30);

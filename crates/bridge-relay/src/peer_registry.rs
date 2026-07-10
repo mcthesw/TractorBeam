@@ -1,6 +1,6 @@
 use std::{collections::HashMap, net::SocketAddr};
 
-use crate::state::PeerId;
+use crate::domain::PeerId;
 
 #[derive(Debug)]
 pub(crate) struct PeerRegistry {

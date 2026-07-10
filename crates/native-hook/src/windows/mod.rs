@@ -11,6 +11,7 @@ use windows_sys::Win32::{
 mod bridge;
 mod iat;
 mod input_delay;
+mod ipc_worker;
 mod steam;
 
 const DLL_PROCESS_DETACH: u32 = 0;

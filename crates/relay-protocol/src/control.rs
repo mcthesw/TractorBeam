@@ -4,11 +4,7 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use crate::{
-    build_info,
-    protocol::{
-        CAP_ADMISSION_MATERIAL, CAP_PATH_VALIDATION, CAP_POW_ADMISSION, PROTOCOL_MAJOR,
-        PROTOCOL_MINOR,
-    },
+    CAP_ADMISSION_MATERIAL, CAP_PATH_VALIDATION, CAP_POW_ADMISSION, PROTOCOL_MAJOR, PROTOCOL_MINOR,
 };
 
 pub const POW_ALGORITHM_SHA256: &str = "sha256";
@@ -79,11 +75,10 @@ pub struct ClientMetadata {
 
 impl ClientMetadata {
     #[must_use]
-    pub fn current() -> Self {
-        let build = build_info::current();
+    pub fn for_build(app_version: &str, git_hash: Option<&str>) -> Self {
         Self {
-            app_version: build.version.to_owned(),
-            git_hash: build.git_hash.map(str::to_owned),
+            app_version: app_version.to_owned(),
+            git_hash: git_hash.map(str::to_owned),
             protocol_major: PROTOCOL_MAJOR,
             protocol_minor: PROTOCOL_MINOR,
             features: CAP_PATH_VALIDATION | CAP_POW_ADMISSION | CAP_ADMISSION_MATERIAL,

@@ -1,58 +1,20 @@
 use std::{
     collections::HashMap,
-    fmt::{self, Display},
     net::{IpAddr, SocketAddr},
     time::{Duration, Instant},
 };
 
-use rand::RngExt as _;
-use tracing::info;
-use tractor_beam_core::protocol::{
-    ClientMetadata, ControlMessage, PROTOCOL_MAJOR, PROTOCOL_MINOR, PowChallenge, PowProof,
-};
-
 use crate::{
     config::RelayConfig,
+    domain::{
+        AdmissionChallenge, AdmissionProof, CleanupOutcome, ClientIdentity, JoinCompletion,
+        JoinOutcome, JoinRequest, JoinResponse, PeerDescription, PeerId, PeerTransport,
+        RelayRejection, RoomBroadcast, RoomSummary, SupportedProtocol,
+    },
     incident::{MissingTargetIncident, MissingTargetLogBudget, RoomPeerSnapshot},
 };
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct PeerId(u64);
-
-impl PeerId {
-    pub(crate) const fn new(value: u64) -> Self {
-        Self(value)
-    }
-}
-
-impl Display for PeerId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "peer-{}", self.0)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PeerTransport {
-    Udp,
-    Tcp,
-}
-
-impl Display for PeerTransport {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Udp => formatter.write_str("udp"),
-            Self::Tcp => formatter.write_str("tcp"),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RoomSummary {
-    pub(crate) name: String,
-    pub(crate) peers: usize,
-    pub(crate) tcp_peers: usize,
-    pub(crate) udp_peers: usize,
-}
+use rand::RngExt as _;
+use tracing::info;
 
 #[derive(Clone, Debug)]
 struct PendingJoin {
@@ -60,50 +22,9 @@ struct PendingJoin {
     steam_id64: String,
     display_name: Option<String>,
     admission: String,
-    pow: Option<PowChallenge>,
+    pow: Option<AdmissionChallenge>,
     token: String,
     issued_at: Instant,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct JoinRequest {
-    pub(crate) peer_id: PeerId,
-    pub(crate) room: String,
-    pub(crate) steam_id64: String,
-    pub(crate) display_name: Option<String>,
-    pub(crate) client: Option<ClientMetadata>,
-    pub(crate) admission: Option<String>,
-    pub(crate) now: Instant,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct JoinCompletion {
-    pub(crate) peer_id: PeerId,
-    pub(crate) room: String,
-    pub(crate) steam_id64: String,
-    pub(crate) client: Option<ClientMetadata>,
-    pub(crate) challenge: String,
-    pub(crate) pow_proof: Option<PowProof>,
-    pub(crate) transport: PeerTransport,
-    pub(crate) now: Instant,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct RoomBroadcast {
-    pub(crate) recipients: Vec<PeerId>,
-    pub(crate) peers: Vec<tractor_beam_core::protocol::PeerInfo>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct CleanupOutcome {
-    pub(crate) broadcasts: Vec<RoomBroadcast>,
-    pub(crate) removed_peers: Vec<PeerId>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct JoinOutcome {
-    pub(crate) response: ControlMessage,
-    pub(crate) broadcast: Option<RoomBroadcast>,
 }
 
 #[derive(Clone, Debug)]
@@ -192,6 +113,7 @@ impl PeerRateLimit {
 #[derive(Debug)]
 pub(crate) struct RelayState {
     config: RelayConfig,
+    supported_protocol: SupportedProtocol,
     pending: HashMap<PeerId, PendingJoin>,
     rooms: HashMap<String, Room>,
     peer_rooms: HashMap<PeerId, String>,
@@ -201,9 +123,10 @@ pub(crate) struct RelayState {
 }
 
 impl RelayState {
-    pub(crate) fn new(config: RelayConfig) -> Self {
+    pub(crate) fn new(config: RelayConfig, supported_protocol: SupportedProtocol) -> Self {
         Self {
             config,
+            supported_protocol,
             pending: HashMap::new(),
             rooms: HashMap::new(),
             peer_rooms: HashMap::new(),
@@ -260,7 +183,7 @@ impl RelayState {
             .any(|network| network.contains(&address.ip()))
     }
 
-    pub(crate) fn challenge_join(&mut self, request: JoinRequest) -> ControlMessage {
+    pub(crate) fn challenge_join(&mut self, request: JoinRequest) -> JoinResponse {
         let JoinRequest {
             peer_id,
             room,
@@ -270,19 +193,22 @@ impl RelayState {
             admission,
             now,
         } = request;
-        if let Err(error) = validate_client_metadata(client.as_ref()) {
-            return *error;
+        if let Err(error) = validate_client_metadata(client.as_ref(), self.supported_protocol) {
+            return JoinResponse::Rejected(error);
         }
         let Some(admission) = admission.filter(|value| !value.is_empty()) else {
-            return error_message("admission_required", "room admission material is required");
+            return JoinResponse::Rejected(RelayRejection::new(
+                "admission_required",
+                "room admission material is required",
+            ));
         };
         if let Err(error) = self.validate_join(peer_id, &room, &admission) {
-            return *error;
+            return JoinResponse::Rejected(error);
         }
 
         let token = join_token();
         let pow = (self.config.pow_difficulty_bits > 0)
-            .then(|| PowChallenge::sha256(join_token(), self.config.pow_difficulty_bits));
+            .then(|| AdmissionChallenge::sha256(join_token(), self.config.pow_difficulty_bits));
         self.pending.insert(
             peer_id,
             PendingJoin {
@@ -295,7 +221,7 @@ impl RelayState {
                 issued_at: now,
             },
         );
-        ControlMessage::Challenge { token, pow }
+        JoinResponse::Challenge { token, pow }
     }
 
     pub(crate) fn complete_join(&mut self, completion: JoinCompletion) -> JoinOutcome {
@@ -309,34 +235,40 @@ impl RelayState {
             transport,
             now,
         } = completion;
-        if let Err(error) = validate_client_metadata(client.as_ref()) {
+        if let Err(error) = validate_client_metadata(client.as_ref(), self.supported_protocol) {
             return JoinOutcome {
-                response: *error,
+                response: JoinResponse::Rejected(error),
                 broadcast: None,
             };
         }
         let Some(pending) = self.pending.remove(&peer_id) else {
             return JoinOutcome {
-                response: error_message("missing_challenge", "join challenge was not issued"),
+                response: JoinResponse::Rejected(RelayRejection::new(
+                    "missing_challenge",
+                    "join challenge was not issued",
+                )),
                 broadcast: None,
             };
         };
         if pending.room != room || pending.steam_id64 != steam_id64 || pending.token != challenge {
             return JoinOutcome {
-                response: error_message("bad_challenge", "join challenge did not match"),
+                response: JoinResponse::Rejected(RelayRejection::new(
+                    "bad_challenge",
+                    "join challenge did not match",
+                )),
                 broadcast: None,
             };
         }
         if let Err(error) = validate_pow(&pending, pow_proof.as_ref()) {
             return JoinOutcome {
-                response: *error,
+                response: JoinResponse::Rejected(error),
                 broadcast: None,
             };
         }
         self.remove_duplicate_peer(&pending.room, &pending.steam_id64, peer_id);
         if let Err(error) = self.validate_join(peer_id, &pending.room, &pending.admission) {
             return JoinOutcome {
-                response: *error,
+                response: JoinResponse::Rejected(error),
                 broadcast: None,
             };
         }
@@ -363,7 +295,7 @@ impl RelayState {
             peers = room.peers.len(),
             "peer joined"
         );
-        let response = ControlMessage::Ready {
+        let response = JoinResponse::Ready {
             peers: self.room_peer_infos(&pending.room),
         };
         let broadcast = self.room_broadcast(&pending.room, Some(peer_id));
@@ -431,28 +363,22 @@ impl RelayState {
         peers.sort_by(|left, right| {
             left.steam_id64
                 .cmp(&right.steam_id64)
-                .then_with(|| left.peer_id.0.cmp(&right.peer_id.0))
+                .then_with(|| left.peer_id.value().cmp(&right.peer_id.value()))
         });
         peers
     }
 
-    pub(crate) fn room_peer_infos(
-        &self,
-        room_name: &str,
-    ) -> Vec<tractor_beam_core::protocol::PeerInfo> {
+    pub(crate) fn room_peer_infos(&self, room_name: &str) -> Vec<PeerDescription> {
         let mut peers = self
             .rooms
             .get(room_name)
             .map(|room| {
                 room.peers
                     .values()
-                    .map(|peer| tractor_beam_core::protocol::PeerInfo {
+                    .map(|peer| PeerDescription {
                         steam_id64: peer.steam_id64.clone(),
                         display_name: peer.display_name.clone(),
-                        transport: match peer.transport {
-                            PeerTransport::Udp => tractor_beam_core::protocol::PeerTransport::Udp,
-                            PeerTransport::Tcp => tractor_beam_core::protocol::PeerTransport::Tcp,
-                        },
+                        transport: peer.transport,
                     })
                     .collect::<Vec<_>>()
             })
@@ -612,19 +538,19 @@ impl RelayState {
         peer_id: PeerId,
         room_name: &str,
         admission: &str,
-    ) -> Result<(), Box<ControlMessage>> {
+    ) -> Result<(), RelayRejection> {
         let room_name = room_name.trim();
         if room_name.is_empty() {
-            return Err(Box::new(error_message("empty_room", "room is required")));
+            return Err(RelayRejection::new("empty_room", "room is required"));
         }
         if room_name.len() > self.config.max_room_name_len {
-            return Err(Box::new(error_message(
+            return Err(RelayRejection::new(
                 "room_name_too_long",
                 format!(
                     "room must be at most {} bytes",
                     self.config.max_room_name_len
                 ),
-            )));
+            ));
         }
 
         let already_joined = self
@@ -634,25 +560,25 @@ impl RelayState {
 
         if let Some(room) = self.rooms.get(room_name) {
             if room.admission != admission {
-                return Err(Box::new(error_message(
+                return Err(RelayRejection::new(
                     "room_admission_mismatch",
                     "room admission material did not match",
-                )));
+                ));
             }
             if !already_joined
                 && !room.peers.contains_key(&peer_id)
                 && room.peers.len() >= self.config.max_peers_per_room
             {
-                return Err(Box::new(error_message("room_full", "room is full")));
+                return Err(RelayRejection::new("room_full", "room is full"));
             }
             return Ok(());
         }
 
         if !already_joined && self.rooms.len() >= self.config.max_rooms {
-            return Err(Box::new(error_message(
+            return Err(RelayRejection::new(
                 "too_many_rooms",
                 "relay room limit reached",
-            )));
+            ));
         }
 
         Ok(())
@@ -691,31 +617,24 @@ impl RelayState {
     }
 }
 
-pub(crate) fn error_message(code: impl Into<String>, message: impl Into<String>) -> ControlMessage {
-    ControlMessage::Error {
-        code: code.into(),
-        message: message.into(),
-    }
-}
-
 fn validate_pow(
     pending: &PendingJoin,
-    proof: Option<&PowProof>,
-) -> Result<(), Box<ControlMessage>> {
+    proof: Option<&AdmissionProof>,
+) -> Result<(), RelayRejection> {
     let Some(challenge) = &pending.pow else {
         if proof.is_some() {
-            return Err(Box::new(error_message(
+            return Err(RelayRejection::new(
                 "pow_unexpected",
                 "proof of work was not requested for room admission",
-            )));
+            ));
         }
         return Ok(());
     };
     let Some(proof) = proof else {
-        return Err(Box::new(error_message(
+        return Err(RelayRejection::new(
             "pow_required",
             "proof of work is required for room admission",
-        )));
+        ));
     };
     if !proof.verify(
         challenge,
@@ -723,29 +642,32 @@ fn validate_pow(
         &pending.room,
         &pending.steam_id64,
     ) {
-        return Err(Box::new(error_message(
+        return Err(RelayRejection::new(
             "pow_failed",
             "proof of work did not satisfy the challenge",
-        )));
+        ));
     }
     Ok(())
 }
 
-fn validate_client_metadata(client: Option<&ClientMetadata>) -> Result<(), Box<ControlMessage>> {
+fn validate_client_metadata(
+    client: Option<&ClientIdentity>,
+    supported: SupportedProtocol,
+) -> Result<(), RelayRejection> {
     let Some(client) = client else {
-        return Err(Box::new(error_message(
+        return Err(RelayRejection::new(
             "client_metadata_required",
             "client metadata is required for room admission",
-        )));
+        ));
     };
-    if client.protocol_major != PROTOCOL_MAJOR || client.protocol_minor != PROTOCOL_MINOR {
-        return Err(Box::new(error_message(
+    if client.protocol_major != supported.major || client.protocol_minor != supported.minor {
+        return Err(RelayRejection::new(
             "unsupported_protocol",
             format!(
                 "client protocol {}.{} is not supported by relay protocol {}.{}",
-                client.protocol_major, client.protocol_minor, PROTOCOL_MAJOR, PROTOCOL_MINOR
+                client.protocol_major, client.protocol_minor, supported.major, supported.minor
             ),
-        )));
+        ));
     }
     Ok(())
 }

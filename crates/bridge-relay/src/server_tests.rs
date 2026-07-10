@@ -7,7 +7,7 @@ use tokio::{
     time::timeout,
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use tractor_beam_core::protocol::{
+use tractor_beam_relay_protocol::{
     ClientMetadata, ControlMessage, Envelope, GamePacket, MessageType,
 };
 
@@ -267,7 +267,7 @@ async fn send_join(peer: &mut TestPeer, room: &str, steam_id64: &str, challenge:
         room: room.to_owned(),
         steam_id64: steam_id64.to_owned(),
         display_name: None,
-        client: Some(ClientMetadata::current()),
+        client: Some(ClientMetadata::for_build("0.2.1", None)),
         challenge,
         pow_proof: None,
         admission: Some("AbCdEfGhIjKlMn12".to_owned()),

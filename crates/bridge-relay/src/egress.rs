@@ -1,9 +1,12 @@
-use std::{collections::HashMap, io, net::SocketAddr};
+use std::{collections::HashMap, io, net::SocketAddr, sync::Arc};
 
 use bytes::Bytes;
-use tokio::sync::mpsc;
+use tokio::{
+    net::UdpSocket,
+    sync::{Mutex, mpsc},
+};
 
-use crate::state::PeerId;
+use crate::domain::PeerId;
 
 #[derive(Debug)]
 pub(crate) enum PeerEgress {
@@ -71,5 +74,54 @@ impl EgressTable {
                 frame: raw,
             }),
         }
+    }
+}
+
+pub(crate) async fn send_control_frame(
+    udp_socket: Option<Arc<UdpSocket>>,
+    egress: Arc<Mutex<EgressTable>>,
+    peer_id: PeerId,
+    raw: Bytes,
+) -> io::Result<()> {
+    let output = egress.lock().await.send_control(peer_id, raw)?;
+    send_peer_output(udp_socket, peer_id, output).await
+}
+
+pub(crate) fn tcp_egress_channel(capacity: usize) -> (mpsc::Sender<Bytes>, mpsc::Receiver<Bytes>) {
+    mpsc::channel(capacity)
+}
+
+pub(crate) async fn send_data_frame(
+    udp_socket: Option<Arc<UdpSocket>>,
+    egress: Arc<Mutex<EgressTable>>,
+    peer_id: PeerId,
+    raw: Bytes,
+) -> io::Result<()> {
+    let output = egress.lock().await.send_data(peer_id, raw)?;
+    send_peer_output(udp_socket, peer_id, output).await
+}
+
+async fn send_peer_output(
+    udp_socket: Option<Arc<UdpSocket>>,
+    peer_id: PeerId,
+    output: PeerOutput,
+) -> io::Result<()> {
+    match output {
+        PeerOutput::Udp { address, frame } => {
+            let Some(socket) = udp_socket else {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    format!("UDP listener is disabled for {peer_id}"),
+                ));
+            };
+            socket.send_to(&frame, address).await?;
+            Ok(())
+        }
+        PeerOutput::Tcp { sender, frame } => sender.try_send(frame).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("TCP egress queue is full for {peer_id}"),
+            )
+        }),
     }
 }

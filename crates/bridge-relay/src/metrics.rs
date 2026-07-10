@@ -1,8 +1,13 @@
 use std::collections::HashMap;
 
 use tracing::info;
+use tractor_beam_relay_protocol::{IPV4_SAFE_GAME_PAYLOAD, IPV4_UDP_DATAGRAM_BUDGET};
 
 use crate::state::RelayState;
+
+pub(crate) const PACKET_SIZE_BUCKET_UPPER_BOUNDS: [usize; 8] =
+    [64, 256, 512, 1_024, 1_100, 1_182, 1_390, 1_472];
+const PACKET_SIZE_BUCKET_COUNT: usize = PACKET_SIZE_BUCKET_UPPER_BOUNDS.len() + 1;
 
 #[derive(Debug, Default)]
 pub(crate) struct RelayMetrics {
@@ -19,6 +24,7 @@ pub(crate) struct RelayMetrics {
     pub(crate) blocked: u64,
     pub(crate) rate_limited: u64,
     pub(crate) packet_handling_errors: u64,
+    pub(crate) packet_sizes: PacketSizeMetrics,
     pub(crate) room_metrics: HashMap<String, RoomMetrics>,
 }
 
@@ -76,6 +82,9 @@ impl RelayMetrics {
         self.decode_errors = self.decode_errors.saturating_add(outcome.decode_errors);
         self.unjoined_data = self.unjoined_data.saturating_add(outcome.unjoined_data);
         self.missing_target = self.missing_target.saturating_add(outcome.missing_target);
+        if let Some((payload_bytes, wire_bytes)) = outcome.game_size {
+            self.packet_sizes.observe(payload_bytes, wire_bytes);
+        }
         if let Some(room) = outcome.room.as_deref() {
             self.room_entry(room).add(&outcome);
         }
@@ -102,6 +111,13 @@ impl RelayMetrics {
             blocked = self.blocked,
             rate_limited = self.rate_limited,
             packet_handling_errors = self.packet_handling_errors,
+            packet_size_bucket_upper_bounds = ?PACKET_SIZE_BUCKET_UPPER_BOUNDS,
+            payload_size_buckets = ?self.packet_sizes.payload_buckets,
+            wire_size_buckets = ?self.packet_sizes.wire_buckets,
+            max_payload_bytes = self.packet_sizes.max_payload_bytes,
+            max_wire_bytes = self.packet_sizes.max_wire_bytes,
+            payload_over_ipv4_safe = self.packet_sizes.payload_over_ipv4_safe,
+            wire_over_ipv4_udp = self.packet_sizes.wire_over_ipv4_udp,
             "relay stats"
         );
         let tcp_egress_queue_capacity = self.tcp_egress_queue_capacity;
@@ -125,8 +141,58 @@ impl RelayMetrics {
             }
             log_room_metrics(&room, 0, 0, 0, &metrics);
         }
+        self.reset_interval(tcp_egress_queue_capacity);
+    }
+
+    fn reset_interval(&mut self, tcp_egress_queue_capacity: usize) {
         *self = Self::new(tcp_egress_queue_capacity);
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct PacketSizeMetrics {
+    pub(crate) payload_buckets: [u64; PACKET_SIZE_BUCKET_COUNT],
+    pub(crate) wire_buckets: [u64; PACKET_SIZE_BUCKET_COUNT],
+    pub(crate) max_payload_bytes: usize,
+    pub(crate) max_wire_bytes: usize,
+    pub(crate) payload_over_ipv4_safe: u64,
+    pub(crate) wire_over_ipv4_udp: u64,
+}
+
+impl Default for PacketSizeMetrics {
+    fn default() -> Self {
+        Self {
+            payload_buckets: [0; PACKET_SIZE_BUCKET_COUNT],
+            wire_buckets: [0; PACKET_SIZE_BUCKET_COUNT],
+            max_payload_bytes: 0,
+            max_wire_bytes: 0,
+            payload_over_ipv4_safe: 0,
+            wire_over_ipv4_udp: 0,
+        }
+    }
+}
+
+impl PacketSizeMetrics {
+    fn observe(&mut self, payload_bytes: usize, wire_bytes: usize) {
+        increment_bucket(&mut self.payload_buckets, payload_bytes);
+        increment_bucket(&mut self.wire_buckets, wire_bytes);
+        self.max_payload_bytes = self.max_payload_bytes.max(payload_bytes);
+        self.max_wire_bytes = self.max_wire_bytes.max(wire_bytes);
+        if payload_bytes > IPV4_SAFE_GAME_PAYLOAD {
+            self.payload_over_ipv4_safe = self.payload_over_ipv4_safe.saturating_add(1);
+        }
+        if wire_bytes > IPV4_UDP_DATAGRAM_BUDGET {
+            self.wire_over_ipv4_udp = self.wire_over_ipv4_udp.saturating_add(1);
+        }
+    }
+}
+
+fn increment_bucket(buckets: &mut [u64; PACKET_SIZE_BUCKET_COUNT], size: usize) {
+    let index = PACKET_SIZE_BUCKET_UPPER_BOUNDS
+        .iter()
+        .position(|upper_bound| size <= *upper_bound)
+        .unwrap_or(PACKET_SIZE_BUCKET_UPPER_BOUNDS.len());
+    buckets[index] = buckets[index].saturating_add(1);
 }
 
 #[derive(Debug, Default)]
@@ -216,6 +282,7 @@ pub(crate) struct PacketOutcome {
     pub(crate) decode_errors: u64,
     pub(crate) unjoined_data: u64,
     pub(crate) missing_target: u64,
+    pub(crate) game_size: Option<(usize, usize)>,
 }
 
 impl PacketOutcome {
@@ -225,5 +292,65 @@ impl PacketOutcome {
             room_packets_in: 1,
             ..Self::default()
         }
+    }
+
+    pub(crate) fn record_game_size(&mut self, payload_bytes: usize, wire_bytes: usize) {
+        self.game_size = Some((payload_bytes, wire_bytes));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn game_size_metrics_track_boundaries_maxima_and_oversize_counts() {
+        let mut metrics = RelayMetrics::new(512);
+        for (payload, wire) in [(64, 64), (1_390, 1_472), (1_391, 1_473)] {
+            let mut outcome = PacketOutcome::default();
+            outcome.record_game_size(payload, wire);
+            metrics.add(outcome);
+        }
+
+        assert_eq!(metrics.packet_sizes.payload_buckets[0], 1);
+        assert_eq!(metrics.packet_sizes.payload_buckets[6], 1);
+        assert_eq!(metrics.packet_sizes.payload_buckets[7], 1);
+        assert_eq!(metrics.packet_sizes.wire_buckets[0], 1);
+        assert_eq!(metrics.packet_sizes.wire_buckets[7], 1);
+        assert_eq!(metrics.packet_sizes.wire_buckets[8], 1);
+        assert_eq!(metrics.packet_sizes.max_payload_bytes, 1_391);
+        assert_eq!(metrics.packet_sizes.max_wire_bytes, 1_473);
+        assert_eq!(metrics.packet_sizes.payload_over_ipv4_safe, 1);
+        assert_eq!(metrics.packet_sizes.wire_over_ipv4_udp, 1);
+    }
+
+    #[test]
+    fn interval_reset_preserves_queue_capacity_and_clears_packet_sizes() {
+        let mut metrics = RelayMetrics::new(512);
+        metrics.packet_sizes.observe(1_391, 1_473);
+
+        metrics.reset_interval(512);
+
+        assert_eq!(metrics.tcp_egress_queue_capacity, 512);
+        assert_eq!(metrics.packet_sizes.max_payload_bytes, 0);
+        assert_eq!(metrics.packet_sizes.max_wire_bytes, 0);
+        assert_eq!(metrics.packet_sizes.payload_buckets, [0; 9]);
+        assert_eq!(metrics.packet_sizes.wire_buckets, [0; 9]);
+    }
+
+    #[test]
+    fn packet_size_counters_saturate() {
+        let mut sizes = PacketSizeMetrics::default();
+        sizes.payload_buckets[8] = u64::MAX;
+        sizes.wire_buckets[8] = u64::MAX;
+        sizes.payload_over_ipv4_safe = u64::MAX;
+        sizes.wire_over_ipv4_udp = u64::MAX;
+
+        sizes.observe(1_473, 1_473);
+
+        assert_eq!(sizes.payload_buckets[8], u64::MAX);
+        assert_eq!(sizes.wire_buckets[8], u64::MAX);
+        assert_eq!(sizes.payload_over_ipv4_safe, u64::MAX);
+        assert_eq!(sizes.wire_over_ipv4_udp, u64::MAX);
     }
 }

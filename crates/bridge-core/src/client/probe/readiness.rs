@@ -12,7 +12,7 @@ use super::{
 };
 use crate::client::{
     ConnectionProfile, LogLevel, RelayEndpoint, TransportChoice,
-    state::{RuntimeEvent, log_event, unix_seconds},
+    state::{RuntimeEvent, log_event},
 };
 use bytes::Bytes;
 use serde::Serialize;
@@ -131,11 +131,10 @@ pub(super) fn spawn_readiness_probe(relay: RelayEndpoint) -> io::Result<ProbeHan
 
 fn run_readiness_probe(relay: RelayEndpoint) -> ReadinessProbeReport {
     let relay_display = relay.to_string();
-    let room = format!("bb-probe-{}-{}", std::process::id(), unix_seconds());
-    let admission = crate::JoinCode::generate_admission();
+    let session_credential = crate::SessionCredential::generate();
     let started = Instant::now();
     let cases = block_on_probe(async {
-        Ok(run_readiness_probe_matrix_async(relay, &room, &admission).await)
+        Ok(run_readiness_probe_matrix_async(relay, session_credential).await)
     })
     .unwrap_or_else(|error| {
         vec![failed_readiness_case_report(
@@ -147,7 +146,7 @@ fn run_readiness_probe(relay: RelayEndpoint) -> ReadinessProbeReport {
     });
     ReadinessProbeReport {
         relay: relay_display,
-        room,
+        room: "ephemeral probe room".to_owned(),
         duration_ms: started.elapsed().as_millis(),
         samples_per_case: READINESS_PROBE_SAMPLES_PER_CASE,
         cases,
@@ -156,8 +155,7 @@ fn run_readiness_probe(relay: RelayEndpoint) -> ReadinessProbeReport {
 
 async fn run_readiness_probe_matrix_async(
     relay: RelayEndpoint,
-    room: &str,
-    admission: &str,
+    session_credential: crate::SessionCredential,
 ) -> Vec<ReadinessProbeCaseReport> {
     let mut cases = Vec::new();
     for connection_profile in READINESS_PROBE_CONNECTION_PROFILES {
@@ -166,8 +164,7 @@ async fn run_readiness_probe_matrix_async(
             let case = match run_readiness_probe_case_async(
                 &relay,
                 connection_profile,
-                room,
-                admission,
+                session_credential,
                 payload_bytes,
             )
             .await
@@ -192,15 +189,26 @@ async fn run_readiness_probe_matrix_async(
 async fn run_readiness_probe_case_async(
     relay: &RelayEndpoint,
     connection_profile: ConnectionProfile,
-    room: &str,
-    admission: &str,
+    session_credential: crate::SessionCredential,
     payload_bytes: usize,
 ) -> io::Result<ReadinessProbeCaseReport> {
     let transport = connection_profile.transport();
-    let mut peer_a =
-        ProbePeer::join(relay, transport, room, admission, PROBE_A_STEAM, "Probe A").await?;
-    let mut peer_b =
-        ProbePeer::join(relay, transport, room, admission, PROBE_B_STEAM, "Probe B").await?;
+    let mut peer_a = ProbePeer::join(
+        relay,
+        transport,
+        session_credential,
+        PROBE_A_STEAM,
+        "Probe A",
+    )
+    .await?;
+    let mut peer_b = ProbePeer::join(
+        relay,
+        transport,
+        session_credential,
+        PROBE_B_STEAM,
+        "Probe B",
+    )
+    .await?;
     let payload = probe_payload(payload_bytes);
     let started = Instant::now();
     let mut sequence = 1_u32;

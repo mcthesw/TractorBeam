@@ -12,18 +12,24 @@ path = "src/main.rs"
 
 [dependencies]
 arboard = "3"
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
 tractor-beam-core = { path = "../bridge-core" }
 directories = "6.0.0"
+# Runtime inspection is opt-in through EGUI_INSPECTION and stays off in normal builds/runs.
 eframe = { version = "0.35.0", default-features = false, features = [
     "accesskit",
     "default_fonts",
     "glow",
+    "inspection",
 ] }
 rust-i18n = "4.1.0"
 open = { version = "5.3.5", features = ["shellexecute-on-windows"] }
 tracing = "0.1.44"
 tracing-appender = "0.2.4"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[target."cfg(windows)".dependencies]
+rfd = { version = "0.17.2", default-features = false }
 
 [dev-dependencies]
 serde_yaml = "0.9.34"

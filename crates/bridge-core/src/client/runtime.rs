@@ -259,7 +259,6 @@ impl BridgeClient {
                 relay_name: config.relay_name.clone(),
                 relay: config.relay.clone(),
                 transport: config.transport,
-                room: config.room.clone(),
                 mode: config.mode,
             })
             .ok();
@@ -322,14 +321,7 @@ impl BridgeClient {
         self.session = Some(session);
         self.state.status = state::SessionStatus::Running;
         self.state.active_session_mode = Some(config.mode);
-        self.log(
-            LogLevel::Info,
-            format!(
-                "Starting {mode} session in room {room}",
-                mode = config.mode,
-                room = config.room
-            ),
-        );
+        self.log(LogLevel::Info, format!("Starting {} session", config.mode));
         if config.mode != SessionMode::Official {
             if let Some(name) = &config.relay_name {
                 self.log(LogLevel::Info, format!("Relay preset: {name}"));

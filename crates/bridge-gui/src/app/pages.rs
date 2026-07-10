@@ -8,15 +8,14 @@ use eframe::egui::{self, ComboBox, TextEdit};
 use rust_i18n::t;
 use tractor_beam_core::{
     ConnectionProfile, HookIpcConnectionState, HookReceiveProbeReport, HookStartupPhase,
-    ReadinessProbeCaseReport, ReadinessProbeReport, RuntimeState, SessionMode, SessionQuality,
-    SessionStatus, TransportChoice, protocol::PeerTransport,
+    ReadinessProbeCaseReport, ReadinessProbeReport, RuntimeState, SessionCredential, SessionMode,
+    SessionQuality, SessionStatus, TransportChoice, protocol::PeerTransport,
 };
 
-use super::generate_room_id;
 use super::{
     BridgeApp,
     status::{connection_profile_label, quality_label},
-    widgets::{account_label, detail_counters, selected_account_label},
+    widgets::{account_label, detail_counters, help_icon, label_with_help, selected_account_label},
 };
 
 impl BridgeApp {
@@ -32,9 +31,6 @@ impl BridgeApp {
             ui.add_space(8.0);
 
             self.join_code_ui(ui);
-            ui.add_space(8.0);
-
-            self.room_ui(ui);
             ui.add_space(8.0);
         });
 
@@ -52,7 +48,7 @@ impl BridgeApp {
         let manual_label = t!("relay.manual");
         let retest_label = t!("probe.test_latency");
         let host_label = t!("relay.host");
-        ui.label(relay_label);
+        label_with_help(ui, relay_label, t!("help.relay_server"));
         let mut selected_relay = self.selected_relay;
         let selected_text = selected_relay
             .and_then(|index| self.relay_presets.get(index))
@@ -103,7 +99,7 @@ impl BridgeApp {
         let refresh_label = t!("steam.refresh_accounts");
         let manual_steam_label = t!("steam.manual_id");
         let display_name_label = t!("display_name");
-        ui.label(steam_label);
+        label_with_help(ui, steam_label, t!("help.steam_account"));
         if accounts.is_empty() {
             ui.label(t!("steam.no_accounts"));
         } else {
@@ -150,33 +146,40 @@ impl BridgeApp {
         let join_code_label = t!("join_code");
         let copy_label = t!("join_code.copy");
         let import_label = t!("join_code.import");
-        ui.label(join_code_label);
+        let generate_label = t!("room.generate");
+        ui.horizontal(|ui| {
+            ui.label(join_code_label);
+            help_icon(ui, t!("help.join_code"));
+        });
         ui.horizontal(|ui| {
             if ui.button(copy_label).clicked() {
-                ui.ctx().copy_text(self.copy_join_code());
-                self.join_code_message = Some(t!("join_code.copied").into_owned());
+                match self.copy_join_code() {
+                    Ok(code) => {
+                        ui.ctx().copy_text(code);
+                        self.join_code_message = Some(t!("join_code.copied").into_owned());
+                    }
+                    Err(error) => {
+                        self.join_code_message =
+                            Some(format!("{}: {error}", t!("join_code.invalid")));
+                    }
+                }
             }
             if ui.button(import_label).clicked() {
                 self.read_join_code_from_clipboard();
+            }
+            if ui
+                .add_enabled(self.mutations_enabled(), egui::Button::new(generate_label))
+                .clicked()
+            {
+                self.session_credential = SessionCredential::generate();
+                self.join_code_input.clear();
+                self.join_code_message = Some(t!("room.generated").into_owned());
             }
         });
         if let Some(message) = &self.join_code_message {
             ui.add_space(4.0);
             ui.label(message);
         }
-    }
-
-    fn room_ui(&mut self, ui: &mut egui::Ui) {
-        let room_label = t!("room");
-        let generate_label = t!("room.generate");
-        ui.label(room_label);
-        ui.horizontal(|ui| {
-            ui.add(TextEdit::singleline(&mut self.room).desired_width(310.0));
-            if ui.button(generate_label).clicked() {
-                self.room = generate_room_id();
-                self.persist_selection();
-            }
-        });
     }
 
     fn action_row(&mut self, ui: &mut egui::Ui) {
@@ -303,7 +306,7 @@ impl BridgeApp {
         ui.add_space(12.0);
 
         ui.add_enabled_ui(self.mutations_enabled(), |ui| {
-            ui.label(profile_label);
+            label_with_help(ui, profile_label, t!("help.connection_profile"));
             let profile_before = self.current_connection_profile();
             let mut selected_profile = profile_before;
             ui.horizontal(|ui| {
@@ -320,7 +323,7 @@ impl BridgeApp {
             }
 
             ui.add_space(12.0);
-            ui.label(mode_label);
+            label_with_help(ui, mode_label, t!("help.mode"));
             let mode_before = self.mode;
             ui.vertical(|ui| {
                 ui.radio_value(&mut self.mode, SessionMode::Official, official);
@@ -332,7 +335,7 @@ impl BridgeApp {
             }
 
             ui.add_space(12.0);
-            ui.label(input_delay_label);
+            label_with_help(ui, input_delay_label, t!("help.input_delay"));
             let input_delay_enabled = input_delay_controls_enabled(self.client_state());
             ui.horizontal(|ui| {
                 ui.add(
@@ -380,7 +383,10 @@ impl BridgeApp {
 
         ui.separator();
         ui.add_space(8.0);
-        ui.heading(readiness_label);
+        ui.horizontal(|ui| {
+            ui.heading(readiness_label);
+            help_icon(ui, t!("help.probe.relay_readiness"));
+        });
         let running = self.client_state().readiness_probe_running;
         if ui
             .add_enabled(
@@ -403,7 +409,10 @@ impl BridgeApp {
         ui.add_space(12.0);
         ui.separator();
         ui.add_space(8.0);
-        ui.heading(hook_recv_label);
+        ui.horizontal(|ui| {
+            ui.heading(hook_recv_label);
+            help_icon(ui, t!("help.probe.hook_receive"));
+        });
         if ui
             .add_enabled(self.mutations_enabled(), egui::Button::new(run_hook_label))
             .clicked()
@@ -574,7 +583,10 @@ fn hook_probe_table(ui: &mut egui::Ui, report: &HookReceiveProbeReport) {
 }
 
 fn session_health_summary(ui: &mut egui::Ui, state: &RuntimeState) {
-    ui.heading(t!("session_quality"));
+    ui.horizontal(|ui| {
+        ui.heading(t!("session_quality"));
+        help_icon(ui, t!("help.session_quality"));
+    });
     ui.add_space(6.0);
     let Some(snapshot) = &state.latest_session_health else {
         ui.label(t!("session.not_started"));

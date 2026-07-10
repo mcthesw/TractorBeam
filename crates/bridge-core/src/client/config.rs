@@ -4,7 +4,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use chrono::{Datelike, Local};
 use directories::ProjectDirs;
 use serde::Deserialize;
 
@@ -28,7 +27,6 @@ pub struct ClientConfig {
     pub default_mode: SessionMode,
     pub selected_relay: Option<String>,
     pub selected_steam_id64: Option<String>,
-    pub room: Option<String>,
     pub relays: Vec<RelayPreset>,
     pub session_health: SessionHealthConfig,
 }
@@ -40,7 +38,6 @@ impl Default for ClientConfig {
             default_mode: SessionMode::Pure,
             selected_relay: None,
             selected_steam_id64: None,
-            room: None,
             relays: Vec::new(),
             session_health: SessionHealthConfig::default(),
         }
@@ -147,25 +144,6 @@ impl RelayPreset {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LocalDate {
-    pub year: i32,
-    pub month: u32,
-    pub day: u32,
-}
-
-impl LocalDate {
-    #[must_use]
-    pub fn today() -> Self {
-        let today = Local::now().date_naive();
-        Self {
-            year: today.year(),
-            month: today.month(),
-            day: today.day(),
-        }
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum ClientConfigError {
     #[error("invalid TOML: {0}")]
@@ -180,8 +158,6 @@ pub enum ClientConfigError {
     DuplicateRelayId(String),
     #[error("selected relay does not exist: {0}")]
     UnknownSelectedRelay(String),
-    #[error("unsupported room template token: {0}")]
-    UnsupportedRoomTemplate(String),
     #[error("invalid session health config: {0}")]
     InvalidSessionHealth(String),
 }
@@ -192,7 +168,6 @@ struct RawClientConfig {
     default_mode: Option<String>,
     selected_relay: Option<String>,
     selected_steam_id64: Option<String>,
-    room: Option<String>,
     session_health: Option<RawSessionHealthConfig>,
     #[serde(default)]
     relays: Vec<RawRelayPreset>,
@@ -230,7 +205,6 @@ impl TryFrom<RawClientConfig> for ClientConfig {
             default_mode: parse_mode(value.default_mode.as_deref())?.unwrap_or(SessionMode::Pure),
             selected_relay: trimmed_non_empty(value.selected_relay),
             selected_steam_id64: trimmed_non_empty(value.selected_steam_id64),
-            room: trimmed_non_empty(value.room),
             relays: value
                 .relays
                 .into_iter()
@@ -318,7 +292,6 @@ pub fn load_client_config() -> LoadedClientConfig {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ClientConfigSelection {
     pub selected_relay: Option<String>,
-    pub room: Option<String>,
     pub selected_steam_id64: Option<String>,
 }
 
@@ -352,7 +325,6 @@ fn save_selection_to(
         "selected_relay",
         selection.selected_relay.as_deref(),
     );
-    set_optional_key(&mut doc, "room", selection.room.as_deref());
     set_optional_key(
         &mut doc,
         "selected_steam_id64",
@@ -408,53 +380,6 @@ fn load_config_file(path: &Path) -> Result<ClientConfig, ClientConfigError> {
     toml::from_str::<RawClientConfig>(&contents)?.try_into()
 }
 
-pub fn resolve_room_template(template: &str, date: LocalDate) -> Result<String, ClientConfigError> {
-    let mut output = String::new();
-    let mut rest = template;
-    while let Some(start) = rest.find("{date:") {
-        output.push_str(&rest[..start]);
-        let token_start = start + "{date:".len();
-        let Some(end) = rest[token_start..].find('}') else {
-            return Err(ClientConfigError::UnsupportedRoomTemplate(
-                rest[start..].to_owned(),
-            ));
-        };
-        let format = &rest[token_start..token_start + end];
-        output.push_str(&format_date(format, date)?);
-        rest = &rest[token_start + end + 1..];
-    }
-    output.push_str(rest);
-    Ok(output)
-}
-
-fn format_date(format: &str, date: LocalDate) -> Result<String, ClientConfigError> {
-    let mut output = String::new();
-    let mut chars = format.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '%' {
-            output.push(ch);
-            continue;
-        }
-        let Some(token) = chars.next() else {
-            return Err(ClientConfigError::UnsupportedRoomTemplate(
-                format.to_owned(),
-            ));
-        };
-        match token {
-            'Y' => output.push_str(&format!("{:04}", date.year)),
-            'm' => output.push_str(&format!("{:02}", date.month)),
-            'd' => output.push_str(&format!("{:02}", date.day)),
-            '%' => output.push('%'),
-            other => {
-                return Err(ClientConfigError::UnsupportedRoomTemplate(format!(
-                    "%{other}"
-                )));
-            }
-        }
-    }
-    Ok(output)
-}
-
 fn parse_transport(value: Option<&str>) -> Result<Option<TransportChoice>, ClientConfigError> {
     value
         .map(|value| match value.trim().to_ascii_lowercase().as_str() {
@@ -489,19 +414,6 @@ fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn resolves_supported_date_room_template() {
-        let date = LocalDate {
-            year: 2026,
-            month: 6,
-            day: 10,
-        };
-
-        let room = resolve_room_template("bb-{date:%Y%m%d}", date).unwrap();
-
-        assert_eq!(room, "bb-20260610");
-    }
 
     #[test]
     fn parses_relay_presets_and_defaults() {
@@ -578,6 +490,7 @@ snapshot_interval_seconds = 0
         std::fs::write(
             &config_path,
             r#"default_transport = "tcp"
+room = "legacy-room-value"
 [[relays]]
 id = "r1"
 name = "Relay 1"
@@ -594,7 +507,6 @@ port = 25910
             &config_path,
             &ClientConfigSelection {
                 selected_relay: Some("r1".to_owned()),
-                room: Some("20260703-ab12".to_owned()),
                 selected_steam_id64: Some("76561198000000001".to_owned()),
             },
         );
@@ -602,8 +514,8 @@ port = 25910
 
         let content = std::fs::read_to_string(&config_path).unwrap();
         assert!(content.contains("selected_relay = \"r1\""));
-        assert!(content.contains("room = \"20260703-ab12\""));
         assert!(content.contains("selected_steam_id64 = \"76561198000000001\""));
+        assert!(content.contains("room = \"legacy-room-value\""));
         assert!(content.contains("[[relays]]"), "relay presets must survive");
 
         std::fs::remove_dir_all(&dir).ok();

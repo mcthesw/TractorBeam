@@ -251,7 +251,7 @@ impl Display for LogLevel {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LogEntry {
-    pub timestamp: u64,
+    pub timestamp_ms: u64,
     pub level: LogLevel,
     pub message: String,
 }
@@ -340,7 +340,7 @@ pub(super) fn log_event(level: LogLevel, message: impl Into<String>) -> RuntimeE
 
 pub(super) fn log_entry(level: LogLevel, message: impl Into<String>) -> LogEntry {
     LogEntry {
-        timestamp: unix_seconds(),
+        timestamp_ms: unix_millis(),
         level,
         message: message.into(),
     }
@@ -372,6 +372,14 @@ pub(super) fn unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
+}
+
+fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 #[cfg(test)]

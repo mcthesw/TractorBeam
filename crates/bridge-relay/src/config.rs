@@ -126,10 +126,8 @@ impl RelayConfig {
     fn validate(&self) -> io::Result<()> {
         validate_listener("relay_server.udp_bind", &self.udp_bind)?;
         validate_listener("relay_server.tcp_bind", &self.tcp_bind)?;
-        if self.udp_bind.is_none() && self.tcp_bind.is_none() {
-            return invalid_config(
-                "at least one of relay_server.udp_bind or relay_server.tcp_bind must be set",
-            );
+        if self.tcp_bind.is_none() {
+            return invalid_config("relay_server.tcp_bind is required for the v2 control plane");
         }
         if self.tcp_egress_queue_capacity == 0 {
             return invalid_config("tcp_egress_queue_capacity must be greater than 0");
@@ -339,9 +337,8 @@ tcp_bind = "127.0.0.1:25910"
 udp_bind = "127.0.0.1:25910"
 "#,
         )
-        .unwrap();
-        assert_eq!(udp_only.udp_bind.as_deref(), Some("127.0.0.1:25910"));
-        assert_eq!(udp_only.tcp_bind, None);
+        .unwrap_err();
+        assert!(udp_only.to_string().contains("tcp_bind is required"));
     }
 
     #[test]
@@ -431,6 +428,6 @@ byte_rate_limit_burst = 0
         .unwrap_err();
 
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(error.to_string().contains("at least one"));
+        assert!(error.to_string().contains("tcp_bind is required"));
     }
 }

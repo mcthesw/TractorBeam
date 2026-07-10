@@ -10,7 +10,9 @@ Goal: keep the Windows bridge path on the Rust baseline and Rust Native Hook
 path.
 
 - [x] Support Windows + Steam + *The Binding of Isaac: Repentance+* only.
-- [x] Use the crate layout `bridge-core`, `bridge-gui`, `bridge-relay`, `native-hook`, and `isaac-injector`.
+- [x] Use runtime crates `bridge-core`, `bridge-gui`, `bridge-relay`,
+  `native-hook`, and `isaac-injector`, plus narrow shared-contract crates
+  `hook-ipc` and `relay-protocol`.
 - [x] Build the Rust Native Hook DLL for the i686 Isaac process.
 - [x] Build the Rust Injector helper.
 - [x] Build the Rust Relay Server with room join, peer forwarding, UDP/TCP listeners, timeouts, rate limits, and IP/CIDR blocklists.

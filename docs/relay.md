@@ -1,54 +1,16 @@
 # Relay Server
 
-The Relay Server is one binary that can listen on UDP, TCP, or both using the
-same Relay Protocol. It does not need a database for Phase 2.
+The Relay is a stateless, in-memory Relay Protocol v2 forwarder. It requires a
+TCP listener for the reliable control plane and may expose UDP on the same public
+port for the UDP data profile. The test host only opens `25910/TCP` and
+`25910/UDP`, so both listeners should normally use that port.
 
-## Run
-
-Build and run locally:
-
-```sh
-cargo run --release -p tractor-beam-relay -- --config deploy/relay.toml
-```
-
-Or override the bind address directly:
-
-```sh
-cargo run --release -p tractor-beam-relay -- --bind 0.0.0.0:25910
-```
-
-Use `--tcp-bind 0.0.0.0:25910` to override TCP separately, or `--disable-tcp`
-to run UDP only.
-
-On a server, copy the release binary and a config file, then run:
-
-```sh
-RUST_LOG=info ./tractor-beam-relay --config /etc/tractor-beam/relay.toml
-```
-
-Docker build:
-
-```sh
-docker build -f deploy/Dockerfile.relay -t tractor-beam-relay .
-docker run --rm -p 25910:25910/udp -p 25910:25910/tcp tractor-beam-relay
-```
-
-Docker Compose with the published image:
-
-```sh
-cd deploy
-docker compose -f docker-compose.relay.yml up -d
-```
-
-Open inbound firewall rules for each listener configured under
-`[relay_server]`, normally `25910/udp` and `25910/tcp`.
-
-## Config
+## Configuration
 
 ```toml
 [relay_server]
-udp_bind = "0.0.0.0:25910"
 tcp_bind = "0.0.0.0:25910"
+udp_bind = "0.0.0.0:25910" # omit for TCP-only operation
 
 [admission]
 pow_difficulty_bits = 18
@@ -65,51 +27,38 @@ byte_rate_limit_burst = 16777216
 blocked_cidrs = []
 ```
 
-- `relay_server.udp_bind`: UDP listener address. Omit it to disable UDP.
-- `relay_server.tcp_bind`: TCP listener address. Omit it to disable TCP.
-- `admission.pow_difficulty_bits`: room-admission proof-of-work difficulty.
-  Use `0` only for local or private development relays.
-- `room_limits.max_rooms`: maximum active Rooms.
-- `traffic_limits.rate_limit_per_second`: maximum admitted data packets per
-  peer per second.
-- `traffic_limits.byte_rate_limit_per_second`: sustained admitted data bytes
-  per peer per second.
-- `traffic_limits.byte_rate_limit_burst`: admitted data byte-token bucket burst
-  per peer.
-- `blocked_cidrs`: local IP/CIDR blocklist, for example
-  `["203.0.113.10/32", "2001:db8::/32"]`.
+TCP cannot be disabled in v2. A Relay without UDP accepts only Clients whose
+required capabilities allow the TCP data profile. Listener, packet-size, queue,
+Room, traffic, and admission values are validated at startup.
 
-Other relay safety limits are shared built-in defaults. Public relay datagrams
-are capped at 2048 bytes on the wire, each peer defaults to 5000 packets/s plus
-an 8 MiB/s byte-token bucket with a 16 MiB burst, HealthPing replies are capped
-per source IP, rooms hold at most four peers, inactive peers expire after 30
-seconds, and empty rooms expire after 120 seconds.
+## Session lifecycle
 
-Restart the Relay Server after config changes.
+The Client first performs the bounded compatibility bootstrap, then Join with a
+128-bit Session Credential and proof-of-work challenge. The Relay creates or
+finds the credential-keyed Room and issues opaque connection/resume material.
+UDP sessions additionally validate a one-time path token from the observed UDP
+source tuple before any UDP forwarding.
 
-## Runbook
+Unexpected TCP loss marks the Peer Reconnecting and retains Room membership,
+connection identity, duplicate window, and validated UDP tuple for 120 seconds.
+Resume restores Connected presence. Explicit Stop removes immediately; expiry
+removes once. Relay restart intentionally loses all in-memory state, after which
+Clients perform a full Join with the existing Session Credential.
 
-- Startup is healthy when the log contains `relay listening`.
-- If clients report `relay join timed out`, check the selected Transport Choice
-  and the matching firewall rule first.
-- If a Room fills unexpectedly, check stale Peers and whether the Room already
-  has four peers.
-- For obvious abuse, add the source IP or CIDR to `blocked_cidrs`, restart, and
-  keep raw IPs out of public notes.
-- If TCP sessions feel delayed, compare `tcp_egress_queue_full` and
-  `tcp_egress_dropped_packets` in the periodic `relay stats` lines before
-  changing relay internals.
-- If CPU or traffic spikes, collect the Relay Server logs privately and check
-  `blocked`, `rate_limited`, and room-level counters before changing defaults.
-- To decide whether a future wire protocol is justified, use the aggregate
-  `payload_size_buckets`, `wire_size_buckets`, `max_payload_bytes`, and
-  `max_wire_bytes` fields in `relay stats`. `payload_over_ipv4_safe` counts
-  game payloads above 1390 bytes; `wire_over_ipv4_udp` counts complete v1
-  datagrams above 1472 bytes. These counters reset every stats interval and do
-  not contain packet contents or player identities.
-- The Relay Server keeps only in-memory Room state, so a restart drops all active
-  Rooms.
+## Protection and observability
 
-The Relay Server requires clients to complete a join challenge before it
-forwards room traffic, and it only forwards packets among peers in the same
-room.
+Relay applies packet and byte limits per connection, validates sender identity,
+Room membership, selected profile, UDP tuple, target membership, and monotonic
+frame window before forwarding. Duplicate and too-old frames are discarded.
+
+Startup/bootstrap transitions, disconnect/resume outcomes, expiry, and a
+30-second aggregate metrics snapshot are structured logs. Metrics include Join,
+disconnect, Resume, expiry, received/forwarded, duplicate, rejected, and
+rate-limited counts. Never log Session Credentials, connection ids, resume/path
+credentials, SteamID64 values, display names, or peer addresses.
+
+## Compatibility
+
+Relay v2 has no v1 listener or fallback. Old Clients and Join Codes are rejected
+by the hard-cut release. Bootstrap incompatibility is returned with a stable
+schema/protocol/capability reason before admission.

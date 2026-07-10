@@ -61,9 +61,6 @@ static ORIGINAL_AVAILABLE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 static ORIGINAL_READ: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 static ORIGINAL_SESSION_STATE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 static STEAM_NETWORKING_HOOKED: AtomicBool = AtomicBool::new(false);
-static SEND_CALLS: AtomicU32 = AtomicU32::new(0);
-static AVAILABLE_CALLS: AtomicU32 = AtomicU32::new(0);
-static READ_CALLS: AtomicU32 = AtomicU32::new(0);
 static SESSION_STATE_CALLS: AtomicU32 = AtomicU32::new(0);
 static RUN_CALLBACK_CALLS: AtomicU32 = AtomicU32::new(0);
 
@@ -254,29 +251,14 @@ unsafe extern "thiscall" fn hook_send_p2p_packet(
     send_type: i32,
     channel: i32,
 ) -> bool {
-    let send_call = SEND_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
     let bridged = bridge::send_packet(remote, data.cast(), bytes, send_type, channel);
-    let result = if bridge::mode() == bridge::BridgeMode::Replace {
+    if bridge::mode() == bridge::BridgeMode::Replace {
         bridged
     } else if let Some(original) = original_fn::<SteamSendP2PPacketFn>(&ORIGINAL_SEND) {
         unsafe { original(this, remote, data, bytes, send_type, channel) }
     } else {
         false
-    };
-    if should_sample(send_call) || !result {
-        let level = if result {
-            bridge::HookLogLevel::Debug
-        } else {
-            bridge::HookLogLevel::Warn
-        };
-        bridge::log(
-            level,
-            format!(
-                "steam_send call={send_call} remote={remote} channel={channel} send_type={send_type} bytes={bytes} bridged={bridged} result={result}"
-            ),
-        );
     }
-    result
 }
 
 unsafe extern "thiscall" fn hook_is_p2p_packet_available(
@@ -284,41 +266,13 @@ unsafe extern "thiscall" fn hook_is_p2p_packet_available(
     bytes: *mut u32,
     channel: i32,
 ) -> bool {
-    let available_call = AVAILABLE_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
     if bridge::has_packet(channel, bytes) {
-        if should_sample(available_call) {
-            bridge::log_debug(format!(
-                "steam_available call={available_call} channel={channel} bridge_hit=true bytes={}",
-                pointed_u32(bytes)
-            ));
-        }
         return true;
     }
     if (bridge::mode() != bridge::BridgeMode::Replace || bridge::should_fallback_to_steam())
         && let Some(original) = original_fn::<SteamIsP2PPacketAvailableFn>(&ORIGINAL_AVAILABLE)
     {
-        let result = unsafe { original(this, bytes, channel) };
-        if result || should_sample(available_call) {
-            let level = if result {
-                bridge::HookLogLevel::Debug
-            } else {
-                bridge::HookLogLevel::Trace
-            };
-            bridge::log(
-                level,
-                format!(
-                    "steam_available call={available_call} channel={channel} bridge_hit=false steam_result={result} bytes={}",
-                    pointed_u32(bytes)
-                ),
-            );
-        }
-        return result;
-    }
-    if should_sample(available_call) {
-        bridge::log_trace(format!(
-            "steam_available call={available_call} channel={channel} bridge_hit=false steam_result=false bytes={}",
-            pointed_u32(bytes)
-        ));
+        return unsafe { original(this, bytes, channel) };
     }
     false
 }
@@ -331,42 +285,13 @@ unsafe extern "thiscall" fn hook_read_p2p_packet(
     remote: *mut u64,
     channel: i32,
 ) -> bool {
-    let read_call = READ_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
     if bridge::read_packet(channel, destination.cast(), max_bytes, bytes_read, remote) {
-        if should_sample(read_call) {
-            bridge::log_debug(format!(
-                "steam_read call={read_call} channel={channel} bridge_hit=true peer={} bytes={} max_bytes={max_bytes}",
-                pointed_u64(remote),
-                pointed_u32(bytes_read)
-            ));
-        }
         return true;
     }
     if (bridge::mode() != bridge::BridgeMode::Replace || bridge::should_fallback_to_steam())
         && let Some(original) = original_fn::<SteamReadP2PPacketFn>(&ORIGINAL_READ)
     {
-        let result = unsafe { original(this, destination, max_bytes, bytes_read, remote, channel) };
-        if result || should_sample(read_call) {
-            let level = if result {
-                bridge::HookLogLevel::Debug
-            } else {
-                bridge::HookLogLevel::Trace
-            };
-            bridge::log(
-                level,
-                format!(
-                    "steam_read call={read_call} channel={channel} bridge_hit=false steam_result={result} peer={} bytes={} max_bytes={max_bytes}",
-                    pointed_u64(remote),
-                    pointed_u32(bytes_read)
-                ),
-            );
-        }
-        return result;
-    }
-    if should_sample(read_call) {
-        bridge::log_trace(format!(
-            "steam_read call={read_call} channel={channel} bridge_hit=false steam_result=false max_bytes={max_bytes}"
-        ));
+        return unsafe { original(this, destination, max_bytes, bytes_read, remote, channel) };
     }
     false
 }
@@ -377,22 +302,6 @@ fn should_sample(call: u32) -> bool {
 
 fn should_sample_callback(call: u32) -> bool {
     call <= 8 || call.is_multiple_of(5_000)
-}
-
-fn pointed_u32(pointer: *const u32) -> u32 {
-    if pointer.is_null() {
-        0
-    } else {
-        unsafe { *pointer }
-    }
-}
-
-fn pointed_u64(pointer: *const u64) -> u64 {
-    if pointer.is_null() {
-        0
-    } else {
-        unsafe { *pointer }
-    }
 }
 
 unsafe extern "thiscall" fn hook_get_p2p_session_state(

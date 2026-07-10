@@ -4,40 +4,31 @@ use std::{
     fmt::Display,
     fs,
     io::{self, Read, Write},
-    net::{Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket},
     os::windows::ffi::OsStringExt,
     path::PathBuf,
-    str::FromStr,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+        mpsc::{SyncSender, TrySendError, sync_channel},
     },
-    thread::{self, JoinHandle},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    thread::JoinHandle,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use windows_sys::Win32::{Foundation::HINSTANCE, System::LibraryLoader::GetModuleFileNameW};
 
-use super::input_delay::InputDelayMemoryError;
+use tractor_beam_hook_ipc::{GamePacket, SessionId};
+
+use super::ipc_worker::{self, WorkerCounters};
 
 const CONFIG_FILE: &str = "isaac_bridge_config.txt";
 const LOG_FILE: &str = "tractor_beam_hook.log";
-const LOCAL_MAGIC: &[u8; 4] = b"IBR1";
-const LOCAL_HEADER_LEN: usize = 32;
-const MAX_PAYLOAD_SIZE: usize = 64 * 1024;
-const MAX_QUEUED_PACKETS: usize = 4096;
 const MAX_LOG_EVENTS: u32 = 20_000;
-const TYPE_OUTGOING: u8 = 1;
-const TYPE_INCOMING: u8 = 2;
 
 static STATE: Mutex<Option<BridgeState>> = Mutex::new(None);
 static LOG_LOCK: Mutex<()> = Mutex::new(());
 static LOG_EVENTS: AtomicU32 = AtomicU32::new(0);
 static NEXT_SEQUENCE: AtomicU32 = AtomicU32::new(1);
-static LOCAL_OUT_EVENTS: AtomicU32 = AtomicU32::new(0);
-static LOCAL_IN_EVENTS: AtomicU32 = AtomicU32::new(0);
-static AVAILABLE_HITS: AtomicU32 = AtomicU32::new(0);
-static READ_HITS: AtomicU32 = AtomicU32::new(0);
 static MODULE_HANDLE: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,29 +62,18 @@ pub enum BridgeMode {
 struct BridgeConfig {
     mode: BridgeMode,
     fallback_to_steam: bool,
-    sidecar: SocketAddr,
-    bind: SocketAddr,
-    control: Option<SocketAddr>,
-}
-
-#[derive(Clone, Debug)]
-struct QueuedPacket {
-    peer: u64,
-    sequence: u32,
-    channel: i32,
-    send_type: i32,
-    payload: Vec<u8>,
+    ipc_endpoint: String,
+    ipc_session: SessionId,
 }
 
 struct BridgeState {
     mode: BridgeMode,
     fallback_to_steam: bool,
-    sidecar: SocketAddr,
-    send_socket: UdpSocket,
-    queue: Arc<Mutex<VecDeque<QueuedPacket>>>,
+    data_tx: SyncSender<GamePacket>,
+    queue: Arc<Mutex<VecDeque<GamePacket>>>,
     running: Arc<AtomicBool>,
-    receiver: Option<JoinHandle<()>>,
-    control: Option<JoinHandle<()>>,
+    worker: Option<JoinHandle<()>>,
+    counters: Arc<WorkerCounters>,
 }
 
 pub fn set_module_handle(module: HINSTANCE) {
@@ -121,46 +101,37 @@ pub fn initialize() {
         return;
     }
 
-    let Ok(send_socket) = UdpSocket::bind("127.0.0.1:0") else {
-        log_error("bridge_send_socket_bind_failed");
-        return;
-    };
-    let Ok(receive_socket) = UdpSocket::bind(config.bind) else {
-        log_error(format!(
-            "bridge_receive_socket_bind_failed bind={}",
-            config.bind
-        ));
-        return;
-    };
-    let _ = receive_socket.set_read_timeout(Some(Duration::from_millis(20)));
-
     let queue = Arc::new(Mutex::new(VecDeque::new()));
     let running = Arc::new(AtomicBool::new(true));
-    let receiver = spawn_receiver(receive_socket, Arc::clone(&queue), Arc::clone(&running));
-    let control = config
-        .control
-        .map(|endpoint| spawn_control_listener(endpoint, Arc::clone(&running)));
+    let counters = Arc::new(WorkerCounters::default());
+    let (data_tx, data_rx) = sync_channel(tractor_beam_hook_ipc::HOOK_DATA_QUEUE_CAPACITY);
+    let worker = ipc_worker::spawn(
+        config.ipc_endpoint,
+        config.ipc_session,
+        data_rx,
+        Arc::clone(&queue),
+        Arc::clone(&running),
+        Arc::clone(&counters),
+    );
 
     let state = BridgeState {
         mode: config.mode,
         fallback_to_steam: config.fallback_to_steam,
-        sidecar: config.sidecar,
-        send_socket,
+        data_tx,
         queue,
         running,
-        receiver: Some(receiver),
-        control,
+        worker: Some(worker),
+        counters,
     };
     *STATE.lock().expect("bridge state lock poisoned") = Some(state);
     log_info(format!(
-        "bridge_initialized mode={:?} fallback_to_steam={} sidecar={} bind={} control={}",
+        "bridge_initialized mode={:?} fallback_to_steam={} ipc_version={}.{} data_queue_capacity={} control_queue_capacity={}",
         config.mode,
         config.fallback_to_steam,
-        config.sidecar,
-        config.bind,
-        config
-            .control
-            .map_or_else(|| "none".to_owned(), |endpoint| endpoint.to_string())
+        tractor_beam_hook_ipc::PROTOCOL_MAJOR,
+        tractor_beam_hook_ipc::PROTOCOL_MINOR,
+        tractor_beam_hook_ipc::HOOK_DATA_QUEUE_CAPACITY,
+        tractor_beam_hook_ipc::CONTROL_QUEUE_CAPACITY,
     ));
 }
 
@@ -168,11 +139,8 @@ pub fn shutdown() {
     if let Some(mut state) = STATE.lock().expect("bridge state lock poisoned").take() {
         log_info("bridge_shutdown");
         state.running.store(false, Ordering::Relaxed);
-        if let Some(receiver) = state.receiver.take() {
-            let _ = receiver.join();
-        }
-        if let Some(control) = state.control.take() {
-            let _ = control.join();
+        if let Some(worker) = state.worker.take() {
+            let _ = worker.join();
         }
     }
 }
@@ -195,43 +163,33 @@ pub fn should_fallback_to_steam() -> bool {
 
 pub fn send_packet(peer: u64, data: *const u8, len: u32, send_type: i32, channel: i32) -> bool {
     if data.is_null() {
-        log_warn(format!(
-            "local_out_rejected reason=null_data peer={peer} channel={channel} send_type={send_type} bytes={len}"
-        ));
         return false;
     }
-    if len as usize > MAX_PAYLOAD_SIZE {
-        log_warn(format!(
-            "local_out_rejected reason=payload_too_large peer={peer} channel={channel} send_type={send_type} bytes={len}"
-        ));
+    if len as usize > tractor_beam_hook_ipc::MAX_GAME_PAYLOAD_SIZE {
         return false;
     }
-    let guard = STATE.lock().expect("bridge state lock poisoned");
-    let Some(state) = guard.as_ref() else {
+    let Some((data_tx, counters)) = STATE
+        .lock()
+        .expect("bridge state lock poisoned")
+        .as_ref()
+        .map(|state| (state.data_tx.clone(), Arc::clone(&state.counters)))
+    else {
         return false;
     };
-    let payload = unsafe { std::slice::from_raw_parts(data, len as usize) };
-    let sequence = NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let frame = encode_local_packet(TYPE_OUTGOING, peer, sequence, channel, send_type, payload);
-    let sent = state
-        .send_socket
-        .send_to(&frame, state.sidecar)
-        .is_ok_and(|sent| sent == frame.len());
-    let level = if sent {
-        HookLogLevel::Debug
-    } else {
-        HookLogLevel::Warn
+    let packet = GamePacket {
+        peer,
+        sequence: NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        channel,
+        send_type,
+        payload: unsafe { std::slice::from_raw_parts(data, len as usize) }.to_vec(),
     };
-    let event = LOCAL_OUT_EVENTS.fetch_add(1, Ordering::Relaxed) + 1;
-    if !sent || should_sample_packet_event(event) {
-        log(
-            level,
-            format!(
-                "local_out event={event} peer={peer} sequence={sequence} channel={channel} send_type={send_type} bytes={len} sent={sent}"
-            ),
-        );
+    match data_tx.try_send(packet) {
+        Ok(()) => true,
+        Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
+            saturating_increment(&counters.hook_data_dropped);
+            false
+        }
     }
-    sent
 }
 
 pub fn has_packet(channel: i32, out_size: *mut u32) -> bool {
@@ -250,18 +208,6 @@ pub fn has_packet(channel: i32, out_size: *mut u32) -> bool {
         unsafe {
             *out_size = packet.payload.len() as u32;
         }
-    }
-    let event = AVAILABLE_HITS.fetch_add(1, Ordering::Relaxed) + 1;
-    if should_sample_packet_event(event) {
-        log_debug(format!(
-            "steam_available_bridge_hit event={event} requested_channel={channel} packet_channel={} peer={} sequence={} send_type={} bytes={} queue_len={}",
-            packet.channel,
-            packet.peer,
-            packet.sequence,
-            packet.send_type,
-            packet.payload.len(),
-            queue.len()
-        ));
     }
     true
 }
@@ -296,31 +242,6 @@ pub fn read_packet(
         }
         if !out_peer.is_null() {
             *out_peer = packet.peer;
-        }
-    }
-    if copy_len < packet.payload.len() {
-        log_warn(format!(
-            "steam_read_bridge_truncated requested_channel={channel} packet_channel={} peer={} sequence={} send_type={} packet_bytes={} copied_bytes={} queue_len={}",
-            packet.channel,
-            packet.peer,
-            packet.sequence,
-            packet.send_type,
-            packet.payload.len(),
-            copy_len,
-            queue.len()
-        ));
-    } else {
-        let event = READ_HITS.fetch_add(1, Ordering::Relaxed) + 1;
-        if should_sample_packet_event(event) {
-            log_debug(format!(
-                "steam_read_bridge_hit event={event} requested_channel={channel} packet_channel={} peer={} sequence={} send_type={} bytes={} queue_len={}",
-                packet.channel,
-                packet.peer,
-                packet.sequence,
-                packet.send_type,
-                packet.payload.len(),
-                queue.len()
-            ));
         }
     }
     true
@@ -369,149 +290,13 @@ pub fn log(level: HookLogLevel, message: impl Display) {
     let _ = writeln!(file, "{timestamp} {level} {message}");
 }
 
-fn spawn_receiver(
-    socket: UdpSocket,
-    queue: Arc<Mutex<VecDeque<QueuedPacket>>>,
-    running: Arc<AtomicBool>,
-) -> JoinHandle<()> {
-    thread::spawn(move || {
-        let mut buffer = vec![0_u8; LOCAL_HEADER_LEN + MAX_PAYLOAD_SIZE];
-        while running.load(Ordering::Relaxed) {
-            match socket.recv_from(&mut buffer) {
-                Ok((size, _)) => {
-                    if let Some(packet) = decode_incoming(&buffer[..size]) {
-                        let mut queue = queue.lock().expect("bridge queue lock poisoned");
-                        if queue.len() >= MAX_QUEUED_PACKETS {
-                            queue.pop_front();
-                            log_warn(format!(
-                                "local_in_queue_dropped max_queued={MAX_QUEUED_PACKETS}"
-                            ));
-                        }
-                        let event = LOCAL_IN_EVENTS.fetch_add(1, Ordering::Relaxed) + 1;
-                        if should_sample_packet_event(event) {
-                            log_debug(format!(
-                                "local_in event={event} peer={} sequence={} channel={} send_type={} bytes={} queue_len={}",
-                                packet.peer,
-                                packet.sequence,
-                                packet.channel,
-                                packet.send_type,
-                                packet.payload.len(),
-                                queue.len() + 1
-                            ));
-                        }
-                        queue.push_back(packet);
-                    }
-                }
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                    ) => {}
-                Err(error) => {
-                    log_error(format!("local_in_socket_error error={error}"));
-                    break;
-                }
-            }
-        }
-    })
-}
-
-fn spawn_control_listener(endpoint: SocketAddr, running: Arc<AtomicBool>) -> JoinHandle<()> {
-    thread::spawn(move || {
-        let Ok(listener) = TcpListener::bind(endpoint) else {
-            log_error(format!("control_listener_bind_failed endpoint={endpoint}"));
-            return;
-        };
-        let _ = listener.set_nonblocking(true);
-        log_info(format!("control_listener_started endpoint={endpoint}"));
-        while running.load(Ordering::Relaxed) {
-            match listener.accept() {
-                Ok((stream, _)) => handle_control_stream(stream),
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(20));
-                }
-                Err(error) => {
-                    log_error(format!("control_listener_error error={error}"));
-                    break;
-                }
-            }
-        }
-        log_info(format!("control_listener_stopped endpoint={endpoint}"));
-    })
-}
-
-fn handle_control_stream(mut stream: TcpStream) {
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
-    let response = match tractor_beam_hook_ipc::read_request(&mut stream) {
-        Ok(request) => handle_control_request(request),
-        Err(error) => {
-            log_warn(format!("control_request_read_failed error={error}"));
-            tractor_beam_hook_ipc::Response::error(
-                0,
-                tractor_beam_hook_ipc::ErrorCode::InvalidRequest,
-            )
-        }
-    };
-    if let Err(error) = tractor_beam_hook_ipc::write_response(&mut stream, &response) {
-        log_warn(format!("control_response_write_failed error={error}"));
-    }
-    let _ = stream.shutdown(Shutdown::Both);
-}
-
-fn handle_control_request(
-    request: tractor_beam_hook_ipc::Request,
-) -> tractor_beam_hook_ipc::Response {
-    match request {
-        tractor_beam_hook_ipc::Request::ReadInputDelay { id } => {
-            match super::input_delay::read_current() {
-                Ok(value) => {
-                    log_info(format!("input_delay_read value={value}"));
-                    tractor_beam_hook_ipc::Response::ok(id, value)
-                }
-                Err(error) => {
-                    log_warn(format!("input_delay_read_failed error={error:?}"));
-                    tractor_beam_hook_ipc::Response::error(id, map_input_delay_error(error, false))
-                }
-            }
-        }
-        tractor_beam_hook_ipc::Request::WriteInputDelay { id, value } => {
-            match super::input_delay::write_value(value) {
-                Ok(value) => {
-                    log_info(format!("input_delay_write value={value}"));
-                    tractor_beam_hook_ipc::Response::ok(id, value)
-                }
-                Err(error) => {
-                    log_warn(format!("input_delay_write_failed error={error:?}"));
-                    tractor_beam_hook_ipc::Response::error(id, map_input_delay_error(error, true))
-                }
-            }
-        }
-    }
-}
-
-fn map_input_delay_error(
-    error: InputDelayMemoryError,
-    writing: bool,
-) -> tractor_beam_hook_ipc::ErrorCode {
-    match error {
-        InputDelayMemoryError::TargetNotFound => tractor_beam_hook_ipc::ErrorCode::TargetNotFound,
-        InputDelayMemoryError::MemoryAccessFailed if writing => {
-            tractor_beam_hook_ipc::ErrorCode::WriteFailed
-        }
-        InputDelayMemoryError::MemoryAccessFailed => tractor_beam_hook_ipc::ErrorCode::ReadFailed,
-        InputDelayMemoryError::Internal => tractor_beam_hook_ipc::ErrorCode::InternalError,
-    }
-}
-
 fn read_config(path: &std::path::Path) -> io::Result<BridgeConfig> {
     let mut contents = String::new();
     fs::File::open(path)?.read_to_string(&mut contents)?;
     let mut mode = BridgeMode::Off;
     let mut fallback_to_steam = true;
-    let mut sidecar = SocketAddr::from_str("127.0.0.1:25900").expect("static endpoint");
-    let mut bind = SocketAddr::from_str("127.0.0.1:25901").expect("static endpoint");
-    let mut control = None;
+    let mut ipc_endpoint = None;
+    let mut ipc_session = None;
 
     for line in contents.lines().map(str::trim) {
         let Some((key, value)) = line.split_once('=') else {
@@ -525,31 +310,23 @@ fn read_config(path: &std::path::Path) -> io::Result<BridgeConfig> {
                 };
             }
             "fallback_to_steam" => fallback_to_steam = parse_bool(value, true),
-            "sidecar" => {
-                if let Ok(parsed) = value.trim().parse() {
-                    sidecar = parsed;
-                }
-            }
-            "bind" => {
-                if let Ok(parsed) = value.trim().parse() {
-                    bind = parsed;
-                }
-            }
-            "control" => {
-                if let Ok(parsed) = value.trim().parse() {
-                    control = Some(parsed);
-                }
-            }
+            "ipc_endpoint" => ipc_endpoint = Some(value.trim().to_owned()),
+            "ipc_session" => ipc_session = value.trim().parse().ok(),
             _ => {}
         }
     }
 
+    let ipc_endpoint = ipc_endpoint
+        .filter(|endpoint| !endpoint.is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing IPC endpoint"))?;
+    let ipc_session = ipc_session
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid IPC session"))?;
+
     Ok(BridgeConfig {
         mode,
         fallback_to_steam,
-        sidecar,
-        bind,
-        control,
+        ipc_endpoint,
+        ipc_session,
     })
 }
 
@@ -591,57 +368,8 @@ fn channel_matches(requested: i32, packet: i32) -> bool {
     requested == packet
 }
 
-fn should_sample_packet_event(event: u32) -> bool {
-    event <= 64 || event.is_multiple_of(1_000)
-}
-
-fn encode_local_packet(
-    packet_type: u8,
-    peer: u64,
-    sequence: u32,
-    channel: i32,
-    send_type: i32,
-    payload: &[u8],
-) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(LOCAL_HEADER_LEN + payload.len());
-    frame.extend_from_slice(LOCAL_MAGIC);
-    frame.push(1);
-    frame.push(packet_type);
-    frame.extend_from_slice(&(LOCAL_HEADER_LEN as u16).to_le_bytes());
-    frame.extend_from_slice(&peer.to_le_bytes());
-    frame.extend_from_slice(&sequence.to_le_bytes());
-    frame.extend_from_slice(&channel.to_le_bytes());
-    frame.extend_from_slice(&send_type.to_le_bytes());
-    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    frame.extend_from_slice(payload);
-    frame
-}
-
-fn decode_incoming(bytes: &[u8]) -> Option<QueuedPacket> {
-    if bytes.len() < LOCAL_HEADER_LEN
-        || &bytes[0..4] != LOCAL_MAGIC
-        || bytes[4] != 1
-        || bytes[5] != TYPE_INCOMING
-    {
-        return None;
-    }
-    let header_len = u16::from_le_bytes(bytes[6..8].try_into().ok()?) as usize;
-    let peer = u64::from_le_bytes(bytes[8..16].try_into().ok()?);
-    let sequence = u32::from_le_bytes(bytes[16..20].try_into().ok()?);
-    let channel = i32::from_le_bytes(bytes[20..24].try_into().ok()?);
-    let send_type = i32::from_le_bytes(bytes[24..28].try_into().ok()?);
-    let payload_len = u32::from_le_bytes(bytes[28..32].try_into().ok()?) as usize;
-    if header_len < LOCAL_HEADER_LEN
-        || payload_len > MAX_PAYLOAD_SIZE
-        || bytes.len() < header_len + payload_len
-    {
-        return None;
-    }
-    Some(QueuedPacket {
-        peer,
-        sequence,
-        channel,
-        send_type,
-        payload: bytes[header_len..header_len + payload_len].to_vec(),
-    })
+fn saturating_increment(counter: &std::sync::atomic::AtomicU64) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        Some(value.saturating_add(1))
+    });
 }

@@ -7,7 +7,9 @@ use std::{
 use bytes::Bytes;
 use tractor_beam_hook_ipc::GamePacket as HookGamePacket;
 
-use crate::protocol::{ControlMessage, Envelope, GamePacket, MessageType};
+use crate::protocol::v2::{
+    DataFrame, Frame, PeerPresenceInfo, ServerControl, decode_frame, decode_server_control,
+};
 
 use super::{
     Counters, LogLevel,
@@ -27,25 +29,25 @@ pub(super) struct PacketSummary {
 
 #[derive(Clone, Debug)]
 pub(super) struct OutboundRelayPacket {
-    pub(super) raw: Bytes,
+    pub(super) to_steam_id64: u64,
+    pub(super) source_sequence: u32,
+    pub(super) channel: i32,
+    pub(super) send_type: i32,
+    pub(super) payload: Bytes,
     pub(super) summary: PacketSummary,
     pub(super) sent_bytes: u64,
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct InboundGamePacket {
-    pub(super) game: GamePacket,
+    pub(super) game: DataFrame,
 }
 
 #[derive(Clone, Debug)]
 pub(super) enum InboundRelayDatagram {
     Game(InboundGamePacket),
-    HealthPong {
-        id: u64,
-    },
-    RoomUpdate {
-        peers: Vec<crate::protocol::PeerInfo>,
-    },
+    HealthPong { id: u64 },
+    PeerPresence { peers: Vec<PeerPresenceInfo> },
 }
 
 #[derive(Debug, Default)]
@@ -128,7 +130,6 @@ impl PacketObserver {
 }
 
 pub(super) fn encode_outbound_relay_packet(
-    steam_id64: &str,
     packet: HookGamePacket,
 ) -> io::Result<OutboundRelayPacket> {
     let summary = PacketSummary {
@@ -141,24 +142,16 @@ pub(super) fn encode_outbound_relay_packet(
         wire_bytes: 0,
     };
     let sent_bytes = u64::try_from(packet.payload.len()).unwrap_or(u64::MAX);
-    let game = GamePacket {
-        from_steam_id64: steam_id64.to_owned(),
+    Ok(OutboundRelayPacket {
+        summary: PacketSummary {
+            wire_bytes: crate::protocol::v2::DATA_FRAME_OVERHEAD + packet.payload.len(),
+            ..summary
+        },
         to_steam_id64: packet.peer,
         source_sequence: packet.sequence,
         channel: packet.channel,
         send_type: packet.send_type,
         payload: Bytes::from(packet.payload),
-    };
-    let payload = game.encode().map_err(io::Error::other)?;
-    let raw = Envelope::new(MessageType::Data, payload)
-        .encode()
-        .map_err(io::Error::other)?;
-    Ok(OutboundRelayPacket {
-        summary: PacketSummary {
-            wire_bytes: raw.len(),
-            ..summary
-        },
-        raw,
         sent_bytes,
     })
 }
@@ -166,27 +159,24 @@ pub(super) fn encode_outbound_relay_packet(
 pub(super) fn decode_inbound_relay_datagram(
     bytes: Bytes,
 ) -> io::Result<Option<InboundRelayDatagram>> {
-    let envelope = Envelope::decode(bytes).map_err(io::Error::other)?;
-    match envelope.message_type {
-        MessageType::Data => {
-            let game = GamePacket::decode(&envelope.payload).map_err(io::Error::other)?;
-            Ok(Some(InboundRelayDatagram::Game(InboundGamePacket { game })))
-        }
-        MessageType::Heartbeat => match ControlMessage::decode(&envelope.payload) {
-            Ok(ControlMessage::HealthPong { id }) => {
-                Ok(Some(InboundRelayDatagram::HealthPong { id }))
+    match decode_frame(bytes).map_err(io::Error::other)? {
+        Frame::Data(game) => Ok(Some(InboundRelayDatagram::Game(InboundGamePacket { game }))),
+        Frame::ServerControl(payload) => match decode_server_control(&payload)
+            .map_err(io::Error::other)?
+        {
+            ServerControl::ControlPong { id } => Ok(Some(InboundRelayDatagram::HealthPong { id })),
+            ServerControl::PeerPresenceUpdate { peers } => {
+                Ok(Some(InboundRelayDatagram::PeerPresence { peers }))
             }
-            Ok(_) => Ok(None),
-            Err(error) => Err(io::Error::other(error)),
-        },
-        MessageType::RoomUpdate => match ControlMessage::decode(&envelope.payload) {
-            Ok(ControlMessage::RoomUpdate { peers }) => {
-                Ok(Some(InboundRelayDatagram::RoomUpdate { peers }))
+            ServerControl::Error { code, message, .. } => {
+                Err(io::Error::other(format!("{code:?}: {message}")))
             }
-            Ok(_) => Ok(None),
-            Err(error) => Err(io::Error::other(error)),
+            _ => Ok(None),
         },
-        _ => Ok(None),
+        Frame::ClientControl(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "relay sent a client control frame",
+        )),
     }
 }
 
@@ -195,7 +185,7 @@ pub(super) fn encode_inbound_hook_packet(
     local_sequence: &mut u32,
 ) -> (HookGamePacket, PacketSummary, u64) {
     let game = inbound.game;
-    let peer = game.from_steam_id64.parse::<u64>().unwrap_or_default();
+    let peer = game.from_steam_id64;
     let received_bytes = u64::try_from(game.payload.len()).unwrap_or(u64::MAX);
     let summary = PacketSummary {
         peer,

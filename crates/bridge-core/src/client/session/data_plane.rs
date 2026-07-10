@@ -1,4 +1,11 @@
 use super::*;
+use backon::{BackoffBuilder as _, ExponentialBuilder};
+
+use crate::client::Counters;
+use crate::client::relay_transport::RecoveryKind;
+
+const RECOVERY_DEADLINE: Duration = Duration::from_secs(120);
+const RECOVERY_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(super) struct RelayTransportTaskContext {
     pub(super) event_tx: RuntimeEventSender,
@@ -10,7 +17,6 @@ pub(super) struct RelayTransportTaskContext {
 
 pub(super) async fn hook_in_task(
     mut hook_packets_rx: TokioReceiver<tractor_beam_hook_ipc::GamePacket>,
-    steam_id64: String,
     outbound_tx: TokioSender<OutboundRelayPacket>,
     event_tx: RuntimeEventSender,
     cancellation: CancellationToken,
@@ -22,7 +28,7 @@ pub(super) async fn hook_in_task(
             Some(packet) = hook_packets_rx.recv() => {
                 let size = packet.payload.len();
                 observe_health(&health, |health| health.observe_hook_in_recv(size, Instant::now()));
-                match encode_outbound_relay_packet(&steam_id64, packet) {
+                match encode_outbound_relay_packet(packet) {
                     Ok(packet) => {
                         let accepted = outbound_tx.try_send(packet).is_ok();
                         observe_health(&health, |health| health.observe_outbound_enqueue(accepted));
@@ -54,26 +60,38 @@ pub(super) async fn relay_transport_task(
     loop {
         tokio::select! {
             () = context.cancellation.cancelled() => {
+                let _ = send_control(&mut relay.sender, &ClientControl::Stop).await;
                 return Ok(());
             }
             Some(packet) = outbound_rx.recv() => {
                 let started = Instant::now();
-                relay.sender.send_data_datagram(packet.raw).await?;
+                let summary = packet.summary;
+                let sent_bytes = packet.sent_bytes;
+                if let Err(error) = relay.sender.send_data_datagram(packet).await {
+                    recover_relay(&mut relay, &mut outbound_rx, &context, error).await?;
+                    continue;
+                }
                 observe_health(&context.health, |health| {
                     health.observe_relay_send_duration(started.elapsed());
                 });
-                send_event(&context.event_tx, RuntimeEvent::CounterDelta(hook_counter(packet.sent_bytes)));
-                observer.observe_hook_packet(&context.event_tx, &packet.summary);
+                send_event(&context.event_tx, RuntimeEvent::CounterDelta(hook_counter(sent_bytes)));
+                observer.observe_hook_packet(&context.event_tx, &summary);
             }
             raw = relay.receiver.recv_datagram() => {
-                let raw = raw?;
+                let raw = match raw {
+                    Ok(raw) => raw,
+                    Err(error) => {
+                        recover_relay(&mut relay, &mut outbound_rx, &context, error).await?;
+                        continue;
+                    }
+                };
                 observe_health(&context.health, |health| {
                     health.observe_relay_recv(raw.len(), Instant::now());
                 });
                 match decode_inbound_relay_datagram(raw) {
                     Ok(Some(InboundRelayDatagram::Game(packet))) => {
                         observe_health(&context.health, |health| {
-                            let peer = packet.game.from_steam_id64.parse::<u64>().unwrap_or_default();
+                            let peer = packet.game.from_steam_id64;
                             health.observe_source_sequence(peer, packet.game.source_sequence);
                         });
                         let accepted = inbound_tx.try_send(packet).is_ok();
@@ -85,7 +103,7 @@ pub(super) async fn relay_transport_task(
                     Ok(Some(InboundRelayDatagram::HealthPong { id })) => {
                         observe_health(&context.health, |health| health.observe_health_pong(id, Instant::now()));
                     }
-                    Ok(Some(InboundRelayDatagram::RoomUpdate { peers })) => {
+                    Ok(Some(InboundRelayDatagram::PeerPresence { peers })) => {
                         send_event(&context.event_tx, RuntimeEvent::RoomPeersUpdated(peers));
                     }
                     Ok(None) => {}
@@ -93,14 +111,151 @@ pub(super) async fn relay_transport_task(
                 }
             }
             _ = heartbeat.tick() => {
-                send_control(&mut relay.sender, MessageType::Heartbeat, &ControlMessage::Heartbeat).await?;
+                if let Err(error) = send_control(&mut relay.sender, &ClientControl::ControlPing { id: 0 }).await {
+                    recover_relay(&mut relay, &mut outbound_rx, &context, error).await?;
+                }
             }
             _ = health_snapshot.tick(), if context.health.is_some() => {
                 emit_health_snapshot(&context.event_tx, &context.health);
             }
             _ = runtime_rtt.tick(), if context.health.is_some() => {
-                if let Some(id) = next_health_ping(&context.health) {
-                    send_control(&mut relay.sender, MessageType::Heartbeat, &ControlMessage::HealthPing { id }).await?;
+                if let Some(id) = next_health_ping(&context.health)
+                    && let Err(error) = send_control(&mut relay.sender, &ClientControl::ControlPing { id }).await
+                {
+                    recover_relay(&mut relay, &mut outbound_rx, &context, error).await?;
+                }
+            }
+        }
+    }
+}
+
+async fn recover_relay(
+    relay: &mut RelayTransport,
+    outbound_rx: &mut TokioReceiver<OutboundRelayPacket>,
+    context: &RelayTransportTaskContext,
+    initial_error: io::Error,
+) -> io::Result<()> {
+    let started = Instant::now();
+    let mut last_error = initial_error.to_string();
+    let mut attempt = 0_u32;
+    let mut dropped = 0_u64;
+    let mut backoff = ExponentialBuilder::default()
+        .with_min_delay(Duration::from_millis(250))
+        .with_max_delay(Duration::from_secs(2))
+        .with_jitter()
+        .build();
+
+    loop {
+        attempt = attempt.saturating_add(1);
+        let elapsed = started.elapsed();
+        send_event(
+            &context.event_tx,
+            RuntimeEvent::RelayLinkChanged(crate::client::RelayLinkState::Reconnecting {
+                attempt,
+                elapsed_ms: elapsed.as_millis(),
+                last_error: last_error.clone(),
+                data_continues: false,
+            }),
+        );
+        send_event(
+            &context.event_tx,
+            log_event(
+                LogLevel::Warn,
+                format!(
+                    "relay_reconnect_attempt attempt={attempt} elapsed_ms={} profile_reconnect_drops={dropped} failure={last_error}",
+                    elapsed.as_millis()
+                ),
+            ),
+        );
+
+        let result = tokio::select! {
+            () = context.cancellation.cancelled() => {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "Relay recovery cancelled"));
+            }
+            result = time::timeout(RECOVERY_ATTEMPT_TIMEOUT, relay.reconnect()) => {
+                match result {
+                    Ok(result) => result,
+                    Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "Relay recovery attempt timed out")),
+                }
+            }
+        };
+        match result {
+            Ok(recovery) => {
+                let (peers, full_join) = match recovery {
+                    RecoveryKind::Resumed { peers } => (peers, false),
+                    RecoveryKind::FullJoin { peers } => (peers, true),
+                };
+                let outage_ms = started.elapsed().as_millis();
+                send_event(&context.event_tx, RuntimeEvent::RoomPeersUpdated(peers));
+                send_event(
+                    &context.event_tx,
+                    RuntimeEvent::RelayLinkChanged(crate::client::RelayLinkState::Recovered {
+                        attempts: attempt,
+                        outage_ms,
+                        full_join,
+                    }),
+                );
+                send_event(
+                    &context.event_tx,
+                    log_event(
+                        LogLevel::Info,
+                        format!(
+                            "relay_reconnect_succeeded attempts={attempt} outage_ms={outage_ms} recovery={} packets_dropped={dropped}",
+                            if full_join { "full_join" } else { "resume" }
+                        ),
+                    ),
+                );
+                return Ok(());
+            }
+            Err(error) => last_error = error.to_string(),
+        }
+
+        if started.elapsed() >= RECOVERY_DEADLINE {
+            let elapsed_ms = started.elapsed().as_millis();
+            send_event(
+                &context.event_tx,
+                RuntimeEvent::RelayLinkChanged(crate::client::RelayLinkState::RecoveryExhausted {
+                    attempts: attempt,
+                    elapsed_ms,
+                    reason: last_error.clone(),
+                }),
+            );
+            send_event(
+                &context.event_tx,
+                log_event(
+                    LogLevel::Error,
+                    format!(
+                        "relay_reconnect_exhausted attempts={attempt} elapsed_ms={elapsed_ms} packets_dropped={dropped} failure={last_error}"
+                    ),
+                ),
+            );
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("Relay recovery exhausted after {elapsed_ms} ms: {last_error}"),
+            ));
+        }
+
+        let delay = backoff.next().unwrap_or(Duration::from_secs(2));
+        let remaining = RECOVERY_DEADLINE.saturating_sub(started.elapsed());
+        let sleep = time::sleep(delay.min(remaining));
+        tokio::pin!(sleep);
+        loop {
+            tokio::select! {
+                () = context.cancellation.cancelled() => {
+                    return Err(io::Error::new(io::ErrorKind::Interrupted, "Relay recovery cancelled"));
+                }
+                _ = &mut sleep => break,
+                packet = outbound_rx.recv() => {
+                    if packet.is_some() {
+                        dropped = dropped.saturating_add(1);
+                        send_event(
+                            &context.event_tx,
+                            RuntimeEvent::CounterDelta(Counters {
+                                reconnect_dropped_packets: 1,
+                                ..Counters::default()
+                            }),
+                        );
+                    }
                 }
             }
         }

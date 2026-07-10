@@ -130,7 +130,12 @@ impl BridgeClient {
             "received_bytes: {}\n",
             self.state.counters.received_bytes
         ));
-        output.push_str(&format!("errors: {}\n\n", self.state.counters.errors));
+        output.push_str(&format!("errors: {}\n", self.state.counters.errors));
+        output.push_str(&format!(
+            "reconnect_dropped_packets: {}\n",
+            self.state.counters.reconnect_dropped_packets
+        ));
+        output.push_str(&format!("relay_link: {:?}\n\n", self.state.relay_link));
         output.push_str("client config:\n");
         if let Some(path) = &self.loaded_config.source {
             output.push_str(&format!("source: {}\n", path.display()));

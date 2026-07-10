@@ -24,6 +24,7 @@ pub struct Counters {
     pub sent_bytes: u64,
     pub received_bytes: u64,
     pub errors: u64,
+    pub reconnect_dropped_packets: u64,
 }
 
 impl Counters {
@@ -33,6 +34,9 @@ impl Counters {
         self.sent_bytes = self.sent_bytes.saturating_add(other.sent_bytes);
         self.received_bytes = self.received_bytes.saturating_add(other.received_bytes);
         self.errors = self.errors.saturating_add(other.errors);
+        self.reconnect_dropped_packets = self
+            .reconnect_dropped_packets
+            .saturating_add(other.reconnect_dropped_packets);
     }
 }
 
@@ -41,6 +45,29 @@ pub enum SessionStatus {
     #[default]
     Idle,
     Running,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum RelayLinkState {
+    #[default]
+    Inactive,
+    Connected,
+    Reconnecting {
+        attempt: u32,
+        elapsed_ms: u128,
+        last_error: String,
+        data_continues: bool,
+    },
+    Recovered {
+        attempts: u32,
+        outage_ms: u128,
+        full_join: bool,
+    },
+    RecoveryExhausted {
+        attempts: u32,
+        elapsed_ms: u128,
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -313,7 +340,8 @@ pub struct RuntimeState {
     pub last_stop_reason: Option<SessionStopReason>,
     pub client_incidents: Vec<ClientIncidentSnapshot>,
     pub light_ping_reports: Vec<super::probe::LightPingReport>,
-    pub room_peers: Vec<crate::protocol::PeerInfo>,
+    pub room_peers: Vec<crate::protocol::v2::PeerPresenceInfo>,
+    pub relay_link: RelayLinkState,
 }
 
 #[derive(Debug)]
@@ -329,7 +357,8 @@ pub(super) enum RuntimeEvent {
     SessionEnded(SessionStopReason),
     Stopped,
     LightPingFinished(Box<super::probe::LightPingReport>),
-    RoomPeersUpdated(Vec<crate::protocol::PeerInfo>),
+    RoomPeersUpdated(Vec<crate::protocol::v2::PeerPresenceInfo>),
+    RelayLinkChanged(RelayLinkState),
 }
 
 pub(super) type RuntimeEventSender = Sender<RuntimeEvent>;

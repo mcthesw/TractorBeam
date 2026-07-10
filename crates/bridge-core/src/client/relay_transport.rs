@@ -1,90 +1,255 @@
 use std::{io, sync::Arc, time::Duration};
 
 use bytes::Bytes;
-use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
+use futures_util::{
+    SinkExt as _, StreamExt as _,
+    stream::{SplitSink, SplitStream},
+};
+use sha2::{Digest as _, Sha256};
 use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::{TcpStream, UdpSocket},
     time,
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-use crate::protocol::{ClientMetadata, ControlMessage, Envelope, MessageType, PeerInfo, PowProof};
+use crate::protocol::v2::{
+    BOOTSTRAP_SCHEMA, BootstrapMessage, BuildMetadata, CAP_RESUME, CAP_TCP_DATA, CAP_UDP_DATA,
+    ClientControl, DataFrame, DataProfile, Frame, PeerPresenceInfo, ProtocolRange, SecretString,
+    ServerControl, decode_bootstrap, decode_frame, decode_server_control, encode_bootstrap,
+    encode_client_control,
+};
 
-use super::{RelayEndpoint, SessionConfig, TransportChoice};
+use super::{RelayEndpoint, SessionConfig, TransportChoice, packet_flow::OutboundRelayPacket};
 
 pub(super) const MAX_RELAY_DATAGRAM_SIZE: usize = 65_535;
-pub(super) const RELAY_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const RELAY_JOIN_TIMEOUT: Duration = Duration::from_secs(8);
 
 type TcpFramed = Framed<TcpStream, LengthDelimitedCodec>;
 
 pub(super) struct RelayTransport {
     pub(super) sender: RelayTransportSender,
     pub(super) receiver: RelayTransportReceiver,
+    config: Option<SessionConfig>,
 }
 
-pub(super) enum RelayTransportSender {
-    Udp { socket: Arc<UdpSocket> },
-    Tcp(SplitSink<TcpFramed, Bytes>),
+pub(super) struct RelayTransportSender {
+    tcp: SplitSink<TcpFramed, Bytes>,
+    udp: Option<Arc<UdpSocket>>,
+    connection_id: Option<u64>,
+    from_steam_id64: u64,
+    next_frame_id: u64,
+    resume_credential: Option<SecretString>,
 }
 
-pub(super) enum RelayTransportReceiver {
-    Udp {
-        socket: Arc<UdpSocket>,
-        buffer: Box<[u8; MAX_RELAY_DATAGRAM_SIZE]>,
-    },
-    Tcp(SplitStream<TcpFramed>),
+pub(super) struct RelayTransportReceiver {
+    tcp: SplitStream<TcpFramed>,
+    udp: Option<Arc<UdpSocket>>,
+    udp_buffer: Box<[u8; MAX_RELAY_DATAGRAM_SIZE]>,
 }
 
 impl RelayTransport {
     pub(super) async fn connect(
         endpoint: &RelayEndpoint,
         choice: TransportChoice,
+        client_version: &str,
+        git_hash: Option<&str>,
+        steam_id64: u64,
     ) -> io::Result<Self> {
-        match choice {
-            TransportChoice::Udp => connect_udp(endpoint).await,
-            TransportChoice::Tcp => connect_tcp(endpoint).await,
-        }
+        let mut stream = TcpStream::connect(endpoint.to_string()).await?;
+        stream.set_nodelay(true)?;
+        negotiate(&mut stream, choice, client_version, git_hash).await?;
+        let codec = LengthDelimitedCodec::builder()
+            .max_frame_length(MAX_RELAY_DATAGRAM_SIZE)
+            .new_codec();
+        let (tcp_sender, tcp_receiver) = Framed::new(stream, codec).split();
+        let udp = if choice == TransportChoice::Udp {
+            let socket = UdpSocket::bind("0.0.0.0:0").await?;
+            socket.connect(endpoint.to_string()).await?;
+            Some(Arc::new(socket))
+        } else {
+            None
+        };
+        Ok(Self {
+            sender: RelayTransportSender {
+                tcp: tcp_sender,
+                udp: udp.clone(),
+                connection_id: None,
+                from_steam_id64: steam_id64,
+                next_frame_id: 1,
+                resume_credential: None,
+            },
+            receiver: RelayTransportReceiver {
+                tcp: tcp_receiver,
+                udp,
+                udp_buffer: Box::new([0; MAX_RELAY_DATAGRAM_SIZE]),
+            },
+            config: None,
+        })
+    }
+
+    pub(super) async fn connect_session(
+        config: &SessionConfig,
+    ) -> io::Result<(Self, Vec<PeerPresenceInfo>)> {
+        let build = crate::build_info::current();
+        let steam_id64 = config
+            .steam_id64
+            .parse::<u64>()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "SteamID64 is invalid"))?;
+        let mut relay = Self::connect(
+            &config.relay,
+            config.transport,
+            build.version,
+            build.git_hash,
+            steam_id64,
+        )
+        .await?;
+        let peers = complete_relay_join(&mut relay.sender, &mut relay.receiver, config).await?;
+        relay.config = Some(config.clone());
+        Ok((relay, peers))
+    }
+
+    pub(super) async fn reconnect(&mut self) -> io::Result<RecoveryKind> {
+        let config = self.config.clone().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Relay session is not reconnectable",
+            )
+        })?;
+        let connection_id = self.sender.connection_id.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotConnected,
+                "Relay connection id is unavailable",
+            )
+        })?;
+        let resume_credential = self.sender.resume_credential.clone().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotConnected,
+                "Relay resume credential is unavailable",
+            )
+        })?;
+        let next_frame_id = self.sender.next_frame_id;
+        let build = crate::build_info::current();
+        let mut replacement = Self::connect(
+            &config.relay,
+            config.transport,
+            build.version,
+            build.git_hash,
+            self.sender.from_steam_id64,
+        )
+        .await?;
+        send_control(
+            &mut replacement.sender,
+            &ClientControl::Resume {
+                connection_id,
+                resume_credential: resume_credential.clone(),
+            },
+        )
+        .await?;
+        let recovery = loop {
+            match recv_server_control(&mut replacement.receiver).await? {
+                ServerControl::ResumeReady {
+                    connection_id: returned,
+                    peers,
+                    ..
+                } if returned == connection_id => {
+                    replacement.sender.connection_id = Some(connection_id);
+                    replacement.sender.resume_credential = Some(resume_credential);
+                    replacement.sender.next_frame_id = next_frame_id;
+                    if replacement.sender.udp.is_some() {
+                        validate_udp_path(
+                            &mut replacement.sender,
+                            &mut replacement.receiver,
+                            connection_id,
+                        )
+                        .await?;
+                    }
+                    break RecoveryKind::Resumed { peers };
+                }
+                ServerControl::ResumeRejected {
+                    allow_full_join: true,
+                    ..
+                } => {
+                    let peers = complete_relay_join(
+                        &mut replacement.sender,
+                        &mut replacement.receiver,
+                        &config,
+                    )
+                    .await?;
+                    break RecoveryKind::FullJoin { peers };
+                }
+                ServerControl::ResumeRejected { code, .. } => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!("Relay resume rejected: {code:?}"),
+                    ));
+                }
+                ServerControl::Error {
+                    code,
+                    message,
+                    retryable,
+                } => {
+                    return Err(io::Error::other(format!(
+                        "Relay recovery error {code:?} retryable={retryable}: {message}"
+                    )));
+                }
+                _ => {}
+            }
+        };
+        replacement.config = Some(config);
+        *self = replacement;
+        Ok(recovery)
     }
 }
 
-impl RelayTransportSender {
-    pub(super) async fn send_datagram(&mut self, bytes: Bytes) -> io::Result<()> {
-        match self {
-            Self::Udp { socket, .. } => {
-                socket.send(&bytes).await?;
-                Ok(())
-            }
-            Self::Tcp(sink) => sink.send(bytes).await.map_err(io::Error::other),
-        }
-    }
+#[derive(Clone, Debug)]
+pub(super) enum RecoveryKind {
+    Resumed { peers: Vec<PeerPresenceInfo> },
+    FullJoin { peers: Vec<PeerPresenceInfo> },
+}
 
-    pub(super) async fn send_data_datagram(&mut self, bytes: Bytes) -> io::Result<()> {
-        match self {
-            Self::Udp { socket } => {
-                socket.send(&bytes).await?;
-                Ok(())
-            }
-            Self::Tcp(sink) => sink.send(bytes).await.map_err(io::Error::other),
+impl RelayTransportSender {
+    pub(super) async fn send_data_datagram(
+        &mut self,
+        packet: OutboundRelayPacket,
+    ) -> io::Result<()> {
+        let connection_id = self.connection_id.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotConnected, "Relay v2 join is not complete")
+        })?;
+        let frame = DataFrame {
+            connection_id,
+            frame_id: self.next_frame_id,
+            from_steam_id64: self.from_steam_id64,
+            to_steam_id64: packet.to_steam_id64,
+            source_sequence: packet.source_sequence,
+            channel: packet.channel,
+            send_type: packet.send_type,
+            payload: packet.payload,
         }
+        .encode()
+        .map_err(io::Error::other)?;
+        self.next_frame_id = self.next_frame_id.saturating_add(1);
+        if let Some(udp) = &self.udp {
+            udp.send(&frame).await?;
+        } else {
+            self.tcp.send(frame).await.map_err(io::Error::other)?;
+        }
+        Ok(())
     }
 }
 
 impl RelayTransportReceiver {
     pub(super) async fn recv_datagram(&mut self) -> io::Result<Bytes> {
-        match self {
-            Self::Udp { socket, buffer } => {
-                let size = socket.recv(buffer.as_mut_slice()).await?;
-                Ok(Bytes::copy_from_slice(&buffer[..size]))
+        if let Some(udp) = &self.udp {
+            tokio::select! {
+                frame = self.tcp.next() => tcp_frame(frame),
+                result = udp.recv(self.udp_buffer.as_mut_slice()) => {
+                    let size = result?;
+                    Ok(Bytes::copy_from_slice(&self.udp_buffer[..size]))
+                }
             }
-            Self::Tcp(stream) => {
-                let Some(frame) = stream.next().await else {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "relay TCP connection closed",
-                    ));
-                };
-                frame.map(|bytes| bytes.freeze()).map_err(io::Error::other)
-            }
+        } else {
+            tcp_frame(self.tcp.next().await)
         }
     }
 }
@@ -93,111 +258,286 @@ pub(super) async fn complete_relay_join(
     sender: &mut RelayTransportSender,
     receiver: &mut RelayTransportReceiver,
     config: &SessionConfig,
-) -> io::Result<Vec<PeerInfo>> {
+) -> io::Result<Vec<PeerPresenceInfo>> {
     time::timeout(
         RELAY_JOIN_TIMEOUT,
         complete_relay_join_inner(sender, receiver, config),
     )
     .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "relay join timed out"))?
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Relay v2 join timed out"))?
 }
 
 pub(super) async fn send_control(
     sender: &mut RelayTransportSender,
-    message_type: MessageType,
-    message: &ControlMessage,
+    message: &ClientControl,
 ) -> io::Result<()> {
-    let payload = message.encode().map_err(io::Error::other)?;
-    let raw = Envelope::new(message_type, payload)
+    let payload = encode_client_control(message).map_err(io::Error::other)?;
+    let frame = Frame::ClientControl(payload)
         .encode()
         .map_err(io::Error::other)?;
-    sender.send_datagram(raw).await
+    sender.tcp.send(frame).await.map_err(io::Error::other)
 }
 
 async fn complete_relay_join_inner(
     sender: &mut RelayTransportSender,
     receiver: &mut RelayTransportReceiver,
     config: &SessionConfig,
-) -> io::Result<Vec<PeerInfo>> {
-    send_join(sender, config, None, None).await?;
+) -> io::Result<Vec<PeerPresenceInfo>> {
+    let profile = match config.transport {
+        TransportChoice::Tcp => DataProfile::Tcp,
+        TransportChoice::Udp => DataProfile::Udp,
+    };
+    send_control(
+        sender,
+        &ClientControl::JoinBegin {
+            session_credential: SecretString::new(config.session_credential.wire_secret()),
+            steam_id64: sender.from_steam_id64,
+            display_name: Some(config.display_name.clone()),
+            data_profile: profile,
+        },
+    )
+    .await?;
+
+    let (challenge_id, proof) = loop {
+        match recv_server_control(receiver).await? {
+            ServerControl::AdmissionChallenge {
+                challenge_id,
+                algorithm,
+                nonce,
+                difficulty_bits,
+            } if algorithm == "sha256" => {
+                let proof = solve_pow(
+                    &challenge_id,
+                    config.session_credential.as_bytes(),
+                    sender.from_steam_id64,
+                    &nonce,
+                    difficulty_bits,
+                )?;
+                break (challenge_id, proof);
+            }
+            ServerControl::Error { code, message, .. } => {
+                return Err(io::Error::other(format!("{code:?}: {message}")));
+            }
+            _ => {}
+        }
+    };
+    send_control(
+        sender,
+        &ClientControl::JoinProof {
+            challenge_id,
+            proof: SecretString::new(proof),
+        },
+    )
+    .await?;
+
+    let (connection_id, peers) = loop {
+        match recv_server_control(receiver).await? {
+            ServerControl::JoinReady {
+                connection_id,
+                resume_credential,
+                peers,
+            } => {
+                sender.resume_credential = Some(resume_credential);
+                break (connection_id, peers);
+            }
+            ServerControl::Error { code, message, .. } => {
+                return Err(io::Error::other(format!("{code:?}: {message}")));
+            }
+            _ => {}
+        }
+    };
+    sender.connection_id = Some(connection_id);
+
+    if sender.udp.is_some() {
+        validate_udp_path(sender, receiver, connection_id).await?;
+    }
+    Ok(peers)
+}
+
+async fn validate_udp_path(
+    sender: &mut RelayTransportSender,
+    receiver: &mut RelayTransportReceiver,
+    connection_id: u64,
+) -> io::Result<()> {
+    let udp = sender.udp.clone().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "UDP data profile is not active",
+        )
+    })?;
+    send_control(sender, &ClientControl::UdpPathRequest).await?;
+    let path_token = loop {
+        match recv_server_control(receiver).await? {
+            ServerControl::UdpPathToken {
+                connection_id: returned,
+                path_token,
+            } if returned == connection_id => break path_token,
+            ServerControl::Error { code, message, .. } => {
+                return Err(io::Error::other(format!("{code:?}: {message}")));
+            }
+            _ => {}
+        }
+    };
+    let payload = encode_client_control(&ClientControl::UdpPathHello {
+        connection_id,
+        path_token,
+    })
+    .map_err(io::Error::other)?;
+    let frame = Frame::ClientControl(payload)
+        .encode()
+        .map_err(io::Error::other)?;
+    udp.send(&frame).await?;
     loop {
-        let raw = receiver.recv_datagram().await?;
-        let envelope = Envelope::decode(raw).map_err(io::Error::other)?;
-        let control = ControlMessage::decode(&envelope.payload).map_err(io::Error::other)?;
-        match control {
-            ControlMessage::Challenge { token, pow } => {
-                let pow_proof = pow
-                    .as_ref()
-                    .map(|challenge| {
-                        PowProof::solve(
-                            challenge,
-                            &token,
-                            &config.session_credential.legacy_wire_value(),
-                            &config.steam_id64,
-                        )
-                        .ok_or_else(|| io::Error::other("unsupported proof-of-work challenge"))
-                    })
-                    .transpose()?;
-                send_join(sender, config, Some(token), pow_proof).await?
-            }
-            ControlMessage::Ready { peers } => {
-                return Ok(peers);
-            }
-            ControlMessage::Error { code, message } => {
-                return Err(io::Error::other(format!("{code}: {message}")));
+        match recv_server_control(receiver).await? {
+            ServerControl::UdpPathReady {
+                connection_id: returned,
+            } if returned == connection_id => break,
+            ServerControl::Error { code, message, .. } => {
+                return Err(io::Error::other(format!("{code:?}: {message}")));
             }
             _ => {}
         }
     }
+    Ok(())
 }
 
-async fn send_join(
-    sender: &mut RelayTransportSender,
-    config: &SessionConfig,
-    challenge: Option<String>,
-    pow_proof: Option<PowProof>,
+async fn recv_server_control(receiver: &mut RelayTransportReceiver) -> io::Result<ServerControl> {
+    loop {
+        let raw = receiver.recv_datagram().await?;
+        if let Frame::ServerControl(payload) = decode_frame(raw).map_err(io::Error::other)? {
+            return decode_server_control(&payload).map_err(io::Error::other);
+        }
+    }
+}
+
+async fn negotiate(
+    stream: &mut TcpStream,
+    choice: TransportChoice,
+    client_version: &str,
+    git_hash: Option<&str>,
 ) -> io::Result<()> {
-    let build = crate::build_info::current();
-    // Temporary migration bridge: the active runtime remains v1 until the v2
-    // Client/Relay transport phases land. Both old v1 fields receive the same
-    // credential-derived value; no user-visible room label is reintroduced.
-    let credential = config.session_credential.legacy_wire_value();
-    let message = ControlMessage::Join {
-        room: credential.clone(),
-        steam_id64: config.steam_id64.clone(),
-        display_name: Some(config.display_name.clone()),
-        client: Some(ClientMetadata::for_build(build.version, build.git_hash)),
-        challenge,
-        pow_proof,
-        admission: Some(credential),
+    let profile_capability = match choice {
+        TransportChoice::Tcp => CAP_TCP_DATA,
+        TransportChoice::Udp => CAP_UDP_DATA,
     };
-    send_control(sender, MessageType::Join, &message).await
+    let hello = BootstrapMessage::ClientHello {
+        bootstrap_schema: BOOTSTRAP_SCHEMA,
+        supported_protocol_ranges: vec![ProtocolRange {
+            major: 2,
+            min_minor: 0,
+            max_minor: 0,
+        }],
+        required_capabilities: CAP_RESUME | profile_capability,
+        optional_capabilities: CAP_TCP_DATA | CAP_UDP_DATA,
+        client: BuildMetadata {
+            version: client_version.to_owned(),
+            git_hash: git_hash.map(str::to_owned),
+        },
+    };
+    stream
+        .write_all(&encode_bootstrap(&hello).map_err(io::Error::other)?)
+        .await?;
+    let response = read_bootstrap(stream).await?;
+    match decode_bootstrap(&response).map_err(io::Error::other)? {
+        BootstrapMessage::ServerHello {
+            selected_protocol,
+            enabled_capabilities,
+            ..
+        } if selected_protocol.major == 2
+            && enabled_capabilities & (CAP_RESUME | profile_capability)
+                == CAP_RESUME | profile_capability =>
+        {
+            Ok(())
+        }
+        BootstrapMessage::CompatibilityReject(reject) => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("Relay compatibility rejected: {:?}", reject.code),
+        )),
+        _ => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Relay selected an incompatible v2 profile",
+        )),
+    }
 }
 
-async fn connect_udp(endpoint: &RelayEndpoint) -> io::Result<RelayTransport> {
-    let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
-    socket.connect(endpoint.to_string()).await?;
-    Ok(RelayTransport {
-        sender: RelayTransportSender::Udp {
-            socket: Arc::clone(&socket),
-        },
-        receiver: RelayTransportReceiver::Udp {
-            socket,
-            buffer: Box::new([0; MAX_RELAY_DATAGRAM_SIZE]),
-        },
-    })
+async fn read_bootstrap(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
+    let length = stream.read_u32().await?;
+    let length = usize::try_from(length).map_err(io::Error::other)?;
+    if length > crate::protocol::v2::MAX_BOOTSTRAP_PAYLOAD {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Relay bootstrap is too large",
+        ));
+    }
+    let mut payload = vec![0_u8; length];
+    stream.read_exact(&mut payload).await?;
+    let mut frame = Vec::with_capacity(4 + length);
+    frame.extend_from_slice(
+        &u32::try_from(length)
+            .map_err(io::Error::other)?
+            .to_be_bytes(),
+    );
+    frame.extend_from_slice(&payload);
+    Ok(frame)
 }
 
-async fn connect_tcp(endpoint: &RelayEndpoint) -> io::Result<RelayTransport> {
-    let stream = TcpStream::connect(endpoint.to_string()).await?;
-    stream.set_nodelay(true)?;
-    let codec = LengthDelimitedCodec::builder()
-        .max_frame_length(MAX_RELAY_DATAGRAM_SIZE)
-        .new_codec();
-    let framed = Framed::new(stream, codec);
-    let (sender, receiver) = framed.split();
-    Ok(RelayTransport {
-        sender: RelayTransportSender::Tcp(sender),
-        receiver: RelayTransportReceiver::Tcp(receiver),
-    })
+fn tcp_frame(frame: Option<Result<bytes::BytesMut, io::Error>>) -> io::Result<Bytes> {
+    let Some(frame) = frame else {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "Relay TCP control connection closed",
+        ));
+    };
+    frame.map(|bytes| bytes.freeze())
+}
+
+fn solve_pow(
+    challenge_id: &str,
+    session: &[u8; 16],
+    steam_id64: u64,
+    nonce: &str,
+    difficulty_bits: u8,
+) -> io::Result<String> {
+    if difficulty_bits == 0 {
+        return Ok(String::new());
+    }
+    let challenge = decode_hex_16(challenge_id)?;
+    let nonce = decode_hex_16(nonce)?;
+    for counter in 0_u64.. {
+        let proof = format!("{counter:016x}");
+        let mut hasher = Sha256::new();
+        hasher.update(challenge);
+        hasher.update(session);
+        hasher.update(steam_id64.to_be_bytes());
+        hasher.update(nonce);
+        hasher.update(proof.as_bytes());
+        let digest: [u8; 32] = hasher.finalize().into();
+        if leading_zero_bits(&digest, difficulty_bits) {
+            return Ok(proof);
+        }
+    }
+    Err(io::Error::other("proof-of-work search exhausted"))
+}
+
+fn decode_hex_16(value: &str) -> io::Result<[u8; 16]> {
+    if value.len() != 32 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid challenge length",
+        ));
+    }
+    let mut bytes = [0_u8; 16];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let pair = std::str::from_utf8(pair).map_err(io::Error::other)?;
+        bytes[index] = u8::from_str_radix(pair, 16).map_err(io::Error::other)?;
+    }
+    Ok(bytes)
+}
+
+fn leading_zero_bits(bytes: &[u8; 32], bits: u8) -> bool {
+    let whole = usize::from(bits / 8);
+    let rest = bits % 8;
+    whole <= bytes.len()
+        && bytes[..whole].iter().all(|byte| *byte == 0)
+        && (rest == 0 || bytes.get(whole).is_some_and(|byte| byte >> (8 - rest) == 0))
 }

@@ -3,8 +3,8 @@ use std::borrow::Cow;
 use eframe::egui;
 use rust_i18n::t;
 use tractor_beam_core::{
-    ClientError, ConfigError, ConnectionProfile, InputDelayError, SessionQuality, SessionStatus,
-    SessionStopReason,
+    ClientError, ConfigError, ConnectionProfile, InputDelayError, RelayLinkState, SessionQuality,
+    SessionStatus, SessionStopReason,
 };
 
 use super::{ApplicationOperation, BootstrapState, BridgeApp};
@@ -124,6 +124,40 @@ impl BridgeApp {
                 | ApplicationOperation::ExportingTroubleshootingPackage
                 | ApplicationOperation::ReadingClipboard => t!("status.working"),
             };
+        }
+        match &self.client_state().relay_link {
+            RelayLinkState::Reconnecting {
+                attempt,
+                elapsed_ms,
+                ..
+            } => {
+                return Cow::Owned(format!(
+                    "{} · {} #{} · {}s",
+                    t!("status.reconnecting"),
+                    t!("status.attempt"),
+                    attempt,
+                    elapsed_ms / 1_000
+                ));
+            }
+            RelayLinkState::Recovered {
+                outage_ms,
+                full_join,
+                ..
+            } => {
+                return Cow::Owned(format!(
+                    "{} · {} ms",
+                    if *full_join {
+                        t!("status.rejoined")
+                    } else {
+                        t!("status.resumed")
+                    },
+                    outage_ms
+                ));
+            }
+            RelayLinkState::RecoveryExhausted { .. } => {
+                return t!("status.recovery_exhausted");
+            }
+            RelayLinkState::Inactive | RelayLinkState::Connected => {}
         }
         match self.application_snapshot.bootstrap {
             BootstrapState::Initializing => t!("status.initializing"),

@@ -13,11 +13,11 @@ Who Tractor Beam trusts, and how much:
   Bridge does enforce: a peer cannot make a Relay Server forward traffic outside
   its Room, and cannot turn the relay into a general-purpose UDP forwarder toward
   third parties.
-- **Relay Server: untrusted.** The relay moves packets but is not trusted with
-  their contents. It can already see metadata (peer addresses, Room name, packet
-  size, direction, timing, byte counts). The durable fix is end-to-end AEAD so
-  the relay only ever carries ciphertext. Until that ships, the relay operator is
-  a necessary trust, so only run sessions on Relay Servers you trust.
+- **Relay Server: trusted with content, not availability.** The relay can observe,
+  modify, delay, or drop control and Isaac packets. Tractor Beam deliberately
+  provides no confidentiality or on-path integrity guarantee, so players should
+  use Relay Servers whose operators they trust. Client recovery and diagnostics
+  must still handle Relay failure or misbehavior without corrupting local state.
 - **Malicious Client: hostile.** An attacker may try to use the relay as a
   reflection/amplification vector by spoofing a victim's source address, or to
   forward unrelated traffic through it. Defenses: protocol magic, room
@@ -25,14 +25,27 @@ Who Tractor Beam trusts, and how much:
   handshake on join (a peer must prove it can receive a token at the address it
   claims before the relay forwards anything to that address).
 
-## Current Test Boundary
+## Accepted Network Boundary
 
-- The current bridge path is not end-to-end encrypted.
-- A Relay Server can observe metadata such as source address, room name, packet size, direction, timing, and byte counts.
-- Game packet payloads are treated as opaque by Tractor Beam, but the current test protocol does not make them confidential from the Relay Server.
-- Room names or invite codes should be treated as bearer secrets.
-- Diagnostics may contain SteamID64, relay address, room name, local paths, counters, and error text.
-- Only use trusted Relay Servers for current testing.
+- Relay Protocol v2 uses plaintext TCP control and TCP/UDP data. It does not use
+  TLS, PAKE, AEAD, or a payload MAC.
+- A Relay Server and an on-path observer can see control messages, Session
+  Credentials, Steam identities, member state, packet payloads, sizes,
+  directions, and timing, and an active intermediary can modify traffic.
+- Session Credentials are high-entropy bearer values that resist guessing; they
+  are not secret from the Relay/network path and do not authenticate either
+  endpoint against an active intermediary.
+- Resume credentials and UDP path tokens prevent accidental/off-path binding;
+  they do not claim on-path attack resistance.
+- A future encrypted design, if ever justified by a new threat model, requires a
+  separate Relay Protocol v3. V2 does not reserve nonce, tag, key epoch, or
+  session-key fields for it.
+- Diagnostics may contain redacted Steam/Relay/member metadata, local paths,
+  counters, and error text, but never Session Credentials or recovery/path
+  tokens.
+- Session, resume, and path-validation credentials must never be written to
+  normal logs, metrics, or Troubleshooting Packages.
+- Only use trusted Relay Servers.
 
 ## Phase 1 Requirements
 
@@ -41,7 +54,9 @@ Who Tractor Beam trusts, and how much:
 - Require a peer to join a room before forwarding room traffic.
 - Validate a peer's claimed address with a join handshake (the relay forwards to an address only after that address echoes a join token) to block spoofed-source reflection.
 - Forward packets only among peers in the same room.
-- Reserve protocol-envelope fields for a nonce and sequence number from the start, so later AEAD and replay protection do not force a breaking protocol change.
+- Use bounded packet identifiers for diagnostics, ordering evidence, and
+  duplicate suppression; do not describe them as cryptographic replay
+  protection.
 - Expire inactive peers and rooms.
 - Apply basic rate limits.
 - Keep room and peer state scoped so the relay cannot act as a general-purpose UDP forwarder.
@@ -52,16 +67,14 @@ Who Tractor Beam trusts, and how much:
 
 ## Public Release Goals
 
-- End-to-end AEAD for relayed game traffic.
-- Room or session key design that does not give the Relay Server plaintext access.
-- Relay Server identity verification.
-- Replay protection with packet sequence tracking and replay windows.
 - Signed Directory Service metadata for trusted Relay Servers.
 - Client and Relay Server protocol compatibility ranges.
 - Directory Service relay revocation for compromised, outdated, or abusive Relay Servers.
 - Public Relay Server abuse and privacy policy.
 - Abuse mitigation such as proof-of-work, token buckets, or equivalent gating.
 - Clear user documentation for why injection is needed and how to return to Official Mode.
+- Clear user documentation that Relay/control/game traffic is plaintext and
+  trusted-Relay operation is the intended model.
 
 ## Abuse Controls
 

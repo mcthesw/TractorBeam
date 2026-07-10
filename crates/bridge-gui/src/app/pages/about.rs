@@ -4,7 +4,7 @@ use tractor_beam_core::build_info;
 
 use crate::app::BridgeApp;
 
-const PROTOCOL_VERSION: &str = "1.0";
+const PROTOCOL_VERSION: &str = "2.0";
 
 impl BridgeApp {
     pub(in crate::app) fn about_page(&mut self, ui: &mut egui::Ui) {

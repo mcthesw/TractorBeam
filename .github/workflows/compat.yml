@@ -5,6 +5,11 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      base_ref:
+        description: "Base branch, tag, or SHA to compare."
+        required: false
+        type: string
+        default: main
       head_ref:
         description: "Head branch, tag, or SHA to check."
         required: false
@@ -21,6 +26,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  BASE_REF: ${{ github.event.pull_request.base.sha || github.event.inputs.base_ref || github.event.repository.default_branch }}
   HEAD_REF: ${{ github.event.pull_request.head.sha || github.event.inputs.head_ref || github.sha }}
 
 jobs:
@@ -29,6 +35,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
+      - name: Checkout base
+        uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ env.BASE_REF }}
+          path: base
+
       - name: Checkout head
         uses: actions/checkout@v7.0.0
         with:
@@ -40,9 +52,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.1
         with:
           workspaces: |
+            base -> target
             head -> target
 
       - uses: astral-sh/setup-uv@v8.2.0
+
+      - name: Build base Relay Server
+        working-directory: base
+        env:
+          TRACTOR_BEAM_GIT_HASH: ${{ env.BASE_REF }}
+        run: cargo build --locked --release -p tractor-beam-relay
 
       - name: Build head Relay Server
         working-directory: head
@@ -54,9 +73,13 @@ jobs:
         run: |
           set -euo pipefail
           uv run --project head/scripts/compat python head/scripts/compat/check_compat.py \
+            --base-client-script base/scripts/compat/check_compat.py \
             --head-client-script head/scripts/compat/check_compat.py \
+            --base-relay-binary base/target/release/tractor-beam-relay \
             --head-relay-binary head/target/release/tractor-beam-relay \
+            --base-client-label old-client \
             --head-client-label new-client \
+            --base-label old-server \
             --head-label new-server \
             --json-out head/.local/compat/compat-report.json
 

@@ -739,6 +739,47 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn real_tcp_socket_returns_structured_bootstrap_rejection() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let config = RelayConfig {
+            udp_bind: None,
+            ..RelayConfig::default()
+        };
+        let server = tokio::spawn(run_with_listeners(listener, None, config));
+
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        let hello = BootstrapMessage::ClientHello {
+            bootstrap_schema: BOOTSTRAP_SCHEMA + 1,
+            supported_protocol_ranges: vec![ProtocolRange {
+                major: 2,
+                min_minor: 0,
+                max_minor: 0,
+            }],
+            required_capabilities: CAP_TCP_DATA,
+            optional_capabilities: CAP_RESUME,
+            client: BuildMetadata {
+                version: "incompatible-test".into(),
+                git_hash: None,
+            },
+        };
+        stream
+            .write_all(&encode_bootstrap(&hello).unwrap())
+            .await
+            .unwrap();
+
+        let response = decode_bootstrap(&read_bootstrap(&mut stream).await.unwrap()).unwrap();
+        assert!(matches!(
+            response,
+            BootstrapMessage::CompatibilityReject(CompatibilityReject {
+                code: RejectCode::UnsupportedBootstrapSchema,
+                ..
+            })
+        ));
+        server.abort();
+    }
+
     async fn send_client_control(
         framed: &mut Framed<TcpStream, LengthDelimitedCodec>,
         message: &ClientControl,

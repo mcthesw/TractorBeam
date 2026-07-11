@@ -17,7 +17,6 @@ on:
         default: main
 
 permissions:
-  actions: write
   contents: read
 
 concurrency:
@@ -31,62 +30,21 @@ env:
 
 jobs:
   client-server-compat:
-    name: Client/server compatibility
+    name: Relay Protocol v2 compatibility
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 20
     steps:
-      - name: Checkout base
-        uses: actions/checkout@v7.0.0
-        with:
-          ref: ${{ env.BASE_REF }}
-          path: base
-
-      - name: Checkout head
+      - name: Checkout
         uses: actions/checkout@v7.0.0
         with:
           ref: ${{ env.HEAD_REF }}
-          path: head
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2.9.1
-        with:
-          workspaces: |
-            base -> target
-            head -> target
 
-      - uses: astral-sh/setup-uv@v8.2.0
+      - name: Verify v2 wire compatibility contract
+        run: cargo test --locked -p tractor-beam-relay-protocol --test v2_wire_contract
 
-      - name: Build base Relay Server
-        working-directory: base
-        env:
-          TRACTOR_BEAM_GIT_HASH: ${{ env.BASE_REF }}
-        run: cargo build --locked --release -p tractor-beam-relay
-
-      - name: Build head Relay Server
-        working-directory: head
-        env:
-          TRACTOR_BEAM_GIT_HASH: ${{ env.HEAD_REF }}
-        run: cargo build --locked --release -p tractor-beam-relay
-
-      - name: Run compatibility probes
-        run: |
-          set -euo pipefail
-          uv run --project head/scripts/compat python head/scripts/compat/check_compat.py \
-            --base-client-script base/scripts/compat/check_compat.py \
-            --head-client-script head/scripts/compat/check_compat.py \
-            --base-relay-binary base/target/release/tractor-beam-relay \
-            --head-relay-binary head/target/release/tractor-beam-relay \
-            --base-client-label old-client \
-            --head-client-label new-client \
-            --base-label old-server \
-            --head-label new-server \
-            --json-out head/.local/compat/compat-report.json
-
-      - uses: actions/upload-artifact@v7.0.1
-        if: always()
-        with:
-          name: compatibility-report
-          path: head/.local/compat/compat-report.json
-          if-no-files-found: warn
-          retention-days: 14
+      - name: Verify live Relay negotiation
+        run: cargo test --locked -p tractor-beam-relay server_v2::tests::real_tcp_socket_

@@ -150,7 +150,7 @@ async fn same_session_disconnect_reconnects_with_fresh_handshake() {
 async fn input_delay_control_is_not_starved_by_game_burst() {
     let session = HookIpcSession::test();
     let (control_tx, control_rx) = control_channel();
-    let (event_tx, _event_rx) = tokio::sync::mpsc::channel(64);
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
     let cancellation = CancellationToken::new();
     let (_from_hook, to_hook, worker) =
         start(session.clone(), control_rx, event_tx, cancellation.clone()).unwrap();
@@ -178,15 +178,33 @@ async fn input_delay_control_is_not_starved_by_game_burst() {
         }
     });
 
-    for sequence in 0..512 {
-        assert!(to_hook.try_send(packet(1, sequence, b"burst-payload")));
-    }
-    let result = tokio::task::spawn_blocking(move || {
-        request_input_delay(&control_tx, 77, InputDelayCommand::Read)
+    time::timeout(TEST_TIMEOUT, async {
+        loop {
+            if let Some(RuntimeEvent::HookIpc(state)) = event_rx.recv().await
+                && state.connection == HookIpcConnectionState::Connected
+            {
+                return;
+            }
+        }
     })
     .await
-    .unwrap()
-    .unwrap();
+    .expect("fake Hook should complete the local IPC handshake");
+
+    let (response_tx, response_rx) = mpsc::sync_channel(1);
+    control_tx
+        .try_send(InputDelayCall {
+            id: 77,
+            command: InputDelayCommand::Read,
+            response: response_tx,
+        })
+        .unwrap();
+    for sequence in 0..(MAX_DATA_BURST as u32 * 2) {
+        assert!(to_hook.try_send(packet(1, sequence, b"burst-payload")));
+    }
+    let result = tokio::task::spawn_blocking(move || response_rx.recv_timeout(TEST_TIMEOUT))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(result, Ok(21));
 
     cancellation.cancel();

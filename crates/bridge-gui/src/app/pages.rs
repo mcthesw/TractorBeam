@@ -8,8 +8,9 @@ use eframe::egui::{self, ComboBox, TextEdit};
 use rust_i18n::t;
 use tractor_beam_core::{
     ConnectionProfile, HookIpcConnectionState, HookReceiveProbeReport, HookStartupPhase,
-    ReadinessProbeCaseReport, ReadinessProbeReport, RuntimeState, SessionCredential, SessionMode,
-    SessionQuality, SessionStatus, TransportChoice, protocol::v2::PeerPresence,
+    ReadinessProbeCaseReport, ReadinessProbeReport, RoomPathQualitySnapshot, RoomPathQualityState,
+    RuntimeState, SessionCredential, SessionMode, SessionQuality, SessionStatus, TransportChoice,
+    protocol::v2::PeerPresence,
 };
 
 use super::{
@@ -266,37 +267,52 @@ impl BridgeApp {
         }
         let (my_id, _) = self.current_identity();
         let my_id = my_id.parse::<u64>().ok();
-        egui::Grid::new("room_members")
-            .num_columns(3)
-            .striped(true)
-            .spacing([16.0, 4.0])
-            .show(ui, |ui| {
-                for peer in peers {
-                    let is_self = Some(peer.steam_id64) == my_id;
-                    let fallback_name = peer.steam_id64.to_string();
-                    let name = peer.display_name.as_deref().unwrap_or(&fallback_name);
-                    let display = if is_self {
-                        format!("▶ {name}")
-                    } else {
-                        name.to_owned()
-                    };
-                    let color = if is_self {
-                        ui.visuals().strong_text_color()
-                    } else {
-                        ui.visuals().text_color()
-                    };
-                    ui.colored_label(color, display);
-                    if peer.presence == PeerPresence::Reconnecting {
-                        ui.colored_label(
-                            egui::Color32::from_rgb(185, 124, 0),
-                            t!("room.reconnecting"),
-                        );
-                    } else {
-                        ui.label(t!("status.running"));
-                    }
+        egui::ScrollArea::horizontal().show(ui, |ui| {
+            egui::Grid::new("room_members")
+                .num_columns(6)
+                .striped(true)
+                .spacing([16.0, 4.0])
+                .show(ui, |ui| {
+                    table_header(ui, t!("room.player"));
+                    table_header(ui, t!("status"));
+                    table_header(ui, t!("room.path.rtt"));
+                    table_header(ui, t!("room.path.jitter"));
+                    table_header(ui, t!("room.path.loss"));
+                    table_header(ui, t!("room.path.freshness"));
                     ui.end_row();
-                }
-            });
+                    for peer in peers {
+                        let is_self = Some(peer.steam_id64) == my_id;
+                        let fallback_name = peer.steam_id64.to_string();
+                        let name = peer.display_name.as_deref().unwrap_or(&fallback_name);
+                        let display = if is_self {
+                            format!("▶ {name}")
+                        } else {
+                            name.to_owned()
+                        };
+                        let color = if is_self {
+                            ui.visuals().strong_text_color()
+                        } else {
+                            ui.visuals().text_color()
+                        };
+                        ui.colored_label(color, display);
+                        if peer.presence == PeerPresence::Reconnecting {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(185, 124, 0),
+                                t!("room.reconnecting"),
+                            );
+                        } else {
+                            ui.label(t!("status.running"));
+                        }
+                        let quality = self
+                            .client_state()
+                            .room_path_quality
+                            .iter()
+                            .find(|quality| quality.steam_id64 == peer.steam_id64);
+                        room_path_quality_cells(ui, is_self, quality);
+                        ui.end_row();
+                    }
+                });
+        });
     }
 
     pub(super) fn settings_page(&mut self, ui: &mut egui::Ui) {
@@ -463,6 +479,56 @@ impl BridgeApp {
             self.relay_latency_label(&relay.endpoint)
         )
     }
+}
+
+fn room_path_quality_cells(
+    ui: &mut egui::Ui,
+    is_self: bool,
+    quality: Option<&RoomPathQualitySnapshot>,
+) {
+    if is_self {
+        for _ in 0..4 {
+            ui.monospace("—");
+        }
+        return;
+    }
+    let Some(quality) = quality else {
+        ui.monospace("—");
+        ui.monospace("—");
+        ui.monospace("—");
+        ui.label(t!("room.path.unavailable"));
+        return;
+    };
+    if quality.state == RoomPathQualityState::Measuring {
+        ui.monospace("—");
+        ui.monospace("—");
+        ui.monospace("—");
+        ui.label(t!("room.path.measuring"));
+        return;
+    }
+    ui.monospace(display_room_path_duration(quality.median_rtt));
+    ui.monospace(display_room_path_duration(quality.jitter));
+    ui.monospace(quality.loss_basis_points.map_or_else(
+        || "—".to_owned(),
+        |value| format!("{:.2}%", f32::from(value) / 100.0),
+    ));
+    match quality.state {
+        RoomPathQualityState::Current => ui.label(quality.freshness.map_or_else(
+            || t!("room.path.current").into_owned(),
+            |age| format!("{}s", age.as_secs()),
+        )),
+        RoomPathQualityState::Stale => ui.label(t!("room.path.stale")),
+        RoomPathQualityState::Unavailable | RoomPathQualityState::Measuring => {
+            ui.label(t!("room.path.unavailable"))
+        }
+    };
+}
+
+fn display_room_path_duration(value: Option<std::time::Duration>) -> String {
+    value.map_or_else(
+        || "—".to_owned(),
+        |value| format!("{} ms", value.as_millis()),
+    )
 }
 
 fn hook_phase_label(phase: HookStartupPhase) -> (egui::Color32, Cow<'static, str>) {

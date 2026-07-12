@@ -25,6 +25,13 @@ and opaque Isaac payload. TCP profile frames share the control connection; UDP
 profile frames use a separately path-validated UDP tuple. The selected profile
 is strict for the lifetime of a running session and never silently falls back.
 
+Capability-gated fixed binary Probe Frames measure **Room Path Quality** between
+Bridge Clients over that same selected data profile. The target Bridge Client
+echoes them locally; they never enter Native Hook or Isaac packet queues. The
+typed per-Peer result stays in Bridge Core for the Room UI and future local
+Input Delay coordination. Bridge Client does not export these measurements to
+an observability backend.
+
 The wire contract lives in `relay-protocol`. Socket ownership and retry policy do
 not. `bridge-relay` maps wire values into its domain state, while `bridge-core`
 maps Hook packets into Data Frames and owns reconnect orchestration.

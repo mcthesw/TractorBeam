@@ -14,10 +14,10 @@ use tokio::{
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use crate::protocol::v2::{
-    BOOTSTRAP_SCHEMA, BootstrapMessage, BuildMetadata, CAP_RESUME, CAP_TCP_DATA, CAP_UDP_DATA,
-    ClientControl, DataFrame, DataProfile, Frame, PeerPresenceInfo, ProtocolRange, SecretString,
-    ServerControl, decode_bootstrap, decode_frame, decode_server_control, encode_bootstrap,
-    encode_client_control,
+    BOOTSTRAP_SCHEMA, BootstrapMessage, BuildMetadata, CAP_RESUME, CAP_ROOM_PATH_PROBE,
+    CAP_TCP_DATA, CAP_UDP_DATA, ClientControl, DataFrame, DataProfile, Frame, PeerPresenceInfo,
+    ProbeFrame, ProbePhase, ProtocolRange, SecretString, ServerControl, decode_bootstrap,
+    decode_frame, decode_server_control, encode_bootstrap, encode_client_control,
 };
 
 use super::{RelayEndpoint, SessionConfig, TransportChoice, packet_flow::OutboundRelayPacket};
@@ -31,6 +31,7 @@ pub(super) struct RelayTransport {
     pub(super) sender: RelayTransportSender,
     pub(super) receiver: RelayTransportReceiver,
     config: Option<SessionConfig>,
+    enabled_capabilities: u64,
 }
 
 pub(super) struct RelayTransportSender {
@@ -39,6 +40,7 @@ pub(super) struct RelayTransportSender {
     connection_id: Option<u64>,
     from_steam_id64: u64,
     next_frame_id: u64,
+    next_probe_id: u64,
     resume_credential: Option<SecretString>,
 }
 
@@ -58,7 +60,7 @@ impl RelayTransport {
     ) -> io::Result<Self> {
         let mut stream = TcpStream::connect(endpoint.to_string()).await?;
         stream.set_nodelay(true)?;
-        negotiate(&mut stream, choice, client_version, git_hash).await?;
+        let enabled_capabilities = negotiate(&mut stream, choice, client_version, git_hash).await?;
         let codec = LengthDelimitedCodec::builder()
             .max_frame_length(MAX_RELAY_DATAGRAM_SIZE)
             .new_codec();
@@ -77,6 +79,7 @@ impl RelayTransport {
                 connection_id: None,
                 from_steam_id64: steam_id64,
                 next_frame_id: 1,
+                next_probe_id: 1,
                 resume_credential: None,
             },
             receiver: RelayTransportReceiver {
@@ -85,6 +88,7 @@ impl RelayTransport {
                 udp_buffer: Box::new([0; MAX_RELAY_DATAGRAM_SIZE]),
             },
             config: None,
+            enabled_capabilities,
         })
     }
 
@@ -129,6 +133,7 @@ impl RelayTransport {
             )
         })?;
         let next_frame_id = self.sender.next_frame_id;
+        let next_probe_id = self.sender.next_probe_id;
         let build = crate::build_info::current();
         let mut replacement = Self::connect(
             &config.relay,
@@ -156,6 +161,7 @@ impl RelayTransport {
                     replacement.sender.connection_id = Some(connection_id);
                     replacement.sender.resume_credential = Some(resume_credential);
                     replacement.sender.next_frame_id = next_frame_id;
+                    replacement.sender.next_probe_id = next_probe_id;
                     if replacement.sender.udp.is_some() {
                         validate_udp_path(
                             &mut replacement.sender,
@@ -202,6 +208,16 @@ impl RelayTransport {
     }
 }
 
+impl RelayTransport {
+    pub(super) fn supports_room_path_probe(&self) -> bool {
+        self.enabled_capabilities & CAP_ROOM_PATH_PROBE != 0
+    }
+
+    pub(super) fn local_steam_id64(&self) -> u64 {
+        self.sender.from_steam_id64
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) enum RecoveryKind {
     Resumed { peers: Vec<PeerPresenceInfo> },
@@ -235,6 +251,38 @@ impl RelayTransportSender {
             self.tcp.send(frame).await.map_err(io::Error::other)?;
         }
         Ok(())
+    }
+
+    pub(super) async fn send_probe(
+        &mut self,
+        to_steam_id64: u64,
+        probe_id: u64,
+        phase: ProbePhase,
+    ) -> io::Result<()> {
+        let connection_id = self.connection_id.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotConnected, "Relay v2 join is not complete")
+        })?;
+        let frame = ProbeFrame {
+            connection_id,
+            probe_id,
+            from_steam_id64: self.from_steam_id64,
+            to_steam_id64,
+            phase,
+        }
+        .encode()
+        .map_err(io::Error::other)?;
+        if let Some(udp) = &self.udp {
+            udp.send(&frame).await?;
+        } else {
+            self.tcp.send(frame).await.map_err(io::Error::other)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn next_probe_id(&mut self) -> u64 {
+        let id = self.next_probe_id;
+        self.next_probe_id = self.next_probe_id.checked_add(1).unwrap_or(1);
+        id
     }
 }
 
@@ -415,7 +463,7 @@ async fn negotiate(
     choice: TransportChoice,
     client_version: &str,
     git_hash: Option<&str>,
-) -> io::Result<()> {
+) -> io::Result<u64> {
     let profile_capability = match choice {
         TransportChoice::Tcp => CAP_TCP_DATA,
         TransportChoice::Udp => CAP_UDP_DATA,
@@ -428,7 +476,7 @@ async fn negotiate(
             max_minor: 0,
         }],
         required_capabilities: CAP_RESUME | profile_capability,
-        optional_capabilities: CAP_TCP_DATA | CAP_UDP_DATA,
+        optional_capabilities: CAP_TCP_DATA | CAP_UDP_DATA | CAP_ROOM_PATH_PROBE,
         client: BuildMetadata {
             version: client_version.to_owned(),
             git_hash: git_hash.map(str::to_owned),
@@ -447,7 +495,7 @@ async fn negotiate(
             && enabled_capabilities & (CAP_RESUME | profile_capability)
                 == CAP_RESUME | profile_capability =>
         {
-            Ok(())
+            Ok(enabled_capabilities)
         }
         BootstrapMessage::CompatibilityReject(reject) => Err(io::Error::new(
             io::ErrorKind::Unsupported,

@@ -42,6 +42,7 @@ pub(crate) struct PeerView {
     pub(crate) steam_id64: u64,
     pub(crate) display_name: Option<String>,
     pub(crate) presence: Presence,
+    pub(crate) capabilities: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -51,6 +52,7 @@ pub(crate) struct JoinBegin {
     pub(crate) steam_id64: u64,
     pub(crate) display_name: Option<String>,
     pub(crate) profile: DataProfile,
+    pub(crate) capabilities: u64,
     pub(crate) now: Instant,
 }
 
@@ -112,6 +114,16 @@ pub(crate) struct RouteData {
     pub(crate) now: Instant,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RouteProbe {
+    pub(crate) connection_id: u64,
+    pub(crate) from_steam_id64: u64,
+    pub(crate) to_steam_id64: u64,
+    pub(crate) source: DataSource,
+    pub(crate) frame_bytes: usize,
+    pub(crate) now: Instant,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum StateError {
     RoomFull,
@@ -128,6 +140,8 @@ pub(crate) enum StateError {
     RateLimited,
     TargetNotJoined,
     TargetUnavailable,
+    ProbeUnsupported,
+    ProbeRateLimited,
 }
 
 impl fmt::Display for StateError {

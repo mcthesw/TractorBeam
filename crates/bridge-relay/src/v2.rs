@@ -66,6 +66,7 @@ pub(crate) fn peer_views(peers: Vec<PeerView>) -> Vec<PeerPresenceInfo> {
                 Presence::Connected => WirePresence::Connected,
                 Presence::Reconnecting => WirePresence::Reconnecting,
             },
+            capabilities: peer.capabilities,
         })
         .collect()
 }
@@ -121,6 +122,16 @@ pub(crate) fn state_error(error: StateError) -> ServerControl {
         StateError::TargetUnavailable => (
             ControlErrorCode::InvalidState,
             "target peer path is unavailable",
+            true,
+        ),
+        StateError::ProbeUnsupported => (
+            ControlErrorCode::InvalidState,
+            "room path probe is unsupported",
+            false,
+        ),
+        StateError::ProbeRateLimited => (
+            ControlErrorCode::RateLimited,
+            "room path probe rate limit exceeded",
             true,
         ),
     };

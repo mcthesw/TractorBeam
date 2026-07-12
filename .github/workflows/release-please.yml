@@ -38,7 +38,7 @@ jobs:
         with:
           ref: ${{ fromJSON(steps.release.outputs.prs)[0].headBranchName }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
         if: ${{ steps.release.outputs.prs_created == 'true' }}
 
       - uses: Swatinem/rust-cache@v2.9.1

@@ -137,14 +137,14 @@ pub(super) async fn relay_transport_task(
                                     ).await;
                                 }
                             }
-                            ProbePhase::Echo if probe.to_steam_id64 == local_steam_id64 => {
-                                if room_path.record_echo(
+                            ProbePhase::Echo
+                                if probe.to_steam_id64 == local_steam_id64
+                                    && room_path.record_echo(
                                     probe.from_steam_id64,
                                     probe.probe_id,
                                     Instant::now(),
-                                ) {
-                                    emit_room_path(&context.event_tx, &room_path);
-                                }
+                                ) => {
+                                emit_room_path(&context.event_tx, &room_path);
                             }
                             _ => {}
                         }

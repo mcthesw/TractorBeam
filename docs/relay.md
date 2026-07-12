@@ -1,5 +1,8 @@
 # Relay Server
 
+For OTLP/gRPC metrics, traces, exact signal names, and the minimal capacity
+guide, see [Relay observability](relay-observability.md).
+
 The Relay is a stateless, in-memory Relay Protocol v2 forwarder. It requires a
 TCP listener for the reliable control plane and may expose UDP on the same public
 port for the UDP data profile. The test host only opens `25910/TCP` and

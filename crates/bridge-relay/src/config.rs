@@ -18,6 +18,7 @@ const DEFAULT_PEER_IDLE_SECONDS: u64 = 30;
 const DEFAULT_ROOM_IDLE_SECONDS: u64 = 120;
 const DEFAULT_TCP_EGRESS_QUEUE_CAPACITY: usize = 512;
 const DEFAULT_POW_DIFFICULTY_BITS: u8 = 18;
+const DEFAULT_DATA_TRACE_SAMPLE_RATIO: f64 = 0.001;
 
 #[derive(Debug, Parser)]
 #[command(author, about)]
@@ -58,6 +59,14 @@ pub(crate) struct RelayConfig {
     pub(crate) max_room_name_len: usize,
     pub(crate) blocked_cidrs: Vec<IpNet>,
     pub(crate) pow_difficulty_bits: u8,
+    pub(crate) telemetry: Option<TelemetryConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TelemetryConfig {
+    pub(crate) otlp_endpoint: String,
+    pub(crate) service_instance_id: String,
+    pub(crate) data_trace_sample_ratio: f64,
 }
 
 impl Default for RelayConfig {
@@ -78,6 +87,7 @@ impl Default for RelayConfig {
             max_room_name_len: DEFAULT_MAX_ROOM_NAME_LEN,
             blocked_cidrs: Vec::new(),
             pow_difficulty_bits: DEFAULT_POW_DIFFICULTY_BITS,
+            telemetry: None,
         }
     }
 }
@@ -167,6 +177,17 @@ impl RelayConfig {
         if self.max_room_name_len == 0 {
             return invalid_config("max_room_name_len must be greater than 0");
         }
+        if let Some(telemetry) = &self.telemetry {
+            if telemetry.otlp_endpoint.trim().is_empty() {
+                return invalid_config("telemetry.otlp_endpoint must not be empty");
+            }
+            if telemetry.service_instance_id.trim().is_empty() {
+                return invalid_config("telemetry.service_instance_id must not be empty");
+            }
+            if !(0.0..=1.0).contains(&telemetry.data_trace_sample_ratio) {
+                return invalid_config("telemetry.data_trace_sample_ratio must be between 0 and 1");
+            }
+        }
         Ok(())
     }
 }
@@ -179,6 +200,7 @@ struct RelayConfigFile {
     room_limits: Option<RoomLimitsSection>,
     traffic_limits: Option<TrafficLimitsSection>,
     access_control: Option<AccessControlSection>,
+    telemetry: Option<TelemetrySection>,
 }
 
 impl RelayConfigFile {
@@ -215,6 +237,13 @@ impl RelayConfigFile {
         {
             config.blocked_cidrs = blocked_cidrs;
         }
+        config.telemetry = self.telemetry.map(|telemetry| TelemetryConfig {
+            otlp_endpoint: telemetry.otlp_endpoint,
+            service_instance_id: telemetry.service_instance_id,
+            data_trace_sample_ratio: telemetry
+                .data_trace_sample_ratio
+                .unwrap_or(DEFAULT_DATA_TRACE_SAMPLE_RATIO),
+        });
 
         config
     }
@@ -251,6 +280,14 @@ struct TrafficLimitsSection {
 #[serde(deny_unknown_fields)]
 struct AccessControlSection {
     blocked_cidrs: Option<Vec<IpNet>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TelemetrySection {
+    otlp_endpoint: String,
+    service_instance_id: String,
+    data_trace_sample_ratio: Option<f64>,
 }
 
 fn invalid_config<T>(message: impl Into<String>) -> io::Result<T> {
@@ -429,5 +466,61 @@ byte_rate_limit_burst = 0
 
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         assert!(error.to_string().contains("tcp_bind is required"));
+    }
+
+    #[test]
+    fn telemetry_is_enabled_only_by_explicit_section() {
+        let config = RelayConfig::from_toml(
+            r#"
+[relay_server]
+tcp_bind = "127.0.0.1:25910"
+"#,
+        )
+        .unwrap();
+        assert!(config.telemetry.is_none());
+
+        let config = RelayConfig::from_toml(
+            r#"
+[relay_server]
+tcp_bind = "127.0.0.1:25910"
+
+[telemetry]
+otlp_endpoint = "http://127.0.0.1:4317"
+service_instance_id = "relay-test-1"
+"#,
+        )
+        .unwrap();
+        let telemetry = config.telemetry.unwrap();
+        assert_eq!(telemetry.otlp_endpoint, "http://127.0.0.1:4317");
+        assert_eq!(telemetry.service_instance_id, "relay-test-1");
+        assert_eq!(telemetry.data_trace_sample_ratio, 0.001);
+    }
+
+    #[test]
+    fn rejects_invalid_telemetry_configuration() {
+        for section in [
+            r#"
+[telemetry]
+otlp_endpoint = ""
+service_instance_id = "relay-test-1"
+"#,
+            r#"
+[telemetry]
+otlp_endpoint = "http://127.0.0.1:4317"
+service_instance_id = ""
+"#,
+            r#"
+[telemetry]
+otlp_endpoint = "http://127.0.0.1:4317"
+service_instance_id = "relay-test-1"
+data_trace_sample_ratio = 1.1
+"#,
+        ] {
+            let error = RelayConfig::from_toml(&format!(
+                "[relay_server]\ntcp_bind = \"127.0.0.1:25910\"\n{section}"
+            ))
+            .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        }
     }
 }

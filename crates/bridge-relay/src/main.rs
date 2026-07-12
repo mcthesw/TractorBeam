@@ -6,6 +6,7 @@ mod metrics_v2;
 mod peer_registry;
 mod server_v2;
 mod state_v2;
+mod telemetry;
 mod v2;
 
 use std::io;
@@ -16,17 +17,18 @@ use config::{Args, RelayConfig};
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    tracing_subscriber::fmt::init();
-
     let args = Args::parse();
     if args.should_print_version() {
         println!("tractor-beam-relay {}", build_info::version_label());
         return Ok(());
     }
-    tracing::info!(
-        version = %build_info::version_label(),
-        "relay starting"
-    );
     let config = RelayConfig::load(&args)?;
-    server_v2::run(config).await
+    let telemetry = telemetry::RelayTelemetry::init(config.telemetry.as_ref())?;
+    tracing::info!(version = %build_info::version_label(), "relay starting");
+    let result = tokio::select! {
+        result = server_v2::run(config, telemetry.metrics.clone()) => result,
+        signal = tokio::signal::ctrl_c() => signal,
+    };
+    telemetry.shutdown().await;
+    result
 }

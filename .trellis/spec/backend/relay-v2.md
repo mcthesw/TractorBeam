@@ -69,6 +69,23 @@ expiry exactly once, cancellation, bounded outage drops, Room Path Quality
 window semantics, and real TCP/UDP Probe sockets.
 Run workspace tests, Clippy with warnings denied, rustfmt, and `git diff --check`.
 
+## Relay OpenTelemetry boundary
+
+- Relay OTel metrics and traces are enabled only by an explicit `[telemetry]`
+  section and use OTLP/gRPC. Ambient `OTEL_*` values cannot enable export.
+- Exporter/provider assembly belongs to the Relay application boundary. Domain
+  state receives no provider and reads no telemetry/global configuration.
+- Relay metrics use instance-owned counters and bounded enum attributes. Never
+  attach Session Credential/SessionKey, Room ID, connection ID, SteamID64,
+  display name, address/tuple, credentials/tokens, or payload.
+- Use only static span names. Do not create connection-, Session-, or Room-life
+  spans or accept/propagate Client trace context.
+- OTel exporter failure is lossy and non-fatal after startup. It must not enter
+  the network I/O result path; orderly flush has a two-second total cap and no
+  persistent queue.
+- Keep local structured logs, but do not export them as OTLP logs or span
+  events. `docs/relay-observability.md` is the canonical signal catalog.
+
 ## 7. Wrong vs Correct
 
 Wrong: domain helpers read global config, UDP silently falls back to TCP, or

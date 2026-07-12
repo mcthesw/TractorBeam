@@ -1,5 +1,9 @@
 # Architecture
 
+Relay OpenTelemetry is explicitly configured and exported only by the Relay
+process. It is separate from Client-local, player-facing Room Path Quality. See
+[Relay observability](relay-observability.md) for the signal boundary.
+
 Tractor Beam keeps three network boundaries deliberately separate:
 
 1. The Native Hook exchanges target-addressed game packets with Bridge Client

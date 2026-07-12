@@ -377,6 +377,11 @@ impl RelayStateV2 {
         self.control_connections.get(&control_peer).copied()
     }
 
+    pub(crate) fn room_metric_id_for_connection(&self, connection_id: u64) -> Option<u64> {
+        let session = self.connection_rooms.get(&connection_id)?;
+        self.rooms.get(session).map(|room| room.metric_id)
+    }
+
     pub(crate) fn path_key(&self, connection_id: u64) -> Option<PathKey> {
         let session = self.connection_rooms.get(&connection_id)?;
         self.rooms.get(session)?.peers.get(&connection_id)?.path_key
@@ -387,6 +392,22 @@ impl RelayStateV2 {
             self.rooms.len(),
             self.rooms.values().map(|room| room.peers.len()).sum(),
         )
+    }
+
+    pub(crate) fn active_peer_counts(&self) -> [usize; 4] {
+        let mut counts = [0; 4];
+        for peer in self.rooms.values().flat_map(|room| room.peers.values()) {
+            let profile_offset = match peer.profile {
+                DataProfile::Tcp => 0,
+                DataProfile::Udp => 2,
+            };
+            let presence_offset = match peer.presence {
+                Presence::Connected => 0,
+                Presence::Reconnecting => 1,
+            };
+            counts[profile_offset + presence_offset] += 1;
+        }
+        counts
     }
 
     #[cfg(test)]

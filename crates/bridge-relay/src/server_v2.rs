@@ -15,7 +15,7 @@ use tokio::{
     time,
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use tracing::{debug, info, warn};
+use tracing::{Instrument as _, debug, info, warn};
 use tractor_beam_relay_protocol::v2::{
     BOOTSTRAP_SCHEMA, BootstrapMessage, BuildMetadata, CAP_RESUME, CAP_ROOM_PATH_PROBE,
     CAP_TCP_DATA, CAP_UDP_DATA, ClientControl, CompatibilityReject, DataFrame, Frame, ProbeFrame,
@@ -27,7 +27,7 @@ use crate::{
     config::RelayConfig,
     domain::PeerId,
     domain_v2::{DataDestination, DataSource, JoinBegin, PresenceBroadcast, RouteData, RouteProbe},
-    metrics_v2::{METRICS, RelayMetricsV2},
+    metrics_v2::RelayMetricsV2,
     peer_registry::PeerRegistry,
     state_v2::RelayStateV2,
     v2,
@@ -35,6 +35,7 @@ use crate::{
 
 type SharedState = Arc<Mutex<RelayStateV2>>;
 type SharedTcpEgress = Arc<Mutex<HashMap<PeerId, mpsc::Sender<Bytes>>>>;
+type SharedMetrics = Arc<RelayMetricsV2>;
 
 struct TcpTaskContext {
     state: SharedState,
@@ -42,9 +43,10 @@ struct TcpTaskContext {
     udp: Option<Arc<UdpSocket>>,
     max_frame_size: usize,
     queue_capacity: usize,
+    metrics: SharedMetrics,
 }
 
-pub(crate) async fn run(config: RelayConfig) -> io::Result<()> {
+pub(crate) async fn run(config: RelayConfig, metrics: SharedMetrics) -> io::Result<()> {
     let tcp_bind = config.tcp_bind.as_deref().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -62,22 +64,37 @@ pub(crate) async fn run(config: RelayConfig) -> io::Result<()> {
         recovery_grace_seconds = 120,
         "Relay Protocol v2 listening"
     );
-    run_with_listeners(listener, udp, config).await
+    run_with_listeners(listener, udp, config, metrics).await
 }
 
 async fn run_with_listeners(
     listener: TcpListener,
     udp: Option<Arc<UdpSocket>>,
     config: RelayConfig,
+    metrics: SharedMetrics,
 ) -> io::Result<()> {
     let state = Arc::new(Mutex::new(RelayStateV2::new(config.clone())));
     let egress = Arc::new(Mutex::new(HashMap::new()));
     let registry = Arc::new(Mutex::new(PeerRegistry::default()));
     if let Some(socket) = udp.clone() {
-        tokio::spawn(udp_task(socket, Arc::clone(&state), Arc::clone(&egress)));
+        tokio::spawn(udp_task(
+            socket,
+            Arc::clone(&state),
+            Arc::clone(&egress),
+            Arc::clone(&metrics),
+        ));
     }
-    tokio::spawn(cleanup_task(Arc::clone(&state), Arc::clone(&egress)));
-    tokio::spawn(metrics_task(Arc::clone(&state)));
+    tokio::spawn(cleanup_task(
+        Arc::clone(&state),
+        Arc::clone(&egress),
+        Arc::clone(&metrics),
+    ));
+    tokio::spawn(metrics_task(
+        Arc::clone(&state),
+        Arc::clone(&egress),
+        config.tcp_egress_queue_capacity,
+        Arc::clone(&metrics),
+    ));
 
     loop {
         let (stream, address) = listener.accept().await?;
@@ -101,6 +118,7 @@ async fn run_with_listeners(
                 udp: udp.clone(),
                 max_frame_size: config.max_packet_size,
                 queue_capacity: config.tcp_egress_queue_capacity,
+                metrics: Arc::clone(&metrics),
             },
         ));
     }
@@ -118,23 +136,32 @@ async fn tcp_task(
         udp,
         max_frame_size,
         queue_capacity,
+        metrics,
     } = context;
+    let negotiation_span = tracing::info_span!(
+        "relay.bootstrap",
+        network.transport = "tcp",
+        otel.status_code = tracing::field::Empty,
+        error.type = tracing::field::Empty
+    );
     let negotiation = time::timeout(
         Duration::from_secs(5),
-        negotiate(&mut stream, address, udp.is_some()),
+        negotiate(&mut stream, address, udp.is_some()).instrument(negotiation_span.clone()),
     )
     .await;
     let enabled_capabilities = match negotiation {
         Ok(Ok(enabled)) => enabled,
         other => {
-            RelayMetricsV2::increment(&METRICS.bootstrap_rejected);
+            negotiation_span.record("otel.status_code", "ERROR");
+            negotiation_span.record("error.type", "bootstrap_rejected");
+            metrics.control(&metrics.bootstrap_rejected, "bootstrap", "rejected");
             if let Ok(Err(error)) = other {
                 warn!(%address, %error, "v2 bootstrap failed");
             }
             return;
         }
     };
-    RelayMetricsV2::increment(&METRICS.bootstrap_accepted);
+    metrics.control(&metrics.bootstrap_accepted, "bootstrap", "accepted");
 
     let codec = LengthDelimitedCodec::builder()
         .max_frame_length(max_frame_size.max(16 * 1024 + 16))
@@ -150,7 +177,7 @@ async fn tcp_task(
             frame = inbound.next() => {
                 let Some(frame) = frame else { break; };
                 match frame {
-                    Ok(bytes) => match handle_tcp_frame(peer_id, enabled_capabilities, bytes.freeze(), &state, &egress, udp.as_ref()).await {
+                    Ok(bytes) => match handle_tcp_frame(peer_id, enabled_capabilities, bytes.freeze(), &state, &egress, udp.as_ref(), &metrics).await {
                         Ok(stop) => {
                             if stop { explicit_stop = true; break; }
                         }
@@ -186,7 +213,7 @@ async fn tcp_task(
     if explicit_stop {
         info!(%peer_id, %address, "v2 session stopped");
     } else {
-        RelayMetricsV2::increment(&METRICS.control_detached);
+        metrics.control(&metrics.control_detached, "detach", "accepted");
         info!(%peer_id, %address, grace_seconds = 120, "v2 control connection detached");
     }
 }
@@ -314,19 +341,58 @@ async fn handle_tcp_frame(
     state: &SharedState,
     egress: &SharedTcpEgress,
     udp: Option<&Arc<UdpSocket>>,
+    metrics: &RelayMetricsV2,
 ) -> io::Result<bool> {
     match decode_frame(raw.clone()).map_err(invalid_data)? {
         Frame::ClientControl(payload) => {
             let message = decode_client_control(&payload).map_err(invalid_data)?;
-            handle_control(peer_id, enabled_capabilities, message, state, egress).await
+            let operation = control_operation_name(&message);
+            let span = tracing::info_span!(
+                "relay.control",
+                operation,
+                otel.status_code = tracing::field::Empty,
+                error.type = tracing::field::Empty
+            );
+            let result = handle_control(
+                peer_id,
+                enabled_capabilities,
+                message,
+                state,
+                egress,
+                metrics,
+            )
+            .instrument(span.clone())
+            .await;
+            if result.is_err() {
+                span.record("otel.status_code", "ERROR");
+                span.record("error.type", "control_rejected");
+            }
+            result
         }
         Frame::Data(data) => {
-            forward_data(data, raw, DataSource::Tcp(peer_id), state, egress, udp).await?;
+            forward_data(
+                data,
+                raw,
+                DataSource::Tcp(peer_id),
+                state,
+                egress,
+                udp,
+                metrics,
+            )
+            .await?;
             Ok(false)
         }
         Frame::Probe(probe) => {
-            if let Err(error) =
-                forward_probe(probe, raw, DataSource::Tcp(peer_id), state, egress, udp).await
+            if let Err(error) = forward_probe(
+                probe,
+                raw,
+                DataSource::Tcp(peer_id),
+                state,
+                egress,
+                udp,
+                metrics,
+            )
+            .await
             {
                 debug!(%peer_id, %error, "TCP probe rejected");
             }
@@ -345,8 +411,12 @@ async fn handle_control(
     message: ClientControl,
     state: &SharedState,
     egress: &SharedTcpEgress,
+    metrics: &RelayMetricsV2,
 ) -> io::Result<bool> {
     let now = Instant::now();
+    let operation = control_operation_name(&message);
+    let _duration = metrics.start_control_duration(operation);
+    metrics.record_control(operation, "attempted");
     match message {
         ClientControl::JoinBegin {
             session_credential,
@@ -386,7 +456,7 @@ async fn handle_control(
             );
             match response_and_broadcast {
                 Ok((ready, broadcast)) => {
-                    RelayMetricsV2::increment(&METRICS.joins);
+                    metrics.control(&metrics.joins, "join_proof", "accepted");
                     send_control(
                         egress,
                         peer_id,
@@ -408,7 +478,7 @@ async fn handle_control(
             connection_id,
             resume_credential,
         } => {
-            RelayMetricsV2::increment(&METRICS.resumes_attempted);
+            RelayMetricsV2::increment_local(&metrics.resumes_attempted);
             let key = v2::resume_key(&resume_credential);
             let result = match key {
                 Ok(key) => state.lock().await.resume(peer_id, connection_id, key, now),
@@ -416,7 +486,7 @@ async fn handle_control(
             };
             match result {
                 Ok(ready) => {
-                    RelayMetricsV2::increment(&METRICS.resumes_succeeded);
+                    metrics.control(&metrics.resumes_succeeded, "resume", "accepted");
                     info!(udp_path_valid = ready.udp_path_valid, "v2 session resumed");
                     send_control(
                         egress,
@@ -433,7 +503,7 @@ async fn handle_control(
                     }
                 }
                 Err(error) => {
-                    RelayMetricsV2::increment(&METRICS.resumes_rejected);
+                    metrics.control(&metrics.resumes_rejected, "resume", "rejected");
                     info!(reason = ?error, "v2 session resume rejected");
                     send_control(egress, peer_id, &v2::resume_rejection(error)).await?
                 }
@@ -491,6 +561,7 @@ async fn udp_task(
     socket: Arc<UdpSocket>,
     state: SharedState,
     egress: SharedTcpEgress,
+    metrics: SharedMetrics,
 ) -> io::Result<()> {
     let mut buffer = vec![0_u8; 65_535];
     loop {
@@ -533,6 +604,7 @@ async fn udp_task(
                     &state,
                     &egress,
                     Some(&socket),
+                    &metrics,
                 )
                 .await
                 {
@@ -547,6 +619,7 @@ async fn udp_task(
                     &state,
                     &egress,
                     Some(&socket),
+                    &metrics,
                 )
                 .await
                 {
@@ -565,46 +638,111 @@ async fn forward_data(
     state: &SharedState,
     egress: &SharedTcpEgress,
     udp: Option<&Arc<UdpSocket>>,
+    metrics: &RelayMetricsV2,
 ) -> io::Result<()> {
-    RelayMetricsV2::increment(&METRICS.data_received);
-    let destination = state
-        .lock()
-        .await
-        .route_data(RouteData {
+    let frame_bytes = raw.len();
+    let transport = source.transport_name();
+    let started = Instant::now();
+    let (destination, room_metric_id) = {
+        let mut state = state.lock().await;
+        let room_metric_id = state
+            .room_metric_id_for_connection(data.connection_id)
+            .unwrap_or_default();
+        let destination = state.route_data(RouteData {
             connection_id: data.connection_id,
             frame_id: data.frame_id,
             from_steam_id64: data.from_steam_id64,
             to_steam_id64: data.to_steam_id64,
             source,
-            frame_bytes: raw.len(),
+            frame_bytes,
             now: Instant::now(),
-        })
-        .map_err(|error| {
-            match error {
-                crate::domain_v2::StateError::DuplicateFrame
-                | crate::domain_v2::StateError::FrameTooOld => {
-                    RelayMetricsV2::increment(&METRICS.data_duplicates);
-                }
-                crate::domain_v2::StateError::RateLimited => {
-                    RelayMetricsV2::increment(&METRICS.data_rate_limited);
-                }
-                _ => RelayMetricsV2::increment(&METRICS.data_rejected),
+        });
+        (destination, room_metric_id)
+    };
+    let destination = destination.map_err(|error| {
+        match error {
+            crate::domain_v2::StateError::DuplicateFrame
+            | crate::domain_v2::StateError::FrameTooOld => {
+                metrics.data(
+                    &metrics.data_duplicates,
+                    transport,
+                    "inbound",
+                    "game",
+                    "duplicate",
+                    0,
+                );
             }
-            invalid_data(error)
-        })?;
-    let result = match destination {
-        DataDestination::Tcp(peer_id) => send_frame(egress, peer_id, raw).await,
-        DataDestination::Udp(address) => {
-            let socket = udp.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotConnected, "UDP listener unavailable")
-            })?;
-            socket.send_to(&raw, address).await?;
-            Ok(())
+            crate::domain_v2::StateError::RateLimited => {
+                metrics.data(
+                    &metrics.data_rate_limited,
+                    transport,
+                    "inbound",
+                    "game",
+                    "rate_limited",
+                    0,
+                );
+            }
+            _ => metrics.data(
+                &metrics.data_rejected,
+                transport,
+                "inbound",
+                "game",
+                "rejected",
+                0,
+            ),
+        }
+        invalid_data(error)
+    })?;
+    metrics.data(
+        &metrics.data_received,
+        transport,
+        "inbound",
+        "game",
+        "accepted",
+        frame_bytes,
+    );
+    let sampled = metrics.should_trace_data(room_metric_id, data.frame_id);
+    let span = tracing::info_span!(
+        "relay.data.dispatch",
+        network.transport = transport,
+        frame.type = "game",
+        room.metric_id = room_metric_id,
+        frame.id = data.frame_id,
+        otel.status_code = tracing::field::Empty,
+        error.type = tracing::field::Empty
+    );
+    let dispatch = async {
+        match destination {
+            DataDestination::Tcp(peer_id) => send_frame(egress, peer_id, raw).await,
+            DataDestination::Udp(address) => {
+                let socket = udp.ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotConnected, "UDP listener unavailable")
+                })?;
+                socket.send_to(&raw, address).await?;
+                Ok(())
+            }
         }
     };
-    if result.is_ok() {
-        RelayMetricsV2::increment(&METRICS.data_forwarded);
+    let result = if sampled {
+        dispatch.instrument(span.clone()).await
+    } else {
+        dispatch.await
+    };
+    if result.is_err() && sampled {
+        span.record("otel.status_code", "ERROR");
+        span.record("error.type", "egress_failed");
     }
+    if result.is_ok() {
+        metrics.data(
+            &metrics.data_forwarded,
+            destination.transport_name(),
+            "outbound",
+            "game",
+            "forwarded",
+            frame_bytes,
+        );
+    }
+    metrics.record_dispatch_duration(transport, "game", started.elapsed().as_secs_f64());
     result
 }
 
@@ -615,29 +753,94 @@ async fn forward_probe(
     state: &SharedState,
     egress: &SharedTcpEgress,
     udp: Option<&Arc<UdpSocket>>,
+    metrics: &RelayMetricsV2,
 ) -> io::Result<()> {
-    let destination = state
-        .lock()
-        .await
-        .route_probe(RouteProbe {
+    let frame_bytes = raw.len();
+    let transport = source.transport_name();
+    let started = Instant::now();
+    let (destination, room_metric_id) = {
+        let mut state = state.lock().await;
+        let room_metric_id = state
+            .room_metric_id_for_connection(probe.connection_id)
+            .unwrap_or_default();
+        let destination = state.route_probe(RouteProbe {
             connection_id: probe.connection_id,
             from_steam_id64: probe.from_steam_id64,
             to_steam_id64: probe.to_steam_id64,
             source,
-            frame_bytes: raw.len(),
+            frame_bytes,
             now: Instant::now(),
-        })
-        .map_err(invalid_data)?;
-    match destination {
-        DataDestination::Tcp(peer_id) => send_frame(egress, peer_id, raw).await,
-        DataDestination::Udp(address) => {
-            let socket = udp.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotConnected, "UDP listener unavailable")
-            })?;
-            socket.send_to(&raw, address).await?;
-            Ok(())
+        });
+        (destination, room_metric_id)
+    };
+    let destination = destination.map_err(|error| {
+        let outcome = match error {
+            crate::domain_v2::StateError::RateLimited
+            | crate::domain_v2::StateError::ProbeRateLimited => "rate_limited",
+            _ => "rejected",
+        };
+        metrics.data(
+            &metrics.data_rejected,
+            transport,
+            "inbound",
+            "probe",
+            outcome,
+            0,
+        );
+        invalid_data(error)
+    })?;
+    metrics.data(
+        &metrics.data_received,
+        transport,
+        "inbound",
+        "probe",
+        "accepted",
+        frame_bytes,
+    );
+    let sampled = metrics.should_trace_data(room_metric_id, probe.probe_id);
+    let span = tracing::info_span!(
+        "relay.probe.dispatch",
+        network.transport = transport,
+        frame.type = "probe",
+        room.metric_id = room_metric_id,
+        probe.id = probe.probe_id,
+        probe.phase = ?probe.phase,
+        otel.status_code = tracing::field::Empty,
+        error.type = tracing::field::Empty
+    );
+    let dispatch = async {
+        match destination {
+            DataDestination::Tcp(peer_id) => send_frame(egress, peer_id, raw).await,
+            DataDestination::Udp(address) => {
+                let socket = udp.ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotConnected, "UDP listener unavailable")
+                })?;
+                socket.send_to(&raw, address).await?;
+                Ok(())
+            }
         }
+    };
+    let result = if sampled {
+        dispatch.instrument(span.clone()).await
+    } else {
+        dispatch.await
+    };
+    if result.is_err() && sampled {
+        span.record("otel.status_code", "ERROR");
+        span.record("error.type", "egress_failed");
     }
+    if result.is_ok() {
+        metrics.data(
+            &metrics.data_forwarded,
+            destination.transport_name(),
+            "outbound",
+            "probe",
+            "forwarded",
+            frame_bytes,
+        );
+    }
+    metrics.record_dispatch_duration(transport, "probe", started.elapsed().as_secs_f64());
+    result
 }
 
 async fn send_control(
@@ -673,13 +876,17 @@ async fn send_frame(egress: &SharedTcpEgress, peer_id: PeerId, frame: Bytes) -> 
         .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "TCP egress queue is full"))
 }
 
-async fn cleanup_task(state: SharedState, egress: SharedTcpEgress) -> io::Result<()> {
+async fn cleanup_task(
+    state: SharedState,
+    egress: SharedTcpEgress,
+    metrics: SharedMetrics,
+) -> io::Result<()> {
     let mut interval = time::interval(Duration::from_secs(1));
     loop {
         interval.tick().await;
         let broadcasts = state.lock().await.cleanup(Instant::now());
         for _ in &broadcasts {
-            RelayMetricsV2::increment(&METRICS.sessions_expired);
+            metrics.control(&metrics.sessions_expired, "session_expire", "accepted");
             info!("v2 detached session expired");
         }
         for broadcast in broadcasts {
@@ -688,29 +895,57 @@ async fn cleanup_task(state: SharedState, egress: SharedTcpEgress) -> io::Result
     }
 }
 
-async fn metrics_task(state: SharedState) -> io::Result<()> {
+async fn metrics_task(
+    state: SharedState,
+    egress: SharedTcpEgress,
+    queue_capacity: usize,
+    metrics: SharedMetrics,
+) -> io::Result<()> {
     let mut interval = time::interval(Duration::from_secs(30));
     loop {
         interval.tick().await;
-        let (rooms, peers) = state.lock().await.active_counts();
+        let state = state.lock().await;
+        let (rooms, peers) = state.active_counts();
+        let peer_counts = state.active_peer_counts();
+        drop(state);
+        let max_queue_utilization = egress
+            .lock()
+            .await
+            .values()
+            .map(|sender| 1.0 - sender.capacity() as f64 / queue_capacity as f64)
+            .fold(0.0_f64, f64::max);
+        metrics.record_snapshot(rooms, peer_counts, max_queue_utilization);
         info!(
             rooms,
             peers,
-            bootstrap_accepted = RelayMetricsV2::value(&METRICS.bootstrap_accepted),
-            bootstrap_rejected = RelayMetricsV2::value(&METRICS.bootstrap_rejected),
-            joins = RelayMetricsV2::value(&METRICS.joins),
-            control_detached = RelayMetricsV2::value(&METRICS.control_detached),
-            resumes_attempted = RelayMetricsV2::value(&METRICS.resumes_attempted),
-            resumes_succeeded = RelayMetricsV2::value(&METRICS.resumes_succeeded),
-            resumes_rejected = RelayMetricsV2::value(&METRICS.resumes_rejected),
-            sessions_expired = RelayMetricsV2::value(&METRICS.sessions_expired),
-            data_received = RelayMetricsV2::value(&METRICS.data_received),
-            data_forwarded = RelayMetricsV2::value(&METRICS.data_forwarded),
-            data_duplicates = RelayMetricsV2::value(&METRICS.data_duplicates),
-            data_rate_limited = RelayMetricsV2::value(&METRICS.data_rate_limited),
-            data_rejected = RelayMetricsV2::value(&METRICS.data_rejected),
+            bootstrap_accepted = RelayMetricsV2::value(&metrics.bootstrap_accepted),
+            bootstrap_rejected = RelayMetricsV2::value(&metrics.bootstrap_rejected),
+            joins = RelayMetricsV2::value(&metrics.joins),
+            control_detached = RelayMetricsV2::value(&metrics.control_detached),
+            resumes_attempted = RelayMetricsV2::value(&metrics.resumes_attempted),
+            resumes_succeeded = RelayMetricsV2::value(&metrics.resumes_succeeded),
+            resumes_rejected = RelayMetricsV2::value(&metrics.resumes_rejected),
+            sessions_expired = RelayMetricsV2::value(&metrics.sessions_expired),
+            data_received = RelayMetricsV2::value(&metrics.data_received),
+            data_forwarded = RelayMetricsV2::value(&metrics.data_forwarded),
+            data_duplicates = RelayMetricsV2::value(&metrics.data_duplicates),
+            data_rate_limited = RelayMetricsV2::value(&metrics.data_rate_limited),
+            data_rejected = RelayMetricsV2::value(&metrics.data_rejected),
             "v2 relay metrics"
         );
+    }
+}
+
+const fn control_operation_name(message: &ClientControl) -> &'static str {
+    match message {
+        ClientControl::JoinBegin { .. } => "join_begin",
+        ClientControl::JoinProof { .. } => "join_proof",
+        ClientControl::Resume { .. } => "resume",
+        ClientControl::UdpPathRequest => "udp_path_request",
+        ClientControl::ControlPing { .. } => "ping",
+        ClientControl::ControlPong { .. } => "pong",
+        ClientControl::Stop => "stop",
+        ClientControl::UdpPathHello { .. } => "udp_path_hello",
     }
 }
 
@@ -733,6 +968,14 @@ mod tests {
         ProtocolVersion, SecretString, decode_server_control, encode_client_control,
     };
 
+    fn test_metrics() -> SharedMetrics {
+        Arc::new(RelayMetricsV2::new(
+            &opentelemetry::global::meter("tractor-beam-relay-test"),
+            "test",
+            1.0,
+        ))
+    }
+
     #[tokio::test]
     async fn real_tcp_socket_negotiates_and_joins_v2() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -742,7 +985,7 @@ mod tests {
             udp_bind: None,
             ..RelayConfig::default()
         };
-        let server = tokio::spawn(run_with_listeners(listener, None, config));
+        let server = tokio::spawn(run_with_listeners(listener, None, config, test_metrics()));
 
         let mut stream = TcpStream::connect(address).await.unwrap();
         let hello = BootstrapMessage::ClientHello {
@@ -810,7 +1053,7 @@ mod tests {
             udp_bind: None,
             ..RelayConfig::default()
         };
-        let server = tokio::spawn(run_with_listeners(listener, None, config));
+        let server = tokio::spawn(run_with_listeners(listener, None, config, test_metrics()));
 
         let mut stream = TcpStream::connect(address).await.unwrap();
         let hello = BootstrapMessage::ClientHello {
@@ -852,7 +1095,7 @@ mod tests {
             udp_bind: None,
             ..RelayConfig::default()
         };
-        let server = tokio::spawn(run_with_listeners(listener, None, config));
+        let server = tokio::spawn(run_with_listeners(listener, None, config, test_metrics()));
         let (mut first, first_connection_id) = connect_joined_peer(address, 101).await;
         let (mut second, _) = connect_joined_peer(address, 202).await;
 
@@ -886,7 +1129,7 @@ mod tests {
             udp_bind: None,
             ..RelayConfig::default()
         };
-        let server = tokio::spawn(run_with_listeners(listener, None, config));
+        let server = tokio::spawn(run_with_listeners(listener, None, config, test_metrics()));
         let (mut peer, connection_id) = connect_joined_peer(address, 101).await;
 
         peer.send(
@@ -924,7 +1167,12 @@ mod tests {
             udp_bind: Some(udp_address.to_string()),
             ..RelayConfig::default()
         };
-        let server = tokio::spawn(run_with_listeners(listener, Some(relay_udp), config));
+        let server = tokio::spawn(run_with_listeners(
+            listener,
+            Some(relay_udp),
+            config,
+            test_metrics(),
+        ));
         let (_first_control, first_udp, first_connection_id) =
             connect_joined_udp_peer(tcp_address, udp_address, 301).await;
         let (_second_control, second_udp, _) =

@@ -28,3 +28,11 @@ byte_rate_limit_burst = 16777216
 # Optional IP/CIDR blocklist for obvious abuse sources.
 # Examples: ["203.0.113.10/32", "2001:db8::/32"]
 blocked_cidrs = []
+
+# OpenTelemetry is disabled when this whole section is absent. Uncomment all
+# fields to export standard OTLP/gRPC metrics and traces to a local Collector,
+# Vector, SigNoz collector, or any other compatible receiver.
+# [telemetry]
+# otlp_endpoint = "http://127.0.0.1:4317"
+# service_instance_id = "relay-guangzhou-1"
+# data_trace_sample_ratio = 0.001

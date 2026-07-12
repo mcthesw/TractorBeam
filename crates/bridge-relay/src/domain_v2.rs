@@ -97,10 +97,28 @@ pub(crate) enum DataSource {
     Udp(SocketAddr),
 }
 
+impl DataSource {
+    pub(crate) const fn transport_name(self) -> &'static str {
+        match self {
+            Self::Tcp(_) => "tcp",
+            Self::Udp(_) => "udp",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DataDestination {
     Tcp(PeerId),
     Udp(SocketAddr),
+}
+
+impl DataDestination {
+    pub(crate) const fn transport_name(self) -> &'static str {
+        match self {
+            Self::Tcp(_) => "tcp",
+            Self::Udp(_) => "udp",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

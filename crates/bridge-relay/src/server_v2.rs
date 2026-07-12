@@ -17,16 +17,16 @@ use tokio::{
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::{debug, info, warn};
 use tractor_beam_relay_protocol::v2::{
-    BOOTSTRAP_SCHEMA, BootstrapMessage, BuildMetadata, CAP_RESUME, CAP_TCP_DATA, CAP_UDP_DATA,
-    ClientControl, CompatibilityReject, DataFrame, Frame, ProtocolRange, RejectCode, ServerControl,
-    decode_bootstrap, decode_client_control, decode_frame, encode_bootstrap, encode_server_control,
-    select_capabilities, select_protocol,
+    BOOTSTRAP_SCHEMA, BootstrapMessage, BuildMetadata, CAP_RESUME, CAP_ROOM_PATH_PROBE,
+    CAP_TCP_DATA, CAP_UDP_DATA, ClientControl, CompatibilityReject, DataFrame, Frame, ProbeFrame,
+    ProtocolRange, RejectCode, ServerControl, decode_bootstrap, decode_client_control,
+    decode_frame, encode_bootstrap, encode_server_control, select_capabilities, select_protocol,
 };
 
 use crate::{
     config::RelayConfig,
     domain::PeerId,
-    domain_v2::{DataDestination, DataSource, JoinBegin, PresenceBroadcast, RouteData},
+    domain_v2::{DataDestination, DataSource, JoinBegin, PresenceBroadcast, RouteData, RouteProbe},
     metrics_v2::{METRICS, RelayMetricsV2},
     peer_registry::PeerRegistry,
     state_v2::RelayStateV2,
@@ -124,13 +124,16 @@ async fn tcp_task(
         negotiate(&mut stream, address, udp.is_some()),
     )
     .await;
-    if !matches!(negotiation, Ok(Ok(()))) {
-        RelayMetricsV2::increment(&METRICS.bootstrap_rejected);
-        if let Ok(Err(error)) = negotiation {
-            warn!(%address, %error, "v2 bootstrap failed");
+    let enabled_capabilities = match negotiation {
+        Ok(Ok(enabled)) => enabled,
+        other => {
+            RelayMetricsV2::increment(&METRICS.bootstrap_rejected);
+            if let Ok(Err(error)) = other {
+                warn!(%address, %error, "v2 bootstrap failed");
+            }
+            return;
         }
-        return;
-    }
+    };
     RelayMetricsV2::increment(&METRICS.bootstrap_accepted);
 
     let codec = LengthDelimitedCodec::builder()
@@ -147,7 +150,7 @@ async fn tcp_task(
             frame = inbound.next() => {
                 let Some(frame) = frame else { break; };
                 match frame {
-                    Ok(bytes) => match handle_tcp_frame(peer_id, bytes.freeze(), &state, &egress, udp.as_ref()).await {
+                    Ok(bytes) => match handle_tcp_frame(peer_id, enabled_capabilities, bytes.freeze(), &state, &egress, udp.as_ref()).await {
                         Ok(stop) => {
                             if stop { explicit_stop = true; break; }
                         }
@@ -192,7 +195,7 @@ async fn negotiate(
     stream: &mut TcpStream,
     address: SocketAddr,
     udp_enabled: bool,
-) -> io::Result<()> {
+) -> io::Result<u64> {
     let frame = read_bootstrap(stream).await?;
     let hello = decode_bootstrap(&frame).map_err(invalid_data)?;
     let BootstrapMessage::ClientHello {
@@ -213,7 +216,10 @@ async fn negotiate(
         min_minor: 0,
         max_minor: 0,
     }];
-    let available = CAP_TCP_DATA | CAP_RESUME | if udp_enabled { CAP_UDP_DATA } else { 0 };
+    let available = CAP_TCP_DATA
+        | CAP_RESUME
+        | CAP_ROOM_PATH_PROBE
+        | if udp_enabled { CAP_UDP_DATA } else { 0 };
     if bootstrap_schema != BOOTSTRAP_SCHEMA {
         send_reject(stream, RejectCode::UnsupportedBootstrapSchema, relay_ranges).await?;
         return Err(io::Error::new(
@@ -265,7 +271,7 @@ async fn negotiate(
         enabled_capabilities = enabled,
         "v2 bootstrap accepted"
     );
-    Ok(())
+    Ok(enabled)
 }
 
 async fn send_reject(
@@ -303,6 +309,7 @@ async fn read_bootstrap(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
 
 async fn handle_tcp_frame(
     peer_id: PeerId,
+    enabled_capabilities: u64,
     raw: Bytes,
     state: &SharedState,
     egress: &SharedTcpEgress,
@@ -311,10 +318,18 @@ async fn handle_tcp_frame(
     match decode_frame(raw.clone()).map_err(invalid_data)? {
         Frame::ClientControl(payload) => {
             let message = decode_client_control(&payload).map_err(invalid_data)?;
-            handle_control(peer_id, message, state, egress).await
+            handle_control(peer_id, enabled_capabilities, message, state, egress).await
         }
         Frame::Data(data) => {
             forward_data(data, raw, DataSource::Tcp(peer_id), state, egress, udp).await?;
+            Ok(false)
+        }
+        Frame::Probe(probe) => {
+            if let Err(error) =
+                forward_probe(probe, raw, DataSource::Tcp(peer_id), state, egress, udp).await
+            {
+                debug!(%peer_id, %error, "TCP probe rejected");
+            }
             Ok(false)
         }
         Frame::ServerControl(_) => Err(io::Error::new(
@@ -326,6 +341,7 @@ async fn handle_tcp_frame(
 
 async fn handle_control(
     peer_id: PeerId,
+    enabled_capabilities: u64,
     message: ClientControl,
     state: &SharedState,
     egress: &SharedTcpEgress,
@@ -344,6 +360,7 @@ async fn handle_control(
                 steam_id64,
                 display_name,
                 profile: v2::profile(data_profile),
+                capabilities: enabled_capabilities,
                 now,
             };
             let response = match state.lock().await.begin_join(begin) {
@@ -522,6 +539,20 @@ async fn udp_task(
                     debug!(%address, %error, "UDP data rejected");
                 }
             }
+            Ok(Frame::Probe(probe)) => {
+                if let Err(error) = forward_probe(
+                    probe,
+                    raw,
+                    DataSource::Udp(address),
+                    &state,
+                    &egress,
+                    Some(&socket),
+                )
+                .await
+                {
+                    debug!(%address, %error, "UDP probe rejected");
+                }
+            }
             _ => debug!(%address, "invalid v2 UDP frame"),
         }
     }
@@ -575,6 +606,38 @@ async fn forward_data(
         RelayMetricsV2::increment(&METRICS.data_forwarded);
     }
     result
+}
+
+async fn forward_probe(
+    probe: ProbeFrame,
+    raw: Bytes,
+    source: DataSource,
+    state: &SharedState,
+    egress: &SharedTcpEgress,
+    udp: Option<&Arc<UdpSocket>>,
+) -> io::Result<()> {
+    let destination = state
+        .lock()
+        .await
+        .route_probe(RouteProbe {
+            connection_id: probe.connection_id,
+            from_steam_id64: probe.from_steam_id64,
+            to_steam_id64: probe.to_steam_id64,
+            source,
+            frame_bytes: raw.len(),
+            now: Instant::now(),
+        })
+        .map_err(invalid_data)?;
+    match destination {
+        DataDestination::Tcp(peer_id) => send_frame(egress, peer_id, raw).await,
+        DataDestination::Udp(address) => {
+            let socket = udp.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotConnected, "UDP listener unavailable")
+            })?;
+            socket.send_to(&raw, address).await?;
+            Ok(())
+        }
+    }
 }
 
 async fn send_control(
@@ -666,8 +729,8 @@ fn invalid_data(error: impl std::fmt::Display) -> io::Error {
 mod tests {
     use super::*;
     use tractor_beam_relay_protocol::v2::{
-        CAP_TCP_DATA, DataProfile, ProtocolVersion, SecretString, decode_server_control,
-        encode_client_control,
+        CAP_ROOM_PATH_PROBE, CAP_TCP_DATA, CAP_UDP_DATA, DataProfile, ProbeFrame, ProbePhase,
+        ProtocolVersion, SecretString, decode_server_control, encode_client_control,
     };
 
     #[tokio::test]
@@ -778,6 +841,256 @@ mod tests {
             })
         ));
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn real_tcp_socket_forwards_probe_between_capable_peers() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let config = RelayConfig {
+            pow_difficulty_bits: 0,
+            udp_bind: None,
+            ..RelayConfig::default()
+        };
+        let server = tokio::spawn(run_with_listeners(listener, None, config));
+        let (mut first, first_connection_id) = connect_joined_peer(address, 101).await;
+        let (mut second, _) = connect_joined_peer(address, 202).await;
+
+        let probe = ProbeFrame {
+            connection_id: first_connection_id,
+            probe_id: 7,
+            from_steam_id64: 101,
+            to_steam_id64: 202,
+            phase: ProbePhase::Request,
+        };
+        first
+            .send(Frame::Probe(probe).encode().unwrap())
+            .await
+            .unwrap();
+        let received = loop {
+            let raw = second.next().await.unwrap().unwrap().freeze();
+            if let Frame::Probe(probe) = decode_frame(raw).unwrap() {
+                break probe;
+            }
+        };
+        assert_eq!(received, probe);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn rejected_tcp_probe_does_not_close_control_session() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let config = RelayConfig {
+            pow_difficulty_bits: 0,
+            udp_bind: None,
+            ..RelayConfig::default()
+        };
+        let server = tokio::spawn(run_with_listeners(listener, None, config));
+        let (mut peer, connection_id) = connect_joined_peer(address, 101).await;
+
+        peer.send(
+            Frame::Probe(ProbeFrame {
+                connection_id,
+                probe_id: 8,
+                from_steam_id64: 101,
+                to_steam_id64: 999,
+                phase: ProbePhase::Request,
+            })
+            .encode()
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        send_client_control(&mut peer, &ClientControl::ControlPing { id: 42 }).await;
+
+        assert!(matches!(
+            time::timeout(Duration::from_secs(1), receive_server_control(&mut peer))
+                .await
+                .unwrap(),
+            ServerControl::ControlPong { id: 42 }
+        ));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn real_udp_socket_forwards_probe_without_tcp_fallback() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tcp_address = listener.local_addr().unwrap();
+        let relay_udp = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let udp_address = relay_udp.local_addr().unwrap();
+        let config = RelayConfig {
+            pow_difficulty_bits: 0,
+            udp_bind: Some(udp_address.to_string()),
+            ..RelayConfig::default()
+        };
+        let server = tokio::spawn(run_with_listeners(listener, Some(relay_udp), config));
+        let (_first_control, first_udp, first_connection_id) =
+            connect_joined_udp_peer(tcp_address, udp_address, 301).await;
+        let (_second_control, second_udp, _) =
+            connect_joined_udp_peer(tcp_address, udp_address, 302).await;
+
+        let probe = ProbeFrame {
+            connection_id: first_connection_id,
+            probe_id: 9,
+            from_steam_id64: 301,
+            to_steam_id64: 302,
+            phase: ProbePhase::Request,
+        };
+        first_udp.send(&probe.encode().unwrap()).await.unwrap();
+        let mut buffer = [0_u8; 128];
+        let size = time::timeout(Duration::from_secs(1), second_udp.recv(&mut buffer))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            decode_frame(Bytes::copy_from_slice(&buffer[..size])).unwrap(),
+            Frame::Probe(probe)
+        );
+        server.abort();
+    }
+
+    async fn connect_joined_peer(
+        address: SocketAddr,
+        steam_id64: u64,
+    ) -> (Framed<TcpStream, LengthDelimitedCodec>, u64) {
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        let hello = BootstrapMessage::ClientHello {
+            bootstrap_schema: BOOTSTRAP_SCHEMA,
+            supported_protocol_ranges: vec![ProtocolRange {
+                major: 2,
+                min_minor: 0,
+                max_minor: 0,
+            }],
+            required_capabilities: CAP_TCP_DATA,
+            optional_capabilities: CAP_RESUME | CAP_ROOM_PATH_PROBE,
+            client: BuildMetadata {
+                version: "probe-test".into(),
+                git_hash: None,
+            },
+        };
+        stream
+            .write_all(&encode_bootstrap(&hello).unwrap())
+            .await
+            .unwrap();
+        let response = decode_bootstrap(&read_bootstrap(&mut stream).await.unwrap()).unwrap();
+        assert!(matches!(
+            response,
+            BootstrapMessage::ServerHello { enabled_capabilities, .. }
+                if enabled_capabilities & CAP_ROOM_PATH_PROBE != 0
+        ));
+        let mut framed = Framed::new(stream, LengthDelimitedCodec::new());
+        send_client_control(
+            &mut framed,
+            &ClientControl::JoinBegin {
+                session_credential: SecretString::new("1111111111111111"),
+                steam_id64,
+                display_name: None,
+                data_profile: DataProfile::Tcp,
+            },
+        )
+        .await;
+        let ServerControl::AdmissionChallenge { challenge_id, .. } =
+            receive_server_control(&mut framed).await
+        else {
+            panic!("expected challenge")
+        };
+        send_client_control(
+            &mut framed,
+            &ClientControl::JoinProof {
+                challenge_id,
+                proof: SecretString::new(""),
+            },
+        )
+        .await;
+        let ready = receive_server_control(&mut framed).await;
+        let ServerControl::JoinReady { connection_id, .. } = ready else {
+            panic!("expected join ready")
+        };
+        (framed, connection_id)
+    }
+
+    async fn connect_joined_udp_peer(
+        tcp_address: SocketAddr,
+        udp_address: SocketAddr,
+        steam_id64: u64,
+    ) -> (Framed<TcpStream, LengthDelimitedCodec>, UdpSocket, u64) {
+        let mut stream = TcpStream::connect(tcp_address).await.unwrap();
+        let hello = BootstrapMessage::ClientHello {
+            bootstrap_schema: BOOTSTRAP_SCHEMA,
+            supported_protocol_ranges: vec![ProtocolRange {
+                major: 2,
+                min_minor: 0,
+                max_minor: 0,
+            }],
+            required_capabilities: CAP_UDP_DATA,
+            optional_capabilities: CAP_RESUME | CAP_ROOM_PATH_PROBE,
+            client: BuildMetadata {
+                version: "udp-probe-test".into(),
+                git_hash: None,
+            },
+        };
+        stream
+            .write_all(&encode_bootstrap(&hello).unwrap())
+            .await
+            .unwrap();
+        let response = decode_bootstrap(&read_bootstrap(&mut stream).await.unwrap()).unwrap();
+        assert!(matches!(
+            response,
+            BootstrapMessage::ServerHello { enabled_capabilities, .. }
+                if enabled_capabilities & (CAP_UDP_DATA | CAP_ROOM_PATH_PROBE)
+                    == CAP_UDP_DATA | CAP_ROOM_PATH_PROBE
+        ));
+        let mut framed = Framed::new(stream, LengthDelimitedCodec::new());
+        send_client_control(
+            &mut framed,
+            &ClientControl::JoinBegin {
+                session_credential: SecretString::new("1111111111111111"),
+                steam_id64,
+                display_name: None,
+                data_profile: DataProfile::Udp,
+            },
+        )
+        .await;
+        let ServerControl::AdmissionChallenge { challenge_id, .. } =
+            receive_server_control(&mut framed).await
+        else {
+            panic!("expected challenge")
+        };
+        send_client_control(
+            &mut framed,
+            &ClientControl::JoinProof {
+                challenge_id,
+                proof: SecretString::new(""),
+            },
+        )
+        .await;
+        let ServerControl::JoinReady { connection_id, .. } =
+            receive_server_control(&mut framed).await
+        else {
+            panic!("expected join ready")
+        };
+        send_client_control(&mut framed, &ClientControl::UdpPathRequest).await;
+        let ServerControl::UdpPathToken { path_token, .. } =
+            receive_server_control(&mut framed).await
+        else {
+            panic!("expected path token")
+        };
+        let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        udp.connect(udp_address).await.unwrap();
+        let payload = encode_client_control(&ClientControl::UdpPathHello {
+            connection_id,
+            path_token,
+        })
+        .unwrap();
+        udp.send(&Frame::ClientControl(payload).encode().unwrap())
+            .await
+            .unwrap();
+        assert!(matches!(
+            receive_server_control(&mut framed).await,
+            ServerControl::UdpPathReady { connection_id: ready } if ready == connection_id
+        ));
+        (framed, udp, connection_id)
     }
 
     async fn send_client_control(

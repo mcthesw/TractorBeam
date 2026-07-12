@@ -57,6 +57,12 @@ disconnect, Resume, expiry, received/forwarded, duplicate, rejected, and
 rate-limited counts. Never log Session Credentials, connection ids, resume/path
 credentials, SteamID64 values, display names, or peer addresses.
 
+Relay Protocol v2 also forwards capability-gated Room Path Quality Probe Frames.
+They use the selected TCP or validated UDP data path and remain separate from
+Isaac Data Frames. Relay validates source, Room, target, capability, path, and a
+small per-connection probe budget; Bridge Clients own echo timing and the
+user-visible RTT/jitter/loss calculation.
+
 ## Compatibility
 
 Relay v2 has no v1 listener or fallback. Old Clients and Join Codes are rejected

@@ -83,6 +83,10 @@ _Avoid_: room name, admission, session key
 The player-facing co-op group whose peers share one Session Credential; it has no separate user-editable name.
 _Avoid_: room name, relay registry key, lobby code
 
+**Room Path Quality**:
+The measured round-trip latency, variation, and probe loss between two Bridge Clients through their selected Relay Server data path.
+_Avoid_: Relay latency, game packet loss, connection score
+
 **Join Code**:
 The single player-shareable value that carries a Relay Server location and one Session Credential.
 _Avoid_: room code, invite code, admission code
@@ -123,6 +127,7 @@ _Avoid_: normal relay mode
   **Native Hook** when Isaac is ready.
 - A **Relay Server** forwards packets only among **Peers** admitted with the same **Session Credential**.
 - A **Join Code** contains exactly one **Relay Server** location and one **Session Credential**.
+- **Room Path Quality** describes one Bridge Client's measured path to another **Peer**, not either Client's path to the **Relay Server** alone.
 - Creating a new **Room** rotates the **Session Credential**; stopping and restarting the same local session does not.
 - A **Directory Service** publishes metadata about one or more **Relay Servers**.
 - A **Diagnostics Bundle** describes one local **Bridge Client** run.

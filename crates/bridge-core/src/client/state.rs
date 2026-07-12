@@ -341,6 +341,7 @@ pub struct RuntimeState {
     pub client_incidents: Vec<ClientIncidentSnapshot>,
     pub light_ping_reports: Vec<super::probe::LightPingReport>,
     pub room_peers: Vec<crate::protocol::v2::PeerPresenceInfo>,
+    pub room_path_quality: Vec<super::RoomPathQualitySnapshot>,
     pub relay_link: RelayLinkState,
 }
 
@@ -358,6 +359,7 @@ pub(super) enum RuntimeEvent {
     Stopped,
     LightPingFinished(Box<super::probe::LightPingReport>),
     RoomPeersUpdated(Vec<crate::protocol::v2::PeerPresenceInfo>),
+    RoomPathQualityUpdated(Vec<super::RoomPathQualitySnapshot>),
     RelayLinkChanged(RelayLinkState),
 }
 

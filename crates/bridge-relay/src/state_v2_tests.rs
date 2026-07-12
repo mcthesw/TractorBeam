@@ -18,6 +18,26 @@ fn join(
     profile: DataProfile,
     now: Instant,
 ) -> JoinReady {
+    join_with_capabilities(
+        state,
+        control_peer,
+        session,
+        steam_id64,
+        profile,
+        tractor_beam_relay_protocol::v2::CAP_ROOM_PATH_PROBE,
+        now,
+    )
+}
+
+fn join_with_capabilities(
+    state: &mut RelayStateV2,
+    control_peer: PeerId,
+    session: SessionKey,
+    steam_id64: u64,
+    profile: DataProfile,
+    capabilities: u64,
+    now: Instant,
+) -> JoinReady {
     let challenge = state
         .begin_join(JoinBegin {
             control_peer,
@@ -25,6 +45,7 @@ fn join(
             steam_id64,
             display_name: Some(format!("peer-{steam_id64}")),
             profile,
+            capabilities,
             now,
         })
         .unwrap();
@@ -32,6 +53,62 @@ fn join(
         .complete_join(control_peer, challenge.challenge_id, "", now)
         .unwrap()
         .0
+}
+
+#[test]
+fn probe_routing_requires_capability_and_selected_source_path() {
+    let now = Instant::now();
+    let session = SessionKey([11; 16]);
+    let mut state = state();
+    let sender = join(
+        &mut state,
+        PeerId::new(1),
+        session,
+        101,
+        DataProfile::Tcp,
+        now,
+    );
+    let _target = join_with_capabilities(
+        &mut state,
+        PeerId::new(2),
+        session,
+        202,
+        DataProfile::Tcp,
+        0,
+        now,
+    );
+    let request = RouteProbe {
+        connection_id: sender.connection_id,
+        from_steam_id64: 101,
+        to_steam_id64: 202,
+        source: DataSource::Tcp(PeerId::new(1)),
+        frame_bytes: tractor_beam_relay_protocol::v2::PROBE_FRAME_HEADER_LEN,
+        now,
+    };
+    assert_eq!(
+        state.route_probe(request),
+        Err(StateError::ProbeUnsupported)
+    );
+
+    let _target = join(
+        &mut state,
+        PeerId::new(3),
+        session,
+        202,
+        DataProfile::Tcp,
+        now,
+    );
+    assert_eq!(
+        state.route_probe(request).unwrap(),
+        DataDestination::Tcp(PeerId::new(3))
+    );
+    assert_eq!(
+        state.route_probe(RouteProbe {
+            source: DataSource::Udp("127.0.0.1:40000".parse().unwrap()),
+            ..request
+        }),
+        Err(StateError::ProfileMismatch)
+    );
 }
 
 #[test]

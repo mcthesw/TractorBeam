@@ -17,8 +17,8 @@ async fn reconnect(&mut self) -> io::Result<RecoveryKind>;
 ## 3. Contracts
 
 - `relay-protocol/src/v2/` owns bounded bootstrap/control types, fixed binary
-  Data Frames, version/capability selection, redacted secrets, duplicate windows,
-  and golden fixtures. It owns no sockets or Room state.
+  Data/Probe Frames, version/capability selection, redacted secrets, duplicate
+  windows, and golden fixtures. It owns no sockets or Room state.
 - `bridge-relay` owns TCP/UDP sockets, credential-keyed in-memory Rooms,
   admission, limits, path validation, routing, presence, and 120-second grace.
 - `bridge-core::client::relay_transport` owns Client socket/wire adaptation;
@@ -29,6 +29,11 @@ async fn reconnect(&mut self) -> io::Result<RecoveryKind>;
 - Resume retains connection identity, Room membership, and duplicate window.
   Outage packets are dropped and counted, never replayed.
 - Native Hook Local IPC remains route-agnostic and independent.
+- `CAP_ROOM_PATH_PROBE` is optional. Capable Bridge Clients send fixed Probe
+  request/echo frames only to capable Peers over the selected data profile.
+  Relay validates/forwards; Bridge Core owns measurement windows and GUI state.
+  Probe Frames never enter Native Hook or Isaac game counters and never fall
+  back from UDP to TCP.
 
 ## 4. Validation & Error Matrix
 
@@ -60,7 +65,8 @@ not enter logs or exported diagnostics.
 
 Protect exact golden bytes, bootstrap/control bounds, capability selection,
 source/profile/path validation, duplicate preservation across Resume, grace
-expiry exactly once, cancellation, bounded outage drops, and real TCP sockets.
+expiry exactly once, cancellation, bounded outage drops, Room Path Quality
+window semantics, and real TCP/UDP Probe sockets.
 Run workspace tests, Clippy with warnings denied, rustfmt, and `git diff --check`.
 
 ## 7. Wrong vs Correct

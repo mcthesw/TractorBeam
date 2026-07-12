@@ -4,9 +4,10 @@ use tractor_beam_relay_protocol::v2::{
     CAP_TCP_DATA, CAP_UDP_DATA, COMMON_HEADER_LEN, CapabilityError, ClientControl,
     DATA_FRAME_HEADER_LEN, DATA_FRAME_OVERHEAD, DataFrame, DataProfile, DuplicateDecision, Frame,
     FrameDecodeError, FrameIdWindow, IPV4_SAFE_DATA_PAYLOAD, MAX_BOOTSTRAP_PAYLOAD,
-    MAX_CONTROL_PAYLOAD, ProtocolRange, SecretString, decode_bootstrap, decode_client_control,
-    decode_frame, decode_server_control, encode_bootstrap, encode_client_control,
-    encode_server_control, select_capabilities, select_protocol,
+    MAX_CONTROL_PAYLOAD, PROBE_FRAME_HEADER_LEN, ProbeFrame, ProbePhase, ProtocolRange,
+    SecretString, decode_bootstrap, decode_client_control, decode_frame, decode_server_control,
+    encode_bootstrap, encode_client_control, encode_server_control, select_capabilities,
+    select_protocol,
 };
 
 fn fixture_hex(path: &str) -> Vec<u8> {
@@ -211,6 +212,43 @@ fn data_frame_accepts_maximum_payload_and_rejects_one_byte_more() {
 
     frame.payload = Bytes::from(vec![0; IPV4_SAFE_DATA_PAYLOAD + 1]);
     assert!(frame.encode().is_err());
+}
+
+#[test]
+fn probe_frame_is_fixed_binary_and_round_trips() {
+    let probe = ProbeFrame {
+        connection_id: 0x0102_0304_0506_0708,
+        probe_id: 0x1112_1314_1516_1718,
+        from_steam_id64: 0x2122_2324_2526_2728,
+        to_steam_id64: 0x3132_3334_3536_3738,
+        phase: ProbePhase::Request,
+    };
+    let encoded = probe.encode().unwrap();
+
+    assert_eq!(PROBE_FRAME_HEADER_LEN, 56);
+    assert_eq!(encoded.len(), PROBE_FRAME_HEADER_LEN);
+    assert_eq!(decode_frame(encoded).unwrap(), Frame::Probe(probe));
+}
+
+#[test]
+fn probe_frame_rejects_zero_id_and_reserved_bytes() {
+    let probe = ProbeFrame {
+        connection_id: 1,
+        probe_id: 1,
+        from_steam_id64: 2,
+        to_steam_id64: 3,
+        phase: ProbePhase::Echo,
+    };
+    let mut zero_id = probe;
+    zero_id.probe_id = 0;
+    assert!(zero_id.encode().is_err());
+
+    let mut reserved = probe.encode().unwrap().to_vec();
+    reserved[PROBE_FRAME_HEADER_LEN - 1] = 1;
+    assert_eq!(
+        decode_frame(Bytes::from(reserved)).unwrap_err(),
+        FrameDecodeError::NonZeroProbeReserved
+    );
 }
 
 #[test]

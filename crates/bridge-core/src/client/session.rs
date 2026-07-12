@@ -19,7 +19,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::protocol::v2::ClientControl;
+use crate::protocol::v2::{ClientControl, PeerPresenceInfo, ProbePhase};
 
 use super::{
     LogLevel, SessionConfig, SessionMode,
@@ -31,6 +31,7 @@ use super::{
     },
     process_lifecycle,
     relay_transport::{RelayTransport, send_control},
+    room_path_quality::RoomPathQuality,
     session_health::{SessionHealth, SessionHealthSnapshot},
     state::{
         HookStartupPhase, HookStartupState, RelayLinkState, RuntimeEvent, RuntimeEventSender,
@@ -426,7 +427,7 @@ async fn start_runtime_tasks_inner(
     ));
     let (relay, peers) = RelayTransport::connect_session(config).await?;
     let peer_count = peers.len();
-    send_event(event_tx, RuntimeEvent::RoomPeersUpdated(peers));
+    send_event(event_tx, RuntimeEvent::RoomPeersUpdated(peers.clone()));
     send_event(
         event_tx,
         RuntimeEvent::RelayLinkChanged(RelayLinkState::Connected),
@@ -469,6 +470,7 @@ async fn start_runtime_tasks_inner(
             runtime_rtt_interval: Duration::from_secs(
                 config.session_health.runtime_rtt_interval_seconds,
             ),
+            initial_peers: peers,
         },
     ));
     tasks.spawn(hook_out_task(

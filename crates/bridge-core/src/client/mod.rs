@@ -12,6 +12,7 @@ mod packet_flow;
 mod probe;
 mod process_lifecycle;
 mod relay_transport;
+mod room_path_quality;
 mod runtime;
 mod session;
 mod session_config;
@@ -35,6 +36,7 @@ pub use probe::{
     READINESS_PROBE_SAMPLES_PER_CASE, ReadinessProbeCaseReport, ReadinessProbeReport,
     RelayProbeReport,
 };
+pub use room_path_quality::{RoomPathQualitySnapshot, RoomPathQualityState};
 pub use runtime::{BridgeClient, ClientError, runtime_name};
 pub use session_config::{
     ConfigError, ConnectionProfile, RelayEndpoint, SessionConfig, SessionHealthConfig, SessionMode,

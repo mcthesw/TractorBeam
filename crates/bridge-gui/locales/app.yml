@@ -461,6 +461,33 @@ room.members:
 room.empty:
   zh_CN: "暂无成员(未加入房间)"
   en_US: "No members (not joined)"
+room.player:
+  zh_CN: "玩家"
+  en_US: "Player"
+room.path.rtt:
+  zh_CN: "端到端延迟"
+  en_US: "Peer RTT"
+room.path.jitter:
+  zh_CN: "抖动"
+  en_US: "Jitter"
+room.path.loss:
+  zh_CN: "探测丢包"
+  en_US: "Probe loss"
+room.path.freshness:
+  zh_CN: "样本"
+  en_US: "Sample"
+room.path.measuring:
+  zh_CN: "测量中"
+  en_US: "Measuring"
+room.path.current:
+  zh_CN: "刚刚"
+  en_US: "Now"
+room.path.stale:
+  zh_CN: "已过期"
+  en_US: "Stale"
+room.path.unavailable:
+  zh_CN: "不可用"
+  en_US: "Unavailable"
 log:
   zh_CN: "日志"
   en_US: "Log"

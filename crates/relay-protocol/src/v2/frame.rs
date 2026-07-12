@@ -6,6 +6,7 @@ use super::{FRAME_MAGIC, IPV4_UDP_DATAGRAM_BUDGET, PROTOCOL_MAJOR, PROTOCOL_MINO
 pub const COMMON_HEADER_LEN: usize = 16;
 pub const DATA_FRAME_HEADER_LEN: usize = 60;
 pub const DATA_FRAME_OVERHEAD: usize = DATA_FRAME_HEADER_LEN;
+pub const PROBE_FRAME_HEADER_LEN: usize = 56;
 pub const MAX_CONTROL_PAYLOAD: usize = 16 * 1024;
 pub const MAX_FRAME_LEN: usize = IPV4_UDP_DATAGRAM_BUDGET;
 pub const MAX_DATA_PAYLOAD: usize = MAX_FRAME_LEN - DATA_FRAME_HEADER_LEN;
@@ -17,6 +18,7 @@ pub enum FrameKind {
     ClientControl = 1,
     ServerControl = 2,
     Data = 3,
+    Probe = 4,
 }
 
 impl TryFrom<u8> for FrameKind {
@@ -27,6 +29,7 @@ impl TryFrom<u8> for FrameKind {
             1 => Ok(Self::ClientControl),
             2 => Ok(Self::ServerControl),
             3 => Ok(Self::Data),
+            4 => Ok(Self::Probe),
             other => Err(FrameDecodeError::UnknownKind(other)),
         }
     }
@@ -44,11 +47,40 @@ pub struct DataFrame {
     pub payload: Bytes,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum ProbePhase {
+    Request = 1,
+    Echo = 2,
+}
+
+impl TryFrom<u8> for ProbePhase {
+    type Error = FrameDecodeError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Request),
+            2 => Ok(Self::Echo),
+            other => Err(FrameDecodeError::UnknownProbePhase(other)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProbeFrame {
+    pub connection_id: u64,
+    pub probe_id: u64,
+    pub from_steam_id64: u64,
+    pub to_steam_id64: u64,
+    pub phase: ProbePhase,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Frame {
     ClientControl(Bytes),
     ServerControl(Bytes),
     Data(DataFrame),
+    Probe(ProbeFrame),
 }
 
 impl Frame {
@@ -57,7 +89,28 @@ impl Frame {
             Self::ClientControl(payload) => encode_common(FrameKind::ClientControl, payload),
             Self::ServerControl(payload) => encode_common(FrameKind::ServerControl, payload),
             Self::Data(frame) => frame.encode(),
+            Self::Probe(frame) => frame.encode(),
         }
+    }
+}
+
+impl ProbeFrame {
+    pub fn encode(self) -> Result<Bytes, FrameEncodeError> {
+        if self.connection_id == 0 {
+            return Err(FrameEncodeError::ZeroConnectionId);
+        }
+        if self.probe_id == 0 {
+            return Err(FrameEncodeError::ZeroProbeId);
+        }
+        let mut bytes = BytesMut::with_capacity(PROBE_FRAME_HEADER_LEN);
+        put_common_header(&mut bytes, FrameKind::Probe, PROBE_FRAME_HEADER_LEN, 0)?;
+        bytes.put_u64(self.connection_id);
+        bytes.put_u64(self.probe_id);
+        bytes.put_u64(self.from_steam_id64);
+        bytes.put_u64(self.to_steam_id64);
+        bytes.put_u8(self.phase as u8);
+        bytes.put_slice(&[0; 7]);
+        Ok(bytes.freeze())
     }
 }
 
@@ -124,6 +177,7 @@ pub fn decode_frame(mut bytes: Bytes) -> Result<Frame, FrameDecodeError> {
         .map_err(|_| FrameDecodeError::PayloadTooLarge(usize::MAX))?;
     let minimum_header = match kind {
         FrameKind::Data => DATA_FRAME_HEADER_LEN,
+        FrameKind::Probe => PROBE_FRAME_HEADER_LEN,
         FrameKind::ClientControl | FrameKind::ServerControl => COMMON_HEADER_LEN,
     };
     if header_len < minimum_header {
@@ -131,6 +185,7 @@ pub fn decode_frame(mut bytes: Bytes) -> Result<Frame, FrameDecodeError> {
     }
     let max_payload = match kind {
         FrameKind::Data => MAX_DATA_PAYLOAD,
+        FrameKind::Probe => 0,
         FrameKind::ClientControl | FrameKind::ServerControl => MAX_CONTROL_PAYLOAD,
     };
     if payload_len > max_payload {
@@ -155,6 +210,7 @@ pub fn decode_frame(mut bytes: Bytes) -> Result<Frame, FrameDecodeError> {
                 FrameKind::ClientControl => Frame::ClientControl(payload),
                 FrameKind::ServerControl => Frame::ServerControl(payload),
                 FrameKind::Data => unreachable!("data handled in separate branch"),
+                FrameKind::Probe => unreachable!("probe handled in separate branch"),
             })
         }
         FrameKind::Data => {
@@ -181,6 +237,31 @@ pub fn decode_frame(mut bytes: Bytes) -> Result<Frame, FrameDecodeError> {
                 channel,
                 send_type,
                 payload: bytes.copy_to_bytes(payload_len),
+            }))
+        }
+        FrameKind::Probe => {
+            let connection_id = bytes.get_u64();
+            let probe_id = bytes.get_u64();
+            let from_steam_id64 = bytes.get_u64();
+            let to_steam_id64 = bytes.get_u64();
+            let phase = ProbePhase::try_from(bytes.get_u8())?;
+            if connection_id == 0 {
+                return Err(FrameDecodeError::ZeroConnectionId);
+            }
+            if probe_id == 0 {
+                return Err(FrameDecodeError::ZeroProbeId);
+            }
+            if bytes[..7].iter().any(|byte| *byte != 0) {
+                return Err(FrameDecodeError::NonZeroProbeReserved);
+            }
+            bytes.advance(7);
+            bytes.advance(header_len - PROBE_FRAME_HEADER_LEN);
+            Ok(Frame::Probe(ProbeFrame {
+                connection_id,
+                probe_id,
+                from_steam_id64,
+                to_steam_id64,
+                phase,
             }))
         }
     }
@@ -227,6 +308,8 @@ pub enum FrameEncodeError {
     ZeroConnectionId,
     #[error("data frame id must be non-zero")]
     ZeroFrameId,
+    #[error("probe id must be non-zero")]
+    ZeroProbeId,
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -255,4 +338,10 @@ pub enum FrameDecodeError {
     ZeroConnectionId,
     #[error("data frame id must be non-zero")]
     ZeroFrameId,
+    #[error("probe id must be non-zero")]
+    ZeroProbeId,
+    #[error("unknown probe phase {0}")]
+    UnknownProbePhase(u8),
+    #[error("probe reserved field is non-zero")]
+    NonZeroProbeReserved,
 }

@@ -67,6 +67,12 @@ pub struct PeerPresenceInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub presence: PeerPresence,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub capabilities: u64,
+}
+
+const fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

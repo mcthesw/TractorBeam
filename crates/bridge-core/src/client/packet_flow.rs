@@ -8,7 +8,8 @@ use bytes::Bytes;
 use tractor_beam_hook_ipc::GamePacket as HookGamePacket;
 
 use crate::protocol::v2::{
-    DataFrame, Frame, PeerPresenceInfo, ServerControl, decode_frame, decode_server_control,
+    DataFrame, Frame, PeerPresenceInfo, ProbeFrame, ServerControl, decode_frame,
+    decode_server_control,
 };
 
 use super::{
@@ -48,6 +49,7 @@ pub(super) enum InboundRelayDatagram {
     Game(InboundGamePacket),
     HealthPong { id: u64 },
     PeerPresence { peers: Vec<PeerPresenceInfo> },
+    Probe(ProbeFrame),
 }
 
 #[derive(Debug, Default)]
@@ -161,6 +163,7 @@ pub(super) fn decode_inbound_relay_datagram(
 ) -> io::Result<Option<InboundRelayDatagram>> {
     match decode_frame(bytes).map_err(io::Error::other)? {
         Frame::Data(game) => Ok(Some(InboundRelayDatagram::Game(InboundGamePacket { game }))),
+        Frame::Probe(probe) => Ok(Some(InboundRelayDatagram::Probe(probe))),
         Frame::ServerControl(payload) => match decode_server_control(&payload)
             .map_err(io::Error::other)?
         {

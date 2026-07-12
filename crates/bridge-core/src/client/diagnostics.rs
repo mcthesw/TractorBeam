@@ -262,6 +262,27 @@ impl BridgeClient {
             output.push_str("none\n");
         }
         output.push('\n');
+        output.push_str("room path quality:\n");
+        if self.state.room_path_quality.is_empty() {
+            output.push_str("none\n");
+        } else {
+            for quality in &self.state.room_path_quality {
+                output.push_str(&format!(
+                    "state={:?} completed={} responses={} median_ms={} p95_ms={} jitter_ms={} loss_basis_points={} freshness_ms={}\n",
+                    quality.state,
+                    quality.completed,
+                    quality.responses,
+                    display_duration_ms(quality.median_rtt),
+                    display_duration_ms(quality.p95_rtt),
+                    display_duration_ms(quality.jitter),
+                    quality
+                        .loss_basis_points
+                        .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+                    display_duration_ms(quality.freshness),
+                ));
+            }
+        }
+        output.push('\n');
         output.push_str("client incidents:\n");
         if self.state.client_incidents.is_empty() {
             output.push_str("none\n\n");
@@ -368,6 +389,10 @@ impl BridgeClient {
         }
         output
     }
+}
+
+fn display_duration_ms(value: Option<std::time::Duration>) -> String {
+    value.map_or_else(|| "-".to_owned(), |value| value.as_millis().to_string())
 }
 
 fn collect_optional_file(

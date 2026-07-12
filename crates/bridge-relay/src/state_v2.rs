@@ -6,7 +6,7 @@ use std::{
 
 use rand::RngExt as _;
 use sha2::{Digest as _, Sha256};
-use tractor_beam_relay_protocol::v2::{DuplicateDecision, FrameIdWindow};
+use tractor_beam_relay_protocol::v2::{CAP_ROOM_PATH_PROBE, DuplicateDecision, FrameIdWindow};
 
 use crate::{
     config::RelayConfig,
@@ -14,11 +14,12 @@ use crate::{
     domain_v2::{
         DataDestination, DataProfile, DataSource, JoinBegin, JoinChallenge, JoinReady, PathKey,
         PeerView, Presence, PresenceBroadcast, ResumeFailure, ResumeKey, ResumeReady, RouteData,
-        SessionKey, StateError,
+        RouteProbe, SessionKey, StateError,
     },
 };
 
 const RECOVERY_GRACE: Duration = Duration::from_secs(120);
+const PROBE_RATE_LIMIT_PER_SECOND: u32 = 10;
 
 #[derive(Clone, Debug)]
 struct PendingJoin {
@@ -26,6 +27,7 @@ struct PendingJoin {
     steam_id64: u64,
     display_name: Option<String>,
     profile: DataProfile,
+    capabilities: u64,
     challenge_id: [u8; 16],
     pow_nonce: [u8; 16],
     issued_at: Instant,
@@ -41,6 +43,7 @@ struct Peer {
     steam_id64: u64,
     display_name: Option<String>,
     profile: DataProfile,
+    capabilities: u64,
     presence: Presence,
     detached_until: Option<Instant>,
     frames: FrameIdWindow,
@@ -48,6 +51,8 @@ struct Peer {
     rate_window_started: Instant,
     rate_window_packets: u32,
     rate_window_bytes: usize,
+    probe_window_started: Instant,
+    probe_window_frames: u32,
 }
 
 #[derive(Debug)]
@@ -93,6 +98,7 @@ impl RelayStateV2 {
                 steam_id64: begin.steam_id64,
                 display_name: begin.display_name,
                 profile: begin.profile,
+                capabilities: begin.capabilities,
                 challenge_id: challenge.challenge_id,
                 pow_nonce: challenge.pow_nonce,
                 issued_at: begin.now,
@@ -148,6 +154,7 @@ impl RelayStateV2 {
                 steam_id64: pending.steam_id64,
                 display_name: pending.display_name,
                 profile: pending.profile,
+                capabilities: pending.capabilities,
                 presence: Presence::Connected,
                 detached_until: None,
                 frames: FrameIdWindow::new(),
@@ -155,6 +162,8 @@ impl RelayStateV2 {
                 rate_window_started: now,
                 rate_window_packets: 0,
                 rate_window_bytes: 0,
+                probe_window_started: now,
+                probe_window_frames: 0,
             },
         );
         self.connection_rooms.insert(connection_id, pending.session);
@@ -269,57 +278,65 @@ impl RelayStateV2 {
             .rooms
             .get_mut(&session)
             .ok_or(StateError::UnknownConnection)?;
-        let sender = room
-            .peers
-            .get_mut(&connection_id)
-            .ok_or(StateError::UnknownConnection)?;
-        if sender.steam_id64 != from_steam_id64 {
-            return Err(StateError::SenderMismatch);
-        }
-        match (sender.profile, source) {
-            (DataProfile::Tcp, DataSource::Tcp(peer)) if peer == sender.control_peer => {}
-            (DataProfile::Udp, DataSource::Udp(address)) if Some(address) == sender.udp_address => {
-            }
-            (DataProfile::Udp, DataSource::Udp(_)) => return Err(StateError::PathNotValidated),
-            _ => return Err(StateError::ProfileMismatch),
-        }
-        match sender.frames.observe(frame_id) {
-            DuplicateDecision::New | DuplicateDecision::Reordered => {}
-            DuplicateDecision::Duplicate => return Err(StateError::DuplicateFrame),
-            DuplicateDecision::TooOld => return Err(StateError::FrameTooOld),
-        }
-        if now.duration_since(sender.rate_window_started) >= Duration::from_secs(1) {
-            sender.rate_window_started = now;
-            sender.rate_window_packets = 0;
-            sender.rate_window_bytes = 0;
-        }
-        let next_packets = sender.rate_window_packets.saturating_add(1);
-        let next_bytes = sender.rate_window_bytes.saturating_add(frame_bytes);
-        if next_packets > self.config.rate_limit_per_second
-            || next_bytes > self.config.byte_rate_limit_burst
-            || (sender.rate_window_bytes > 0 && next_bytes > self.config.byte_rate_limit_per_second)
         {
-            return Err(StateError::RateLimited);
-        }
-        sender.rate_window_packets = next_packets;
-        sender.rate_window_bytes = next_bytes;
-        sender.last_seen = now;
-        room.last_seen = now;
-        let target = room
-            .peers
-            .values()
-            .find(|peer| peer.steam_id64 == to_steam_id64)
-            .ok_or(StateError::TargetNotJoined)?;
-        match target.profile {
-            DataProfile::Tcp if target.presence == Presence::Connected => {
-                Ok(DataDestination::Tcp(target.control_peer))
+            let sender = room
+                .peers
+                .get_mut(&connection_id)
+                .ok_or(StateError::UnknownConnection)?;
+            validate_source(sender, from_steam_id64, source)?;
+            match sender.frames.observe(frame_id) {
+                DuplicateDecision::New | DuplicateDecision::Reordered => {}
+                DuplicateDecision::Duplicate => return Err(StateError::DuplicateFrame),
+                DuplicateDecision::TooOld => return Err(StateError::FrameTooOld),
             }
-            DataProfile::Udp => target
-                .udp_address
-                .map(DataDestination::Udp)
-                .ok_or(StateError::TargetUnavailable),
-            DataProfile::Tcp => Err(StateError::TargetUnavailable),
+            apply_traffic_budget(sender, &self.config, frame_bytes, now)?;
         }
+        room.last_seen = now;
+        target_destination(room, to_steam_id64, false)
+    }
+
+    pub(crate) fn route_probe(
+        &mut self,
+        request: RouteProbe,
+    ) -> Result<DataDestination, StateError> {
+        let RouteProbe {
+            connection_id,
+            from_steam_id64,
+            to_steam_id64,
+            source,
+            frame_bytes,
+            now,
+        } = request;
+        let session = *self
+            .connection_rooms
+            .get(&connection_id)
+            .ok_or(StateError::UnknownConnection)?;
+        let room = self
+            .rooms
+            .get_mut(&session)
+            .ok_or(StateError::UnknownConnection)?;
+        {
+            let sender = room
+                .peers
+                .get_mut(&connection_id)
+                .ok_or(StateError::UnknownConnection)?;
+            validate_source(sender, from_steam_id64, source)?;
+            if sender.capabilities & CAP_ROOM_PATH_PROBE == 0 {
+                return Err(StateError::ProbeUnsupported);
+            }
+            apply_traffic_budget(sender, &self.config, frame_bytes, now)?;
+            if now.duration_since(sender.probe_window_started) >= Duration::from_secs(1) {
+                sender.probe_window_started = now;
+                sender.probe_window_frames = 0;
+            }
+            let next = sender.probe_window_frames.saturating_add(1);
+            if next > PROBE_RATE_LIMIT_PER_SECOND {
+                return Err(StateError::ProbeRateLimited);
+            }
+            sender.probe_window_frames = next;
+        }
+        room.last_seen = now;
+        target_destination(room, to_steam_id64, true)
     }
 
     pub(crate) fn cleanup(&mut self, now: Instant) -> Vec<PresenceBroadcast> {
@@ -456,10 +473,79 @@ fn room_views(room: &Room) -> Vec<PeerView> {
             steam_id64: peer.steam_id64,
             display_name: peer.display_name.clone(),
             presence: peer.presence,
+            capabilities: peer.capabilities,
         })
         .collect::<Vec<_>>();
     peers.sort_by_key(|peer| peer.steam_id64);
     peers
+}
+
+fn validate_source(
+    sender: &Peer,
+    from_steam_id64: u64,
+    source: DataSource,
+) -> Result<(), StateError> {
+    if sender.steam_id64 != from_steam_id64 {
+        return Err(StateError::SenderMismatch);
+    }
+    match (sender.profile, source) {
+        (DataProfile::Tcp, DataSource::Tcp(peer)) if peer == sender.control_peer => Ok(()),
+        (DataProfile::Udp, DataSource::Udp(address)) if Some(address) == sender.udp_address => {
+            Ok(())
+        }
+        (DataProfile::Udp, DataSource::Udp(_)) => Err(StateError::PathNotValidated),
+        _ => Err(StateError::ProfileMismatch),
+    }
+}
+
+fn apply_traffic_budget(
+    sender: &mut Peer,
+    config: &RelayConfig,
+    frame_bytes: usize,
+    now: Instant,
+) -> Result<(), StateError> {
+    if now.duration_since(sender.rate_window_started) >= Duration::from_secs(1) {
+        sender.rate_window_started = now;
+        sender.rate_window_packets = 0;
+        sender.rate_window_bytes = 0;
+    }
+    let next_packets = sender.rate_window_packets.saturating_add(1);
+    let next_bytes = sender.rate_window_bytes.saturating_add(frame_bytes);
+    if next_packets > config.rate_limit_per_second
+        || next_bytes > config.byte_rate_limit_burst
+        || (sender.rate_window_bytes > 0 && next_bytes > config.byte_rate_limit_per_second)
+    {
+        return Err(StateError::RateLimited);
+    }
+    sender.rate_window_packets = next_packets;
+    sender.rate_window_bytes = next_bytes;
+    sender.last_seen = now;
+    Ok(())
+}
+
+fn target_destination(
+    room: &Room,
+    to_steam_id64: u64,
+    require_probe: bool,
+) -> Result<DataDestination, StateError> {
+    let target = room
+        .peers
+        .values()
+        .find(|peer| peer.steam_id64 == to_steam_id64)
+        .ok_or(StateError::TargetNotJoined)?;
+    if require_probe && target.capabilities & CAP_ROOM_PATH_PROBE == 0 {
+        return Err(StateError::ProbeUnsupported);
+    }
+    match target.profile {
+        DataProfile::Tcp if target.presence == Presence::Connected => {
+            Ok(DataDestination::Tcp(target.control_peer))
+        }
+        DataProfile::Udp => target
+            .udp_address
+            .map(DataDestination::Udp)
+            .ok_or(StateError::TargetUnavailable),
+        DataProfile::Tcp => Err(StateError::TargetUnavailable),
+    }
 }
 
 fn verify_pow(pending: &PendingJoin, proof: &str, difficulty: u8) -> bool {

@@ -105,7 +105,9 @@ async fn serve_connection(mut stream: TcpStream, peers: Peers) -> io::Result<()>
     let response = BootstrapMessage::ServerHello {
         bootstrap_schema: BOOTSTRAP_SCHEMA,
         selected_protocol: ProtocolVersion { major: 2, minor: 0 },
-        enabled_capabilities: crate::protocol::v2::CAP_TCP_DATA | crate::protocol::v2::CAP_RESUME,
+        enabled_capabilities: crate::protocol::v2::CAP_TCP_DATA
+            | crate::protocol::v2::CAP_RESUME
+            | crate::protocol::v2::CAP_ROOM_PATH_PROBE,
         relay: BuildMetadata {
             version: "test".into(),
             git_hash: None,
@@ -141,7 +143,7 @@ async fn serve_connection(mut stream: TcpStream, peers: Peers) -> io::Result<()>
                             send_control(&outbound_tx, ServerControl::JoinReady {
                                 connection_id: steam,
                                 resume_credential: SecretString::new("test-resume"),
-                                peers: vec![PeerPresenceInfo { steam_id64: steam, display_name: None, presence: PeerPresence::Connected }],
+                                peers: vec![PeerPresenceInfo { steam_id64: steam, display_name: None, presence: PeerPresence::Connected, capabilities: crate::protocol::v2::CAP_ROOM_PATH_PROBE }],
                             }).await?;
                         }
                         ClientControl::ControlPing { id } => send_control(&outbound_tx, ServerControl::ControlPong { id }).await?,
@@ -149,6 +151,12 @@ async fn serve_connection(mut stream: TcpStream, peers: Peers) -> io::Result<()>
                         _ => {}
                     },
                     Frame::Data(data) => forward(data, raw, &peers).await?,
+                    Frame::Probe(probe) => {
+                        let destination = peers.lock().await.get(&probe.to_steam_id64).cloned();
+                        if let Some(destination) = destination {
+                            destination.send(raw).await.map_err(io::Error::other)?;
+                        }
+                    }
                     Frame::ServerControl(_) => return Err(io::Error::other("unexpected server frame")),
                 }
             }

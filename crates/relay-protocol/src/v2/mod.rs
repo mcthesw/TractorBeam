@@ -20,7 +20,7 @@ pub use duplicate::{DuplicateDecision, FrameIdWindow};
 pub use frame::{
     COMMON_HEADER_LEN, DATA_FRAME_HEADER_LEN, DATA_FRAME_OVERHEAD, DataFrame, Frame,
     FrameDecodeError, FrameEncodeError, FrameKind, IPV4_SAFE_DATA_PAYLOAD, MAX_CONTROL_PAYLOAD,
-    MAX_DATA_PAYLOAD, MAX_FRAME_LEN, decode_frame,
+    MAX_DATA_PAYLOAD, MAX_FRAME_LEN, PROBE_FRAME_HEADER_LEN, ProbeFrame, ProbePhase, decode_frame,
 };
 
 pub const PROTOCOL_MAJOR: u8 = 2;
@@ -31,4 +31,5 @@ pub const IPV4_UDP_DATAGRAM_BUDGET: usize = 1_472;
 pub const CAP_TCP_DATA: u64 = 1 << 0;
 pub const CAP_UDP_DATA: u64 = 1 << 1;
 pub const CAP_RESUME: u64 = 1 << 2;
-pub const KNOWN_CAPABILITIES: u64 = CAP_TCP_DATA | CAP_UDP_DATA | CAP_RESUME;
+pub const CAP_ROOM_PATH_PROBE: u64 = 1 << 3;
+pub const KNOWN_CAPABILITIES: u64 = CAP_TCP_DATA | CAP_UDP_DATA | CAP_RESUME | CAP_ROOM_PATH_PROBE;

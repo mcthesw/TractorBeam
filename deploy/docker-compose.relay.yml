@@ -10,4 +10,8 @@ services:
     volumes:
       # Keep relay.toml next to this compose file when running docker compose.
       - ./relay.toml:/etc/tractor-beam/relay.toml:ro
+    environment:
+      # Keep local output readable by default; set LOG_FORMAT=json when a log
+      # collector parses container stdout.
+      LOG_FORMAT: ${LOG_FORMAT:-text}
     command: ["--config", "/etc/tractor-beam/relay.toml"]

@@ -9,6 +9,27 @@ The receiver may be a local OpenTelemetry Collector, Vector, a SigNoz
 collector, or another OTLP-compatible component. Tractor Beam does not depend
 on that deployment topology or on a particular observability backend.
 
+## Local log format
+
+Relay logs always go to standard output and remain independent of OTLP export.
+Set `LOG_FORMAT=json` for newline-delimited JSON intended for journald, Docker,
+or another structured log collector. Existing `tracing` event fields are
+top-level JSON properties, while timestamp, level, target, message, and current
+span context use the standard `tracing-subscriber` JSON representation. JSON
+output never contains ANSI escape sequences.
+
+`LOG_FORMAT` supports exactly `text` and `json`. It defaults to `text` when
+unset so direct local runs remain readable. An unsupported value fails startup
+before the Relay binds its sockets. `RUST_LOG` controls filtering and defaults
+to `info` when absent or invalid.
+
+For a native systemd deployment, run the Relay binary directly with
+`Environment=LOG_FORMAT=json` and let journald capture stdout. A Collector
+Contrib `journald` receiver can conditionally apply a `json_parser` to
+`body.MESSAGE`; non-JSON systemd messages and older Relay output should pass
+through unchanged. This is simpler than wrapping the Relay in a shell pipeline,
+which changes journald process metadata and adds buffering.
+
 ## Configuration
 
 Telemetry is disabled unless the `[telemetry]` section is present. Environment

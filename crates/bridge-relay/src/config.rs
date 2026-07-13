@@ -1,6 +1,6 @@
 use std::{fs, io, path::PathBuf};
 
-use clap::{ArgAction, Parser};
+use argh::FromArgs;
 use ipnet::IpNet;
 use serde::Deserialize;
 
@@ -20,18 +20,23 @@ const DEFAULT_TCP_EGRESS_QUEUE_CAPACITY: usize = 512;
 const DEFAULT_POW_DIFFICULTY_BITS: u8 = 18;
 const DEFAULT_DATA_TRACE_SAMPLE_RATIO: f64 = 0.001;
 
-#[derive(Debug, Parser)]
-#[command(author, about)]
+/// Run the Tractor Beam Relay Server.
+#[derive(Debug, FromArgs)]
 pub(crate) struct Args {
-    #[arg(short = 'V', long, action = ArgAction::SetTrue, help = "Print version information")]
+    /// print version information
+    #[argh(switch, short = 'V')]
     version: bool,
-    #[arg(long)]
+    /// load Relay settings from this TOML file
+    #[argh(option)]
     config: Option<PathBuf>,
-    #[arg(long)]
+    /// override the UDP listener address
+    #[argh(option)]
     bind: Option<String>,
-    #[arg(long)]
+    /// override the TCP listener address
+    #[argh(option)]
     tcp_bind: Option<String>,
-    #[arg(long)]
+    /// disable the TCP listener
+    #[argh(switch)]
     disable_tcp: bool,
 }
 
@@ -307,11 +312,44 @@ fn default_bind() -> String {
 
 #[cfg(test)]
 mod tests {
+    use argh::FromArgs;
+
     use super::{
-        DEFAULT_BYTE_RATE_LIMIT_BURST, DEFAULT_BYTE_RATE_LIMIT_PER_SECOND,
+        Args, DEFAULT_BYTE_RATE_LIMIT_BURST, DEFAULT_BYTE_RATE_LIMIT_PER_SECOND,
         DEFAULT_HEALTH_PONGS_PER_SECOND_PER_IP, DEFAULT_MAX_PACKET_SIZE,
         DEFAULT_RATE_LIMIT_PER_SECOND, RelayConfig,
     };
+
+    #[test]
+    fn parses_command_line_options_with_argh() {
+        let args = Args::from_args(
+            &["tractor-beam-relay"],
+            &[
+                "--config",
+                "relay.toml",
+                "--bind",
+                "127.0.0.1:25910",
+                "--tcp-bind",
+                "127.0.0.1:25911",
+                "--disable-tcp",
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(args.config, Some("relay.toml".into()));
+        assert_eq!(args.bind.as_deref(), Some("127.0.0.1:25910"));
+        assert_eq!(args.tcp_bind.as_deref(), Some("127.0.0.1:25911"));
+        assert!(args.disable_tcp);
+        assert!(!args.should_print_version());
+    }
+
+    #[test]
+    fn parses_short_and_long_version_switches() {
+        for version_switch in ["-V", "--version"] {
+            let args = Args::from_args(&["tractor-beam-relay"], &[version_switch]).unwrap();
+            assert!(args.should_print_version());
+        }
+    }
 
     #[test]
     fn parses_minimal_sectioned_config() {

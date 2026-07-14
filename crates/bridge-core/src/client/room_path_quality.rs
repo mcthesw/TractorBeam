@@ -3,14 +3,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::protocol::v2::{CAP_ROOM_PATH_PROBE, PeerPresence, PeerPresenceInfo};
+use serde::Serialize;
+
+use crate::protocol::{CAP_ROOM_PATH_PROBE, PeerPresence, PeerPresenceInfo};
 
 const COMPLETED_CAPACITY: usize = 30;
 const MIN_COMPLETED_SAMPLES: usize = 5;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const STALE_AFTER: Duration = Duration::from_secs(5);
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 pub enum RoomPathQualityState {
     #[default]
     Unavailable,
@@ -19,7 +21,7 @@ pub enum RoomPathQualityState {
     Stale,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct RoomPathQualitySnapshot {
     pub steam_id64: u64,
     pub state: RoomPathQualityState,
@@ -42,8 +44,6 @@ enum CompletedProbe {
 struct PeerMeasurement {
     pending: HashMap<u64, Instant>,
     completed: VecDeque<CompletedProbe>,
-    previous_rtt: Option<Duration>,
-    jitter_micros: Option<u64>,
     last_completed: Option<Instant>,
 }
 
@@ -126,19 +126,6 @@ impl RoomPathQuality {
 
 impl PeerMeasurement {
     fn complete(&mut self, result: CompletedProbe, now: Instant) {
-        if let CompletedProbe::Response(rtt) = result
-            && let Some(previous) = self.previous_rtt.replace(rtt)
-        {
-            let delta = rtt.abs_diff(previous).as_micros();
-            let delta = u64::try_from(delta).unwrap_or(u64::MAX);
-            self.jitter_micros = Some(self.jitter_micros.map_or(delta, |jitter| {
-                if delta >= jitter {
-                    jitter.saturating_add((delta - jitter) / 16)
-                } else {
-                    jitter.saturating_sub((jitter - delta) / 16)
-                }
-            }));
-        }
         self.completed.push_back(result);
         while self.completed.len() > COMPLETED_CAPACITY {
             self.completed.pop_front();
@@ -181,11 +168,28 @@ impl PeerMeasurement {
             responses: u32::try_from(responses).unwrap_or(u32::MAX),
             median_rtt: percentile(&rtts, 50),
             p95_rtt: percentile(&rtts, 95),
-            jitter: self.jitter_micros.map(Duration::from_micros),
+            jitter: window_jitter(&self.completed),
             loss_basis_points,
             freshness,
         }
     }
+}
+
+fn window_jitter(samples: &VecDeque<CompletedProbe>) -> Option<Duration> {
+    let mut responses = samples.iter().filter_map(|sample| match sample {
+        CompletedProbe::Response(rtt) => Some(*rtt),
+        CompletedProbe::Timeout => None,
+    });
+    let mut previous = responses.next()?;
+    let mut total_micros = 0_u128;
+    let mut deltas = 0_u128;
+    for current in responses {
+        total_micros = total_micros.saturating_add(current.abs_diff(previous).as_micros());
+        deltas = deltas.saturating_add(1);
+        previous = current;
+    }
+    (deltas > 0)
+        .then(|| Duration::from_micros(u64::try_from(total_micros / deltas).unwrap_or(u64::MAX)))
 }
 
 fn percentile(sorted: &[Duration], percentile: usize) -> Option<Duration> {
@@ -252,5 +256,27 @@ mod tests {
         );
         quality.sync_peers(&[peer(1)], 1);
         assert!(quality.snapshots(start).is_empty());
+    }
+
+    #[test]
+    fn jitter_uses_only_the_completed_sample_window() {
+        let start = Instant::now();
+        let mut quality = RoomPathQuality::default();
+        quality.sync_peers(&[peer(1), peer(2)], 1);
+        for id in 1..=31 {
+            let sent = start + Duration::from_secs(id);
+            quality.record_sent(2, id, sent);
+            let rtt = if id == 1 {
+                Duration::from_millis(500)
+            } else {
+                Duration::from_millis(20)
+            };
+            assert!(quality.record_echo(2, id, sent + rtt));
+        }
+
+        assert_eq!(
+            quality.snapshots(start + Duration::from_secs(32))[0].jitter,
+            Some(Duration::ZERO)
+        );
     }
 }

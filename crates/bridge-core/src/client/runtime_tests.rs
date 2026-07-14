@@ -5,7 +5,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::client::{SessionHealthConfig, SessionHealthSnapshot, SessionQuality, TransportChoice};
+use crate::client::{
+    QualityConfidence, SessionHealthConfig, SessionHealthSnapshot, SessionQuality,
+    SmoothnessReason, TransportChoice,
+};
 
 use super::*;
 
@@ -64,12 +67,19 @@ fn diagnostics_include_session_health_evidence() {
         quality: SessionQuality::Good,
         ..SessionHealthSnapshot::default()
     });
+    client.state.smoothness.level = SessionQuality::Watch;
+    client.state.smoothness.confidence = QualityConfidence::Medium;
+    client.state.smoothness.reasons = vec![SmoothnessReason::PathJitterElevated];
 
     let text = client.diagnostics_text();
 
     assert!(text.contains("session health:"));
     assert!(text.contains("quality=good"));
     assert!(text.contains("\"quality\": \"good\""));
+    assert!(text.contains("current smoothness:"));
+    assert!(text.contains("\"level\": \"watch\""));
+    assert!(text.contains("path_jitter_elevated"));
+    assert!(text.contains("input_delay_evidence:"));
 }
 
 #[test]

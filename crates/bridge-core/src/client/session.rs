@@ -25,9 +25,9 @@ use super::{
     LogLevel, SessionConfig, SessionMode, SessionRouteConfig,
     hook_ipc::{self, HookIpcSession, InputDelayCall},
     packet_flow::{
-        InboundGamePacket, InboundRelayDatagram, OutboundRelayPacket, PacketObserver,
-        decode_inbound_relay_datagram, encode_inbound_hook_packet, encode_outbound_relay_packet,
-        hook_counter, relay_counter, send_error,
+        InboundGamePacket, InboundRelayDatagram, OutboundGamePacket, PacketObserver, PacketSummary,
+        decode_inbound_relay_datagram, decode_outbound_hook_packet, encode_inbound_hook_packet,
+        network_in_counter, network_out_counter, send_error,
     },
     process_lifecycle,
     relay_transport::{RelayTransport, send_control},
@@ -80,7 +80,9 @@ impl SessionNativeHook {
 }
 
 struct RuntimeTasks {
-    essential: JoinSet<io::Result<()>>,
+    /// Route-wide tasks only. Route adapters own pair-local tasks and absorb a single pair's
+    /// failure instead of surfacing it as a session-wide exit here.
+    route: JoinSet<io::Result<()>>,
     support: JoinSet<io::Result<()>>,
     health: Option<SharedSessionHealth>,
 }

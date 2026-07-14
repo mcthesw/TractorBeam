@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 tractor-beam-hook-ipc = { path = "../hook-ipc" }
 tractor-beam-isaac-injector = { path = "../isaac-injector" }
+tractor-beam-direct-protocol = { path = "../direct-protocol" }
 tractor-beam-relay-protocol = { path = "../relay-protocol" }
 bs58 = "0.1"
 backon = { version = "1.6.0", default-features = false, features = ["std"] }

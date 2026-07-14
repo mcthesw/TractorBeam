@@ -22,12 +22,12 @@ impl BridgeApp {
 
     pub(super) fn copy_join_code(&self) -> Result<String, tractor_beam_core::JoinCodeError> {
         let relay_id = self.selected_relay_preset().map(|relay| relay.id.clone());
-        JoinCode {
+        JoinCode::ExternalRelay(RelayJoinCode {
             relay_id,
             relay_host: self.relay_host.trim().to_owned(),
             relay_port: self.relay_port,
             session_credential: self.session_credential,
-        }
+        })
         .encode()
     }
 
@@ -39,7 +39,7 @@ impl BridgeApp {
             self.join_code_input.trim().to_owned()
         };
         match JoinCode::decode(&input) {
-            Ok(code) => {
+            Ok(JoinCode::ExternalRelay(code)) => {
                 if let Some(ref relay_id) = code.relay_id {
                     if let Some(index) = self
                         .relay_presets
@@ -63,6 +63,10 @@ impl BridgeApp {
                 self.status_message = None;
                 self.persist_selection();
                 true
+            }
+            Ok(JoinCode::LanDirect(_)) => {
+                self.join_code_message = Some(t!("join_code.lan_not_available").into_owned());
+                false
             }
             Err(error) => {
                 self.join_code_message = Some(format!("{}: {error}", t!("join_code.invalid")));

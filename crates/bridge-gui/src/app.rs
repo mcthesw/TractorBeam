@@ -11,7 +11,7 @@ use eframe::egui::{self, ScrollArea};
 use rust_i18n::t;
 use tractor_beam_core::{
     ClientConfigSelection, ConnectionProfile, InputDelayError, JoinCode, LightPingTarget,
-    RelayEndpoint, RelayPreset, RuntimeState, SessionConfig, SessionCredential,
+    RelayEndpoint, RelayJoinCode, RelayPreset, RuntimeState, SessionConfig, SessionCredential,
     SessionHealthConfig, SessionMode, SteamIdentity, TransportChoice,
 };
 

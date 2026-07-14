@@ -1,17 +1,18 @@
 use std::time::{Duration, Instant};
 
 use super::*;
+use crate::domain::DataSource;
 
-fn state() -> RelayStateV2 {
+fn state() -> RelayState {
     let config = RelayConfig {
         pow_difficulty_bits: 0,
         ..RelayConfig::default()
     };
-    RelayStateV2::new(config)
+    RelayState::new(config)
 }
 
 fn join(
-    state: &mut RelayStateV2,
+    state: &mut RelayState,
     control_peer: PeerId,
     session: SessionKey,
     steam_id64: u64,
@@ -24,13 +25,13 @@ fn join(
         session,
         steam_id64,
         profile,
-        tractor_beam_relay_protocol::v2::CAP_ROOM_PATH_PROBE,
+        tractor_beam_relay_protocol::CAP_ROOM_PATH_PROBE,
         now,
     )
 }
 
 fn join_with_capabilities(
-    state: &mut RelayStateV2,
+    state: &mut RelayState,
     control_peer: PeerId,
     session: SessionKey,
     steam_id64: u64,
@@ -82,7 +83,7 @@ fn probe_routing_requires_capability_and_selected_source_path() {
         from_steam_id64: 101,
         to_steam_id64: 202,
         source: DataSource::Tcp(PeerId::new(1)),
-        frame_bytes: tractor_beam_relay_protocol::v2::PROBE_FRAME_HEADER_LEN,
+        frame_bytes: tractor_beam_relay_protocol::PROBE_FRAME_HEADER_LEN,
         now,
     };
     assert_eq!(

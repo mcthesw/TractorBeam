@@ -126,8 +126,8 @@ pub(super) async fn relay_transport_task(
                             ProbePhase::Request if probe.to_steam_id64 == local_steam_id64 => {
                                 let target_supported = room_peers.iter().any(|peer| {
                                     peer.steam_id64 == probe.from_steam_id64
-                                        && peer.presence == crate::protocol::v2::PeerPresence::Connected
-                                        && peer.capabilities & crate::protocol::v2::CAP_ROOM_PATH_PROBE != 0
+                                        && peer.presence == crate::protocol::PeerPresence::Connected
+                                        && peer.capabilities & crate::protocol::CAP_ROOM_PATH_PROBE != 0
                                 });
                                 if target_supported {
                                     let _ = relay.sender.send_probe(

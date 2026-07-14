@@ -1,6 +1,6 @@
 use std::{fmt, net::SocketAddr, time::Instant};
 
-use crate::domain::PeerId;
+use super::PeerId;
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub(crate) struct SessionKey(pub(crate) [u8; 16]);
@@ -68,6 +68,7 @@ pub(crate) struct JoinReady {
     pub(crate) connection_id: u64,
     pub(crate) resume_key: ResumeKey,
     pub(crate) peers: Vec<PeerView>,
+    pub(crate) profile: DataProfile,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -81,6 +82,7 @@ pub(crate) enum ResumeFailure {
 pub(crate) struct ResumeReady {
     pub(crate) connection_id: u64,
     pub(crate) peers: Vec<PeerView>,
+    pub(crate) profile: DataProfile,
     pub(crate) udp_path_valid: bool,
     pub(crate) broadcast: Option<PresenceBroadcast>,
 }

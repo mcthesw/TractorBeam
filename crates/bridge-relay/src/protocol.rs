@@ -1,10 +1,10 @@
 use bs58::{FromBase58 as _, ToBase58 as _};
-use tractor_beam_relay_protocol::v2::{
+use tractor_beam_relay_protocol::{
     ControlErrorCode, DataProfile as WireDataProfile, PeerPresence as WirePresence,
     PeerPresenceInfo, ResumeRejectCode, SecretString, ServerControl,
 };
 
-use crate::domain_v2::{
+use crate::domain::{
     DataProfile, PathKey, PeerView, Presence, ResumeFailure, ResumeKey, SessionKey, StateError,
 };
 

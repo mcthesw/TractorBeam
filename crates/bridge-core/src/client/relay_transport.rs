@@ -7,20 +7,23 @@ use futures_util::{
 };
 use sha2::{Digest as _, Sha256};
 use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::{TcpStream, UdpSocket},
     time,
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-use crate::protocol::v2::{
-    BOOTSTRAP_SCHEMA, BootstrapMessage, BuildMetadata, CAP_RESUME, CAP_ROOM_PATH_PROBE,
-    CAP_TCP_DATA, CAP_UDP_DATA, ClientControl, DataFrame, DataProfile, Frame, PeerPresenceInfo,
-    ProbeFrame, ProbePhase, ProtocolRange, SecretString, ServerControl, decode_bootstrap,
-    decode_frame, decode_server_control, encode_bootstrap, encode_client_control,
+use crate::protocol::{
+    CAP_ROOM_PATH_PROBE, ClientControl, DataFrame, DataProfile, Frame, PeerPresenceInfo,
+    ProbeFrame, ProbePhase, SecretString, ServerControl, decode_frame, decode_server_control,
+    encode_client_control,
 };
 
 use super::{RelayEndpoint, SessionConfig, TransportChoice, packet_flow::OutboundRelayPacket};
+
+mod bootstrap;
+mod pow;
+use bootstrap::negotiate;
+use pow::solve_pow;
 
 pub(super) const MAX_RELAY_DATAGRAM_SIZE: usize = 65_535;
 pub(super) const RELAY_JOIN_TIMEOUT: Duration = Duration::from_secs(8);
@@ -230,7 +233,7 @@ impl RelayTransportSender {
         packet: OutboundRelayPacket,
     ) -> io::Result<()> {
         let connection_id = self.connection_id.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotConnected, "Relay v2 join is not complete")
+            io::Error::new(io::ErrorKind::NotConnected, "Relay join is not complete")
         })?;
         let frame = DataFrame {
             connection_id,
@@ -260,7 +263,7 @@ impl RelayTransportSender {
         phase: ProbePhase,
     ) -> io::Result<()> {
         let connection_id = self.connection_id.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotConnected, "Relay v2 join is not complete")
+            io::Error::new(io::ErrorKind::NotConnected, "Relay join is not complete")
         })?;
         let frame = ProbeFrame {
             connection_id,
@@ -312,7 +315,7 @@ pub(super) async fn complete_relay_join(
         complete_relay_join_inner(sender, receiver, config),
     )
     .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Relay v2 join timed out"))?
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Relay join timed out"))?
 }
 
 pub(super) async fn send_control(
@@ -458,77 +461,6 @@ async fn recv_server_control(receiver: &mut RelayTransportReceiver) -> io::Resul
     }
 }
 
-async fn negotiate(
-    stream: &mut TcpStream,
-    choice: TransportChoice,
-    client_version: &str,
-    git_hash: Option<&str>,
-) -> io::Result<u64> {
-    let profile_capability = match choice {
-        TransportChoice::Tcp => CAP_TCP_DATA,
-        TransportChoice::Udp => CAP_UDP_DATA,
-    };
-    let hello = BootstrapMessage::ClientHello {
-        bootstrap_schema: BOOTSTRAP_SCHEMA,
-        supported_protocol_ranges: vec![ProtocolRange {
-            major: 2,
-            min_minor: 0,
-            max_minor: 0,
-        }],
-        required_capabilities: CAP_RESUME | profile_capability,
-        optional_capabilities: CAP_TCP_DATA | CAP_UDP_DATA | CAP_ROOM_PATH_PROBE,
-        client: BuildMetadata {
-            version: client_version.to_owned(),
-            git_hash: git_hash.map(str::to_owned),
-        },
-    };
-    stream
-        .write_all(&encode_bootstrap(&hello).map_err(io::Error::other)?)
-        .await?;
-    let response = read_bootstrap(stream).await?;
-    match decode_bootstrap(&response).map_err(io::Error::other)? {
-        BootstrapMessage::ServerHello {
-            selected_protocol,
-            enabled_capabilities,
-            ..
-        } if selected_protocol.major == 2
-            && enabled_capabilities & (CAP_RESUME | profile_capability)
-                == CAP_RESUME | profile_capability =>
-        {
-            Ok(enabled_capabilities)
-        }
-        BootstrapMessage::CompatibilityReject(reject) => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!("Relay compatibility rejected: {:?}", reject.code),
-        )),
-        _ => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Relay selected an incompatible v2 profile",
-        )),
-    }
-}
-
-async fn read_bootstrap(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
-    let length = stream.read_u32().await?;
-    let length = usize::try_from(length).map_err(io::Error::other)?;
-    if length > crate::protocol::v2::MAX_BOOTSTRAP_PAYLOAD {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Relay bootstrap is too large",
-        ));
-    }
-    let mut payload = vec![0_u8; length];
-    stream.read_exact(&mut payload).await?;
-    let mut frame = Vec::with_capacity(4 + length);
-    frame.extend_from_slice(
-        &u32::try_from(length)
-            .map_err(io::Error::other)?
-            .to_be_bytes(),
-    );
-    frame.extend_from_slice(&payload);
-    Ok(frame)
-}
-
 fn tcp_frame(frame: Option<Result<bytes::BytesMut, io::Error>>) -> io::Result<Bytes> {
     let Some(frame) = frame else {
         return Err(io::Error::new(
@@ -537,55 +469,4 @@ fn tcp_frame(frame: Option<Result<bytes::BytesMut, io::Error>>) -> io::Result<By
         ));
     };
     frame.map(|bytes| bytes.freeze())
-}
-
-fn solve_pow(
-    challenge_id: &str,
-    session: &[u8; 16],
-    steam_id64: u64,
-    nonce: &str,
-    difficulty_bits: u8,
-) -> io::Result<String> {
-    if difficulty_bits == 0 {
-        return Ok(String::new());
-    }
-    let challenge = decode_hex_16(challenge_id)?;
-    let nonce = decode_hex_16(nonce)?;
-    for counter in 0_u64.. {
-        let proof = format!("{counter:016x}");
-        let mut hasher = Sha256::new();
-        hasher.update(challenge);
-        hasher.update(session);
-        hasher.update(steam_id64.to_be_bytes());
-        hasher.update(nonce);
-        hasher.update(proof.as_bytes());
-        let digest: [u8; 32] = hasher.finalize().into();
-        if leading_zero_bits(&digest, difficulty_bits) {
-            return Ok(proof);
-        }
-    }
-    Err(io::Error::other("proof-of-work search exhausted"))
-}
-
-fn decode_hex_16(value: &str) -> io::Result<[u8; 16]> {
-    if value.len() != 32 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid challenge length",
-        ));
-    }
-    let mut bytes = [0_u8; 16];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
-        let pair = std::str::from_utf8(pair).map_err(io::Error::other)?;
-        bytes[index] = u8::from_str_radix(pair, 16).map_err(io::Error::other)?;
-    }
-    Ok(bytes)
-}
-
-fn leading_zero_bits(bytes: &[u8; 32], bits: u8) -> bool {
-    let whole = usize::from(bits / 8);
-    let rest = bits % 8;
-    whole <= bytes.len()
-        && bytes[..whole].iter().all(|byte| *byte == 0)
-        && (rest == 0 || bytes.get(whole).is_some_and(|byte| byte >> (8 - rest) == 0))
 }

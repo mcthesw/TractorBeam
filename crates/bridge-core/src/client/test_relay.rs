@@ -10,7 +10,7 @@ use tokio::{
 };
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-use crate::protocol::v2::{
+use crate::protocol::{
     BOOTSTRAP_SCHEMA, BootstrapMessage, BuildMetadata, ClientControl, DataFrame, Frame,
     PeerPresence, PeerPresenceInfo, ProtocolVersion, SecretString, ServerControl, decode_bootstrap,
     decode_client_control, decode_frame, encode_bootstrap, encode_server_control,
@@ -105,9 +105,9 @@ async fn serve_connection(mut stream: TcpStream, peers: Peers) -> io::Result<()>
     let response = BootstrapMessage::ServerHello {
         bootstrap_schema: BOOTSTRAP_SCHEMA,
         selected_protocol: ProtocolVersion { major: 2, minor: 0 },
-        enabled_capabilities: crate::protocol::v2::CAP_TCP_DATA
-            | crate::protocol::v2::CAP_RESUME
-            | crate::protocol::v2::CAP_ROOM_PATH_PROBE,
+        enabled_capabilities: crate::protocol::CAP_TCP_DATA
+            | crate::protocol::CAP_RESUME
+            | crate::protocol::CAP_ROOM_PATH_PROBE,
         relay: BuildMetadata {
             version: "test".into(),
             git_hash: None,
@@ -143,7 +143,7 @@ async fn serve_connection(mut stream: TcpStream, peers: Peers) -> io::Result<()>
                             send_control(&outbound_tx, ServerControl::JoinReady {
                                 connection_id: steam,
                                 resume_credential: SecretString::new("test-resume"),
-                                peers: vec![PeerPresenceInfo { steam_id64: steam, display_name: None, presence: PeerPresence::Connected, capabilities: crate::protocol::v2::CAP_ROOM_PATH_PROBE }],
+                                peers: vec![PeerPresenceInfo { steam_id64: steam, display_name: None, presence: PeerPresence::Connected, capabilities: crate::protocol::CAP_ROOM_PATH_PROBE }],
                             }).await?;
                         }
                         ClientControl::ControlPing { id } => send_control(&outbound_tx, ServerControl::ControlPong { id }).await?,

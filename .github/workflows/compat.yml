@@ -47,4 +47,4 @@ jobs:
         run: cargo test --locked -p tractor-beam-relay-protocol --test v2_wire_contract
 
       - name: Verify live Relay negotiation
-        run: cargo test --locked -p tractor-beam-relay server_v2::tests::real_tcp_socket_
+        run: cargo test --locked -p tractor-beam-relay server::tests::real_tcp_socket_

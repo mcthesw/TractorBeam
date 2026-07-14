@@ -4,18 +4,23 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rand::RngExt as _;
-use sha2::{Digest as _, Sha256};
-use tractor_beam_relay_protocol::v2::{CAP_ROOM_PATH_PROBE, DuplicateDecision, FrameIdWindow};
+use tractor_beam_relay_protocol::{CAP_ROOM_PATH_PROBE, DuplicateDecision, FrameIdWindow};
 
 use crate::{
     config::RelayConfig,
     domain::PeerId,
-    domain_v2::{
-        DataDestination, DataProfile, DataSource, JoinBegin, JoinChallenge, JoinReady, PathKey,
-        PeerView, Presence, PresenceBroadcast, ResumeFailure, ResumeKey, ResumeReady, RouteData,
-        RouteProbe, SessionKey, StateError,
+    domain::{
+        DataDestination, DataProfile, JoinBegin, JoinChallenge, JoinReady, PathKey, Presence,
+        PresenceBroadcast, ResumeFailure, ResumeKey, ResumeReady, RouteData, RouteProbe,
+        SessionKey, StateError,
     },
+};
+
+mod routing;
+
+use routing::{
+    apply_traffic_budget, random_bytes, random_nonzero_u64, room_views, target_destination,
+    validate_source, verify_pow,
 };
 
 const RECOVERY_GRACE: Duration = Duration::from_secs(120);
@@ -57,22 +62,20 @@ struct Peer {
 
 #[derive(Debug)]
 struct Room {
-    metric_id: u64,
     peers: HashMap<u64, Peer>,
     last_seen: Instant,
 }
 
 #[derive(Debug)]
-pub(crate) struct RelayStateV2 {
+pub(crate) struct RelayState {
     config: RelayConfig,
     pending: HashMap<PeerId, PendingJoin>,
     rooms: HashMap<SessionKey, Room>,
     connection_rooms: HashMap<u64, SessionKey>,
     control_connections: HashMap<PeerId, u64>,
-    next_metric_id: u64,
 }
 
-impl RelayStateV2 {
+impl RelayState {
     pub(crate) fn new(config: RelayConfig) -> Self {
         Self {
             config,
@@ -80,7 +83,6 @@ impl RelayStateV2 {
             rooms: HashMap::new(),
             connection_rooms: HashMap::new(),
             control_connections: HashMap::new(),
-            next_metric_id: 1,
         }
     }
 
@@ -133,15 +135,10 @@ impl RelayStateV2 {
         let connection_id = random_nonzero_u64(&self.connection_rooms);
         let resume_key = ResumeKey(random_bytes());
         let path_key = (pending.profile == DataProfile::Udp).then(|| PathKey(random_bytes()));
-        let metric_id = self.next_metric_id;
         let room = self.rooms.entry(pending.session).or_insert_with(|| Room {
-            metric_id,
             peers: HashMap::new(),
             last_seen: now,
         });
-        if room.metric_id == metric_id {
-            self.next_metric_id = self.next_metric_id.saturating_add(1);
-        }
         room.last_seen = now;
         room.peers.insert(
             connection_id,
@@ -172,6 +169,7 @@ impl RelayStateV2 {
             connection_id,
             resume_key,
             peers: room_views(room),
+            profile: pending.profile,
         };
         let broadcast = self.broadcast(pending.session, Some(connection_id));
         Ok((ready, broadcast))
@@ -207,6 +205,7 @@ impl RelayStateV2 {
         peer.detached_until = None;
         peer.last_seen = now;
         room.last_seen = now;
+        let profile = peer.profile;
         let udp_path_valid = peer.profile == DataProfile::Udp && peer.udp_address.is_some();
         self.control_connections.insert(control_peer, connection_id);
         let peers = room_views(room);
@@ -214,6 +213,7 @@ impl RelayStateV2 {
         Ok(ResumeReady {
             connection_id,
             peers,
+            profile,
             udp_path_valid,
             broadcast,
         })
@@ -377,11 +377,6 @@ impl RelayStateV2 {
         self.control_connections.get(&control_peer).copied()
     }
 
-    pub(crate) fn room_metric_id_for_connection(&self, connection_id: u64) -> Option<u64> {
-        let session = self.connection_rooms.get(&connection_id)?;
-        self.rooms.get(session).map(|room| room.metric_id)
-    }
-
     pub(crate) fn path_key(&self, connection_id: u64) -> Option<PathKey> {
         let session = self.connection_rooms.get(&connection_id)?;
         self.rooms.get(session)?.peers.get(&connection_id)?.path_key
@@ -486,124 +481,6 @@ impl RelayStateV2 {
     }
 }
 
-fn room_views(room: &Room) -> Vec<PeerView> {
-    let mut peers = room
-        .peers
-        .values()
-        .map(|peer| PeerView {
-            steam_id64: peer.steam_id64,
-            display_name: peer.display_name.clone(),
-            presence: peer.presence,
-            capabilities: peer.capabilities,
-        })
-        .collect::<Vec<_>>();
-    peers.sort_by_key(|peer| peer.steam_id64);
-    peers
-}
-
-fn validate_source(
-    sender: &Peer,
-    from_steam_id64: u64,
-    source: DataSource,
-) -> Result<(), StateError> {
-    if sender.steam_id64 != from_steam_id64 {
-        return Err(StateError::SenderMismatch);
-    }
-    match (sender.profile, source) {
-        (DataProfile::Tcp, DataSource::Tcp(peer)) if peer == sender.control_peer => Ok(()),
-        (DataProfile::Udp, DataSource::Udp(address)) if Some(address) == sender.udp_address => {
-            Ok(())
-        }
-        (DataProfile::Udp, DataSource::Udp(_)) => Err(StateError::PathNotValidated),
-        _ => Err(StateError::ProfileMismatch),
-    }
-}
-
-fn apply_traffic_budget(
-    sender: &mut Peer,
-    config: &RelayConfig,
-    frame_bytes: usize,
-    now: Instant,
-) -> Result<(), StateError> {
-    if now.duration_since(sender.rate_window_started) >= Duration::from_secs(1) {
-        sender.rate_window_started = now;
-        sender.rate_window_packets = 0;
-        sender.rate_window_bytes = 0;
-    }
-    let next_packets = sender.rate_window_packets.saturating_add(1);
-    let next_bytes = sender.rate_window_bytes.saturating_add(frame_bytes);
-    if next_packets > config.rate_limit_per_second
-        || next_bytes > config.byte_rate_limit_burst
-        || (sender.rate_window_bytes > 0 && next_bytes > config.byte_rate_limit_per_second)
-    {
-        return Err(StateError::RateLimited);
-    }
-    sender.rate_window_packets = next_packets;
-    sender.rate_window_bytes = next_bytes;
-    sender.last_seen = now;
-    Ok(())
-}
-
-fn target_destination(
-    room: &Room,
-    to_steam_id64: u64,
-    require_probe: bool,
-) -> Result<DataDestination, StateError> {
-    let target = room
-        .peers
-        .values()
-        .find(|peer| peer.steam_id64 == to_steam_id64)
-        .ok_or(StateError::TargetNotJoined)?;
-    if require_probe && target.capabilities & CAP_ROOM_PATH_PROBE == 0 {
-        return Err(StateError::ProbeUnsupported);
-    }
-    match target.profile {
-        DataProfile::Tcp if target.presence == Presence::Connected => {
-            Ok(DataDestination::Tcp(target.control_peer))
-        }
-        DataProfile::Udp => target
-            .udp_address
-            .map(DataDestination::Udp)
-            .ok_or(StateError::TargetUnavailable),
-        DataProfile::Tcp => Err(StateError::TargetUnavailable),
-    }
-}
-
-fn verify_pow(pending: &PendingJoin, proof: &str, difficulty: u8) -> bool {
-    if difficulty == 0 {
-        return proof.is_empty();
-    }
-    let mut hasher = Sha256::new();
-    hasher.update(pending.challenge_id);
-    hasher.update(pending.session.0);
-    hasher.update(pending.steam_id64.to_be_bytes());
-    hasher.update(pending.pow_nonce);
-    hasher.update(proof.as_bytes());
-    let digest: [u8; 32] = hasher.finalize().into();
-    leading_zero_bits(&digest, difficulty)
-}
-
-fn leading_zero_bits(bytes: &[u8; 32], bits: u8) -> bool {
-    let whole = usize::from(bits / 8);
-    let rest = bits % 8;
-    whole <= bytes.len()
-        && bytes[..whole].iter().all(|byte| *byte == 0)
-        && (rest == 0 || bytes.get(whole).is_some_and(|byte| byte >> (8 - rest) == 0))
-}
-
-fn random_bytes() -> [u8; 16] {
-    rand::rng().random()
-}
-
-fn random_nonzero_u64(existing: &HashMap<u64, SessionKey>) -> u64 {
-    loop {
-        let value: u64 = rand::rng().random();
-        if value != 0 && !existing.contains_key(&value) {
-            return value;
-        }
-    }
-}
-
 #[cfg(test)]
-#[path = "state_v2_tests.rs"]
+#[path = "state_tests.rs"]
 mod tests;

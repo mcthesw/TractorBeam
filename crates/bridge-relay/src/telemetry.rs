@@ -16,7 +16,7 @@ use tracing_subscriber::{
     util::SubscriberInitExt as _,
 };
 
-use crate::{config::TelemetryConfig, metrics_v2::RelayMetricsV2};
+use crate::{config::TelemetryConfig, metrics::RelayMetrics};
 
 const SERVICE_NAME: &str = "tractor-beam-relay";
 const LOG_FORMAT_ENV: &str = "LOG_FORMAT";
@@ -47,7 +47,7 @@ impl LogFormat {
 }
 
 pub(crate) struct RelayTelemetry {
-    pub(crate) metrics: Arc<RelayMetricsV2>,
+    pub(crate) metrics: Arc<RelayMetrics>,
     tracer_provider: Option<SdkTracerProvider>,
     meter_provider: Option<SdkMeterProvider>,
 }
@@ -64,7 +64,7 @@ impl RelayTelemetry {
             )?;
             let meter = global::meter(SERVICE_NAME);
             return Ok(Self {
-                metrics: Arc::new(RelayMetricsV2::new(&meter, "", 0.0)),
+                metrics: Arc::new(RelayMetrics::new(&meter)),
                 tracer_provider: None,
                 meter_provider: None,
             });
@@ -116,11 +116,7 @@ impl RelayTelemetry {
         init_subscriber(subscriber, log_format)?;
         let meter = meter_provider.meter(SERVICE_NAME);
         Ok(Self {
-            metrics: Arc::new(RelayMetricsV2::new(
-                &meter,
-                &config.service_instance_id,
-                config.data_trace_sample_ratio,
-            )),
+            metrics: Arc::new(RelayMetrics::new(&meter)),
             tracer_provider: Some(tracer_provider),
             meter_provider: Some(meter_provider),
         })
@@ -174,6 +170,7 @@ fn duration_histogram_view(instrument: &Instrument) -> Option<Stream> {
     if !matches!(
         instrument.name(),
         "tractor_beam.relay.control.operation.duration"
+            | "tractor_beam.relay.session.establishment.duration"
             | "tractor_beam.relay.data.dispatch.duration"
     ) {
         return None;
@@ -243,7 +240,7 @@ mod tests {
         );
 
         tracing::subscriber::with_default(subscriber, || {
-            let span = tracing::info_span!("relay.control", operation = "ping");
+            let span = tracing::info_span!("relay.session.establish", session.operation = "join");
             let _entered = span.enter();
             tracing::info!(
                 rooms = 0_u64,
@@ -263,7 +260,7 @@ mod tests {
         assert_eq!(event["peers"], 0);
         assert_eq!(event["missing_target"], 2);
         assert!(event["timestamp"].is_string());
-        assert_eq!(event["span"]["name"], "relay.control");
+        assert_eq!(event["span"]["name"], "relay.session.establish");
     }
 
     #[derive(Clone, Default)]

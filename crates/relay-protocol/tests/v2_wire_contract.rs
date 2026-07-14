@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use tractor_beam_relay_protocol::v2::{
+use tractor_beam_relay_protocol::{
     BOOTSTRAP_SCHEMA, BootstrapDecodeError, BootstrapMessage, BuildMetadata, CAP_RESUME,
     CAP_TCP_DATA, CAP_UDP_DATA, COMMON_HEADER_LEN, CapabilityError, ClientControl,
     DATA_FRAME_HEADER_LEN, DATA_FRAME_OVERHEAD, DataFrame, DataProfile, DuplicateDecision, Frame,
@@ -125,7 +125,7 @@ fn protocol_selection_chooses_newest_common_version() {
     }];
     assert_eq!(
         select_protocol(&client, &relay).unwrap(),
-        tractor_beam_relay_protocol::v2::ProtocolVersion { major: 2, minor: 2 }
+        tractor_beam_relay_protocol::ProtocolVersion { major: 2, minor: 2 }
     );
     assert!(select_protocol(&client[1..], &relay).is_err());
 }

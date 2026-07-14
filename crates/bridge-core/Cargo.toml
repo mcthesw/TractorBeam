@@ -18,6 +18,7 @@ chrono = { version = "0.4.42", default-features = false, features = ["clock", "s
 directories = "6.0.0"
 futures-util = { version = "0.3.31", features = ["sink"] }
 interprocess = "2.4.2"
+network-interface = "2.0.5"
 open = { version = "5.3.5", features = ["shellexecute-on-windows"] }
 rand = "0.10.1"
 regex = "1.12.3"

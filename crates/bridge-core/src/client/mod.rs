@@ -7,6 +7,7 @@ mod hook_ipc;
 mod hook_lifecycle;
 mod input_delay;
 mod join_code;
+mod lan;
 mod logging;
 mod packet_flow;
 mod probe;
@@ -31,6 +32,9 @@ pub use input_delay::{
     InputDelayReport, InputDelayStatus,
 };
 pub use join_code::{JoinCode, JoinCodeError, LanJoinCode, RelayJoinCode, SessionCredential};
+pub use lan::{
+    LanAdapterAddress, LanControlPlane, LanProbeResult, enumerate_lan_adapter_addresses,
+};
 pub use logging::{
     ClientLogSink, ClientSessionLog, ClientSessionLogContext, emit_client_log_event,
 };

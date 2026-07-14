@@ -104,7 +104,7 @@ async fn official_mode_owns_a_cancellable_process_lifecycle_task() {
         .await
         .expect("Official lifecycle should start without Hook or Relay sockets");
 
-    assert!(tasks.essential.is_empty());
+    assert!(tasks.route.is_empty());
     assert_eq!(tasks.support.len(), 1);
     assert!(tasks.health.is_none());
     cancellation.cancel();

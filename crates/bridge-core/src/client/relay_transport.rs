@@ -18,9 +18,7 @@ use crate::protocol::{
     encode_client_control,
 };
 
-use super::{
-    ExternalRelayConfig, RelayEndpoint, TransportChoice, packet_flow::OutboundRelayPacket,
-};
+use super::{ExternalRelayConfig, RelayEndpoint, TransportChoice, packet_flow::OutboundGamePacket};
 
 mod bootstrap;
 mod pow;
@@ -245,7 +243,7 @@ pub(super) enum RecoveryKind {
 impl RelayTransportSender {
     pub(super) async fn send_data_datagram(
         &mut self,
-        packet: OutboundRelayPacket,
+        packet: OutboundGamePacket,
     ) -> io::Result<()> {
         let connection_id = self.connection_id.ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotConnected, "Relay join is not complete")

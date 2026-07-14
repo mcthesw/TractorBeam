@@ -8,8 +8,7 @@ use bytes::Bytes;
 use tractor_beam_hook_ipc::GamePacket as HookGamePacket;
 
 use crate::protocol::{
-    DataFrame, Frame, PeerPresenceInfo, ProbeFrame, ServerControl, decode_frame,
-    decode_server_control,
+    Frame, PeerPresenceInfo, ProbeFrame, ServerControl, decode_frame, decode_server_control,
 };
 
 use super::{
@@ -29,19 +28,21 @@ pub(super) struct PacketSummary {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct OutboundRelayPacket {
+pub(super) struct OutboundGamePacket {
     pub(super) to_steam_id64: u64,
     pub(super) source_sequence: u32,
     pub(super) channel: i32,
     pub(super) send_type: i32,
     pub(super) payload: Bytes,
-    pub(super) summary: PacketSummary,
-    pub(super) sent_bytes: u64,
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct InboundGamePacket {
-    pub(super) game: DataFrame,
+    pub(super) from_steam_id64: u64,
+    pub(super) source_sequence: u32,
+    pub(super) channel: i32,
+    pub(super) send_type: i32,
+    pub(super) payload: Bytes,
 }
 
 #[derive(Clone, Debug)]
@@ -55,9 +56,9 @@ pub(super) enum InboundRelayDatagram {
 #[derive(Debug, Default)]
 pub(super) struct PacketObserver {
     hook_packets: u64,
-    relay_packets: u64,
+    network_packets: u64,
     last_hook_packet_at: Option<Instant>,
-    last_relay_packet_at: Option<Instant>,
+    last_network_packet_at: Option<Instant>,
     last_remote_sequences: HashMap<u64, u32>,
 }
 
@@ -67,7 +68,7 @@ impl PacketObserver {
         event_tx: &RuntimeEventSender,
         summary: &PacketSummary,
     ) {
-        observe_packet_gap(event_tx, "Hook -> Relay", &mut self.last_hook_packet_at);
+        observe_packet_gap(event_tx, "Hook -> network", &mut self.last_hook_packet_at);
         self.hook_packets = self.hook_packets.saturating_add(1);
         if self.hook_packets == 1 {
             send_event(
@@ -81,7 +82,7 @@ impl PacketObserver {
                 log_event(
                     LogLevel::Debug,
                     format!(
-                        "Hook -> Relay packet #{}: to={} sequence={} channel={} send_type={} payload_bytes={} wire_bytes={}",
+                        "Hook -> network packet #{}: to={} sequence={} channel={} send_type={} payload_bytes={} wire_bytes={}",
                         self.hook_packets,
                         summary.peer,
                         summary.sequence,
@@ -95,28 +96,32 @@ impl PacketObserver {
         }
     }
 
-    pub(super) fn observe_relay_packet(
+    pub(super) fn observe_network_packet(
         &mut self,
         event_tx: &RuntimeEventSender,
         summary: &PacketSummary,
     ) {
-        observe_packet_gap(event_tx, "Relay -> Hook", &mut self.last_relay_packet_at);
+        observe_packet_gap(
+            event_tx,
+            "Network -> Hook",
+            &mut self.last_network_packet_at,
+        );
         observe_source_sequence(event_tx, &mut self.last_remote_sequences, summary);
-        self.relay_packets = self.relay_packets.saturating_add(1);
-        if self.relay_packets == 1 {
+        self.network_packets = self.network_packets.saturating_add(1);
+        if self.network_packets == 1 {
             send_event(
                 event_tx,
-                log_event(LogLevel::Info, "First relay packet received"),
+                log_event(LogLevel::Info, "First network packet received"),
             );
         }
-        if should_sample_packet(self.relay_packets) {
+        if should_sample_packet(self.network_packets) {
             send_event(
                 event_tx,
                 log_event(
                     LogLevel::Debug,
                     format!(
-                        "Relay -> Hook packet #{}: from={} source_sequence={} local_sequence={} channel={} send_type={} payload_bytes={} local_bytes={}",
-                        self.relay_packets,
+                        "Network -> Hook packet #{}: from={} source_sequence={} local_sequence={} channel={} send_type={} payload_bytes={} local_bytes={}",
+                        self.network_packets,
                         summary.peer,
                         summary.source_sequence,
                         summary.sequence,
@@ -131,38 +136,27 @@ impl PacketObserver {
     }
 }
 
-pub(super) fn encode_outbound_relay_packet(
-    packet: HookGamePacket,
-) -> io::Result<OutboundRelayPacket> {
-    let summary = PacketSummary {
-        peer: packet.peer,
-        sequence: packet.sequence,
-        source_sequence: packet.sequence,
-        channel: packet.channel,
-        send_type: packet.send_type,
-        payload_bytes: packet.payload.len(),
-        wire_bytes: 0,
-    };
-    let sent_bytes = u64::try_from(packet.payload.len()).unwrap_or(u64::MAX);
-    Ok(OutboundRelayPacket {
-        summary: PacketSummary {
-            wire_bytes: crate::protocol::DATA_FRAME_OVERHEAD + packet.payload.len(),
-            ..summary
-        },
+pub(super) fn decode_outbound_hook_packet(packet: HookGamePacket) -> OutboundGamePacket {
+    OutboundGamePacket {
         to_steam_id64: packet.peer,
         source_sequence: packet.sequence,
         channel: packet.channel,
         send_type: packet.send_type,
         payload: Bytes::from(packet.payload),
-        sent_bytes,
-    })
+    }
 }
 
 pub(super) fn decode_inbound_relay_datagram(
     bytes: Bytes,
 ) -> io::Result<Option<InboundRelayDatagram>> {
     match decode_frame(bytes).map_err(io::Error::other)? {
-        Frame::Data(game) => Ok(Some(InboundRelayDatagram::Game(InboundGamePacket { game }))),
+        Frame::Data(game) => Ok(Some(InboundRelayDatagram::Game(InboundGamePacket {
+            from_steam_id64: game.from_steam_id64,
+            source_sequence: game.source_sequence,
+            channel: game.channel,
+            send_type: game.send_type,
+            payload: game.payload,
+        }))),
         Frame::Probe(probe) => Ok(Some(InboundRelayDatagram::Probe(probe))),
         Frame::ServerControl(payload) => match decode_server_control(&payload)
             .map_err(io::Error::other)?
@@ -187,24 +181,22 @@ pub(super) fn encode_inbound_hook_packet(
     inbound: InboundGamePacket,
     local_sequence: &mut u32,
 ) -> (HookGamePacket, PacketSummary, u64) {
-    let game = inbound.game;
-    let peer = game.from_steam_id64;
-    let received_bytes = u64::try_from(game.payload.len()).unwrap_or(u64::MAX);
+    let received_bytes = u64::try_from(inbound.payload.len()).unwrap_or(u64::MAX);
     let summary = PacketSummary {
-        peer,
+        peer: inbound.from_steam_id64,
         sequence: *local_sequence,
-        source_sequence: game.source_sequence,
-        channel: game.channel,
-        send_type: game.send_type,
-        payload_bytes: game.payload.len(),
+        source_sequence: inbound.source_sequence,
+        channel: inbound.channel,
+        send_type: inbound.send_type,
+        payload_bytes: inbound.payload.len(),
         wire_bytes: 0,
     };
     let packet = HookGamePacket {
-        peer,
+        peer: inbound.from_steam_id64,
         sequence: *local_sequence,
-        channel: game.channel,
-        send_type: game.send_type,
-        payload: game.payload.to_vec(),
+        channel: inbound.channel,
+        send_type: inbound.send_type,
+        payload: inbound.payload.to_vec(),
     };
     *local_sequence = local_sequence.saturating_add(1);
     (
@@ -222,7 +214,7 @@ pub(super) fn send_error(event_tx: &RuntimeEventSender, message: impl Into<Strin
     send_event(event_tx, RuntimeEvent::CounterDelta(error_counter()));
 }
 
-pub(super) fn hook_counter(sent_bytes: u64) -> Counters {
+pub(super) fn network_out_counter(sent_bytes: u64) -> Counters {
     Counters {
         hook_to_relay: 1,
         sent_bytes,
@@ -230,7 +222,7 @@ pub(super) fn hook_counter(sent_bytes: u64) -> Counters {
     }
 }
 
-pub(super) fn relay_counter(received_bytes: u64) -> Counters {
+pub(super) fn network_in_counter(received_bytes: u64) -> Counters {
     Counters {
         relay_to_hook: 1,
         received_bytes,
@@ -284,12 +276,63 @@ fn observe_source_sequence(
         log_event(
             LogLevel::Debug,
             format!(
-                "Relay source sequence gap: from={} previous={} expected={} current={}",
+                "Network source sequence gap: from={} previous={} expected={} current={}",
                 summary.peer, *previous, expected, summary.source_sequence
             ),
         ),
     );
     if summary.source_sequence > *previous {
         *previous = summary.source_sequence;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hook_packet_conversion_preserves_route_neutral_fields() {
+        let packet = HookGamePacket {
+            peer: 76_561_198_000_000_002,
+            sequence: 42,
+            channel: 3,
+            send_type: 1,
+            payload: vec![1, 2, 3],
+        };
+
+        let outbound = decode_outbound_hook_packet(packet);
+
+        assert_eq!(outbound.to_steam_id64, 76_561_198_000_000_002);
+        assert_eq!(outbound.source_sequence, 42);
+        assert_eq!(outbound.channel, 3);
+        assert_eq!(outbound.send_type, 1);
+        assert_eq!(outbound.payload, Bytes::from_static(&[1, 2, 3]));
+    }
+
+    #[test]
+    fn relay_adapter_decodes_to_route_neutral_inbound_packet() {
+        let frame = crate::protocol::DataFrame {
+            connection_id: 7,
+            frame_id: 8,
+            from_steam_id64: 76_561_198_000_000_002,
+            to_steam_id64: 76_561_198_000_000_001,
+            source_sequence: 42,
+            channel: 3,
+            send_type: 1,
+            payload: Bytes::from_static(&[1, 2, 3]),
+        }
+        .encode()
+        .unwrap();
+
+        let decoded = decode_inbound_relay_datagram(frame).unwrap().unwrap();
+        let InboundRelayDatagram::Game(inbound) = decoded else {
+            panic!("expected game packet");
+        };
+
+        assert_eq!(inbound.from_steam_id64, 76_561_198_000_000_002);
+        assert_eq!(inbound.source_sequence, 42);
+        assert_eq!(inbound.channel, 3);
+        assert_eq!(inbound.send_type, 1);
+        assert_eq!(inbound.payload, Bytes::from_static(&[1, 2, 3]));
     }
 }

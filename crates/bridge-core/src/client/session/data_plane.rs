@@ -18,7 +18,7 @@ pub(super) struct RelayTransportTaskContext {
 
 pub(super) async fn hook_in_task(
     mut hook_packets_rx: TokioReceiver<tractor_beam_hook_ipc::GamePacket>,
-    outbound_tx: TokioSender<OutboundRelayPacket>,
+    outbound_tx: TokioSender<OutboundGamePacket>,
     event_tx: RuntimeEventSender,
     cancellation: CancellationToken,
     health: Option<SharedSessionHealth>,
@@ -29,15 +29,11 @@ pub(super) async fn hook_in_task(
             Some(packet) = hook_packets_rx.recv() => {
                 let size = packet.payload.len();
                 observe_health(&health, |health| health.observe_hook_in_recv(size, Instant::now()));
-                match encode_outbound_relay_packet(packet) {
-                    Ok(packet) => {
-                        let accepted = outbound_tx.try_send(packet).is_ok();
-                        observe_health(&health, |health| health.observe_outbound_enqueue(accepted));
-                        if !accepted {
-                            send_error(&event_tx, "Relay outbound queue is full; dropping hook packet");
-                        }
-                    }
-                    Err(error) => send_error(&event_tx, format!("Bad hook packet: {error}")),
+                let packet = decode_outbound_hook_packet(packet);
+                let accepted = outbound_tx.try_send(packet).is_ok();
+                observe_health(&health, |health| health.observe_outbound_enqueue(accepted));
+                if !accepted {
+                    send_error(&event_tx, "Network outbound queue is full; dropping hook packet");
                 }
             }
         }
@@ -46,7 +42,7 @@ pub(super) async fn hook_in_task(
 
 pub(super) async fn relay_transport_task(
     mut relay: RelayTransport,
-    mut outbound_rx: TokioReceiver<OutboundRelayPacket>,
+    mut outbound_rx: TokioReceiver<OutboundGamePacket>,
     inbound_tx: TokioSender<InboundGamePacket>,
     context: RelayTransportTaskContext,
 ) -> io::Result<()> {
@@ -74,8 +70,16 @@ pub(super) async fn relay_transport_task(
             }
             Some(packet) = outbound_rx.recv() => {
                 let started = Instant::now();
-                let summary = packet.summary;
-                let sent_bytes = packet.sent_bytes;
+                let sent_bytes = u64::try_from(packet.payload.len()).unwrap_or(u64::MAX);
+                let summary = PacketSummary {
+                    peer: packet.to_steam_id64,
+                    sequence: packet.source_sequence,
+                    source_sequence: packet.source_sequence,
+                    channel: packet.channel,
+                    send_type: packet.send_type,
+                    payload_bytes: packet.payload.len(),
+                    wire_bytes: crate::protocol::DATA_FRAME_OVERHEAD + packet.payload.len(),
+                };
                 if let Err(error) = relay.sender.send_data_datagram(packet).await {
                     reset_room_path(&context.event_tx, &mut room_path);
                     room_peers = recover_relay(&mut relay, &mut outbound_rx, &context, error).await?;
@@ -85,7 +89,10 @@ pub(super) async fn relay_transport_task(
                 observe_health(&context.health, |health| {
                     health.observe_relay_send_duration(started.elapsed());
                 });
-                send_event(&context.event_tx, RuntimeEvent::CounterDelta(hook_counter(sent_bytes)));
+                send_event(
+                    &context.event_tx,
+                    RuntimeEvent::CounterDelta(network_out_counter(sent_bytes)),
+                );
                 observer.observe_hook_packet(&context.event_tx, &summary);
             }
             raw = relay.receiver.recv_datagram() => {
@@ -104,8 +111,10 @@ pub(super) async fn relay_transport_task(
                 match decode_inbound_relay_datagram(raw) {
                     Ok(Some(InboundRelayDatagram::Game(packet))) => {
                         observe_health(&context.health, |health| {
-                            let peer = packet.game.from_steam_id64;
-                            health.observe_source_sequence(peer, packet.game.source_sequence);
+                            health.observe_source_sequence(
+                                packet.from_steam_id64,
+                                packet.source_sequence,
+                            );
                         });
                         let accepted = inbound_tx.try_send(packet).is_ok();
                         observe_health(&context.health, |health| health.observe_inbound_enqueue(accepted));
@@ -186,7 +195,7 @@ pub(super) async fn relay_transport_task(
 
 async fn recover_relay(
     relay: &mut RelayTransport,
-    outbound_rx: &mut TokioReceiver<OutboundRelayPacket>,
+    outbound_rx: &mut TokioReceiver<OutboundGamePacket>,
     context: &RelayTransportTaskContext,
     initial_error: io::Error,
 ) -> io::Result<Vec<PeerPresenceInfo>> {
@@ -367,10 +376,16 @@ pub(super) async fn hook_out_task(
                     health.observe_hook_out_send_duration(started.elapsed());
                 });
                 if accepted {
-                    send_event(&event_tx, RuntimeEvent::CounterDelta(relay_counter(received_bytes)));
-                    observer.observe_relay_packet(&event_tx, &summary);
+                    send_event(
+                        &event_tx,
+                        RuntimeEvent::CounterDelta(network_in_counter(received_bytes)),
+                    );
+                    observer.observe_network_packet(&event_tx, &summary);
                 } else {
-                    send_error(&event_tx, "Native Hook outbound queue is full; dropping relay packet");
+                    send_error(
+                        &event_tx,
+                        "Native Hook outbound queue is full; dropping network packet",
+                    );
                 }
             }
         }

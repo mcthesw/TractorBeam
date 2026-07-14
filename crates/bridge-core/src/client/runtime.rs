@@ -7,6 +7,8 @@ use super::{
     probe, session,
     state::{self, log_entry, trim_logs},
 };
+
+mod maintenance;
 use crate::client::{LogLevel, RuntimeState};
 
 #[derive(Debug)]
@@ -171,11 +173,13 @@ impl BridgeClient {
                         );
                     }
                     self.state.latest_session_health = Some(*snapshot);
+                    self.refresh_smoothness();
                 }
                 state::RuntimeEvent::SessionHealthSummary(snapshot) => {
                     let snapshot = *snapshot;
                     self.state.latest_session_health = Some(snapshot.clone());
                     self.state.latest_session_health_summary = Some(snapshot);
+                    self.refresh_smoothness();
                 }
                 state::RuntimeEvent::SessionEnded(reason) => {
                     if self.state.last_stop_reason.is_none() {
@@ -215,6 +219,7 @@ impl BridgeClient {
                 }
                 state::RuntimeEvent::RoomPathQualityUpdated(quality) => {
                     self.state.room_path_quality = quality;
+                    self.refresh_smoothness();
                 }
                 state::RuntimeEvent::RelayLinkChanged(link) => {
                     self.state.relay_link = link;
@@ -251,6 +256,7 @@ impl BridgeClient {
         self.state.latest_hook_receive_probe_error = None;
         self.state.latest_session_health = None;
         self.state.latest_session_health_summary = None;
+        self.state.smoothness = super::SmoothnessSnapshot::default();
         self.state.latest_input_delay_status = None;
         self.state.active_session_mode = None;
         self.state.hook_launch_parameters_path_written = None;
@@ -444,144 +450,6 @@ impl BridgeClient {
             self.state.light_ping_reports.push(report);
         }
     }
-
-    pub(super) fn log(&mut self, level: LogLevel, message: impl Into<String>) {
-        self.push_log(level, message);
-    }
-
-    pub fn clear_logs(&mut self) {
-        self.state.logs.clear();
-    }
-
-    fn push_log(&mut self, level: LogLevel, message: impl Into<String>) {
-        let message = message.into();
-        let active_session = self.active_session_log.as_deref();
-        let session_context = active_session.map(ClientSessionLog::context);
-        self.log_sink.emit(session_context, level, &message);
-        if let Some(session) = active_session {
-            session.emit(level, &message);
-        }
-        let entry = log_entry(level, message);
-        self.state.logs.push(entry);
-        trim_logs(&mut self.state.logs);
-    }
-
-    fn apply_stopped_session_events(&mut self, events: Vec<state::RuntimeEvent>) {
-        for event in events {
-            match event {
-                state::RuntimeEvent::Log(level, message) => self.push_log(level, message),
-                state::RuntimeEvent::CounterDelta(delta) => self.state.counters.add(delta),
-                state::RuntimeEvent::SessionHealthSnapshot(snapshot) => {
-                    if let Some(incident) = self.state.record_session_health_incident(&snapshot) {
-                        self.log(
-                            LogLevel::Warn,
-                            format!("Client incident {}: {}", incident.kind, incident.summary),
-                        );
-                    }
-                    self.state.latest_session_health = Some(*snapshot);
-                }
-                state::RuntimeEvent::SessionHealthSummary(snapshot) => {
-                    let snapshot = *snapshot;
-                    self.state.latest_session_health = Some(snapshot.clone());
-                    self.state.latest_session_health_summary = Some(snapshot);
-                }
-                state::RuntimeEvent::HookStartup(startup) => {
-                    let mut startup = *startup;
-                    if startup.launch_parameters_path.is_none() {
-                        startup.launch_parameters_path =
-                            self.state.hook_launch_parameters_path_written.clone();
-                    }
-                    self.state.hook_startup = startup;
-                }
-                state::RuntimeEvent::HookIpc(ipc) => self.state.hook_ipc = *ipc,
-                state::RuntimeEvent::SessionEnded(reason) => {
-                    if self.state.last_stop_reason.is_none() {
-                        self.state.last_stop_reason = Some(reason);
-                    }
-                }
-                state::RuntimeEvent::Stopped
-                | state::RuntimeEvent::ReadinessProbeFinished(_)
-                | state::RuntimeEvent::HookReceiveProbeFinished(_)
-                | state::RuntimeEvent::LightPingFinished(_)
-                | state::RuntimeEvent::RoomPeersUpdated(_)
-                | state::RuntimeEvent::RoomPathQualityUpdated(_)
-                | state::RuntimeEvent::RelayLinkChanged(_) => {}
-            }
-        }
-    }
-
-    fn record_hook_startup_failure(
-        &mut self,
-        paths: Option<&tractor_beam_isaac_injector::NativeHookPaths>,
-        message: impl Into<String>,
-    ) {
-        let message = message.into();
-        let mut startup = state::HookStartupState {
-            phase: state::HookStartupPhase::Failed,
-            launch_parameters_path: self.state.hook_launch_parameters_path_written.clone(),
-            message: Some(message.clone()),
-            updated_at: state::unix_seconds(),
-            ..state::HookStartupState::default()
-        };
-        if let Some(paths) = paths {
-            startup.injector_path = Some(paths.injector.clone());
-            startup.hook_path = Some(paths.hook.clone());
-            startup.endpoint = Some("local IPC".to_owned());
-        }
-        self.state.hook_startup = startup;
-        self.log(LogLevel::Error, message);
-    }
-
-    fn cleanup_hook_launch_parameters(&mut self, reason: &str) {
-        if hook_launch_parameters_cleanup_finished(&self.state.hook_launch_parameters_cleanup) {
-            return;
-        }
-        let Some(path) = self.state.hook_launch_parameters_path_written.clone() else {
-            return;
-        };
-        let cleanup = match fs::remove_file(&path) {
-            Ok(()) => {
-                let message = format!("removed path={} reason={reason}", path.display());
-                self.log(
-                    LogLevel::Info,
-                    format!("Native Hook launch parameters {message}"),
-                );
-                message
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                let message = format!("already_missing path={} reason={reason}", path.display());
-                self.log(
-                    LogLevel::Info,
-                    format!("Native Hook launch parameters {message}"),
-                );
-                message
-            }
-            Err(error) => {
-                let message = format!(
-                    "remove_failed path={} reason={reason} error={error}",
-                    path.display()
-                );
-                self.log(
-                    LogLevel::Warn,
-                    format!("Native Hook launch parameters {message}"),
-                );
-                message
-            }
-        };
-        self.state.hook_launch_parameters_cleanup = Some(cleanup);
-    }
-
-    fn remove_hook_launch_parameters_silent(&self) {
-        if let Some(path) = &self.state.hook_launch_parameters_path_written {
-            let _ = fs::remove_file(path);
-        }
-    }
-}
-
-fn hook_launch_parameters_cleanup_finished(cleanup: &Option<String>) -> bool {
-    cleanup.as_deref().is_some_and(|cleanup| {
-        cleanup.starts_with("removed ") || cleanup.starts_with("already_missing ")
-    })
 }
 
 impl Default for BridgeClient {

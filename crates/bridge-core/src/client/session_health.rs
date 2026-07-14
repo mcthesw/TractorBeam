@@ -8,13 +8,9 @@ use serde::Serialize;
 
 const LATENCY_SAMPLE_CAPACITY: usize = 2_048;
 const ACTIVE_TRAFFIC_STARTUP_GRACE_SECONDS: u64 = 15;
-const ACTIVE_TRAFFIC_MIN_PACKETS: u64 = 20;
 const WATCH_SEQUENCE_GAPS: u64 = 1;
 const POOR_SEQUENCE_GAPS: u64 = 10;
 const WATCH_DUPLICATE_OR_REORDERED: u64 = 10;
-const RTT_MIN_SAMPLES_FOR_QUALITY: u64 = 20;
-const WATCH_RTT_P95_MS: u64 = 120;
-const POOR_RTT_P95_MS: u64 = 250;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct LatencySummary {
@@ -94,6 +90,43 @@ pub enum SessionQuality {
     Poor,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QualityConfidence {
+    #[default]
+    None,
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionQualityReason {
+    LocalQueueDrop,
+    SequenceGap,
+    SequenceReordered,
+    HookSendStall,
+    RuntimeRttTimeout,
+    StartupOrIdle,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct SessionHealthWindow {
+    pub duration_seconds: u64,
+    pub hook_in_packets: u64,
+    pub relay_recv_packets: u64,
+    pub queue_drops: u64,
+    pub sequence_gaps: u64,
+    pub sequence_reordered: u64,
+    pub runtime_rtt_sent: u64,
+    pub runtime_rtt_timeouts: u64,
+    pub hook_send_over_500_ms: u64,
+    pub hook_send_over_1000_ms: u64,
+    pub relay_gap_over_500_ms: u64,
+    pub relay_gap_over_1000_ms: u64,
+}
+
 impl Display for SessionQuality {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -109,6 +142,9 @@ impl Display for SessionQuality {
 pub struct SessionHealthSnapshot {
     pub elapsed_seconds: u64,
     pub quality: SessionQuality,
+    pub confidence: QualityConfidence,
+    pub reasons: Vec<SessionQualityReason>,
+    pub window: SessionHealthWindow,
     pub hook_in_recv: PacketStageSnapshot,
     pub relay_recv: PacketStageSnapshot,
     pub relay_send_duration: LatencySummary,
@@ -124,8 +160,11 @@ impl SessionHealthSnapshot {
     #[must_use]
     pub fn compact_log_line(&self, label: &str) -> String {
         format!(
-            "{label}: quality={} hook_in={} relay_recv={} rtt_p95={} queue_drops={} seq_gaps={} relay_gap_p95={} hook_out_p95={}",
+            "{label}: quality={} confidence={:?} reasons={:?} window={}s hook_in={} relay_recv={} rtt_p95={} queue_drops={} seq_gaps={} relay_gap_p95={} hook_out_p95={}",
             self.quality,
+            self.confidence,
+            self.reasons,
+            self.window.duration_seconds,
             self.hook_in_recv.packets,
             self.relay_recv.packets,
             display_ms(self.runtime_rtt.latency.p95_ms),
@@ -149,6 +188,8 @@ pub(super) struct SessionHealth {
     queues: QueueStats,
     sequences: SequenceStats,
     runtime_rtt: RuntimeRttStats,
+    quality_baseline: QualityBaseline,
+    last_snapshot: Instant,
 }
 
 impl SessionHealth {
@@ -169,6 +210,8 @@ impl SessionHealth {
             queues: QueueStats::default(),
             sequences: SequenceStats::default(),
             runtime_rtt: RuntimeRttStats::default(),
+            quality_baseline: QualityBaseline::default(),
+            last_snapshot: now,
         }
     }
 
@@ -224,8 +267,7 @@ impl SessionHealth {
         let relay_send_duration = self.relay_send_duration.summary();
         let hook_out_send_duration = self.hook_out_send_duration.summary();
         let elapsed_seconds = now.duration_since(self.start).as_secs();
-        let quality = classify_quality(
-            elapsed_seconds,
+        let current = QualityBaseline::from_snapshots(
             hook_in_recv,
             relay_recv,
             queues,
@@ -233,10 +275,20 @@ impl SessionHealth {
             runtime_rtt,
             hook_out_send_duration,
         );
+        let window = current.delta(
+            self.quality_baseline,
+            now.duration_since(self.last_snapshot),
+        );
+        self.quality_baseline = current;
+        self.last_snapshot = now;
+        let assessment = classify_quality(elapsed_seconds, window);
 
         SessionHealthSnapshot {
             elapsed_seconds,
-            quality,
+            quality: assessment.quality,
+            confidence: assessment.confidence,
+            reasons: assessment.reasons,
+            window,
             hook_in_recv,
             relay_recv,
             relay_send_duration,
@@ -254,271 +306,145 @@ impl SessionHealth {
     }
 }
 
-#[derive(Debug, Default)]
-struct PacketStageStats {
-    packets: u64,
-    bytes: u64,
-    last_seen: Option<Instant>,
-    gaps: LatencyAccumulator,
+mod stats;
+
+use stats::*;
+
+#[derive(Clone, Copy, Debug, Default)]
+struct QualityBaseline {
+    hook_in_packets: u64,
+    relay_recv_packets: u64,
+    queue_drops: u64,
+    sequence_gaps: u64,
+    sequence_reordered: u64,
+    runtime_rtt_sent: u64,
+    runtime_rtt_timeouts: u64,
+    hook_send_over_500_ms: u64,
+    hook_send_over_1000_ms: u64,
+    relay_gap_over_500_ms: u64,
+    relay_gap_over_1000_ms: u64,
 }
 
-impl PacketStageStats {
-    fn observe(&mut self, bytes: usize, now: Instant) {
-        self.packets = self.packets.saturating_add(1);
-        self.bytes = self
-            .bytes
-            .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
-        if let Some(previous) = self.last_seen.replace(now) {
-            self.gaps.observe(now.duration_since(previous));
+impl QualityBaseline {
+    fn from_snapshots(
+        hook_in: PacketStageSnapshot,
+        relay_recv: PacketStageSnapshot,
+        queues: QueueHealthSnapshot,
+        sequence: SequenceHealthSnapshot,
+        runtime_rtt: RuntimeRttSnapshot,
+        hook_send: LatencySummary,
+    ) -> Self {
+        Self {
+            hook_in_packets: hook_in.packets,
+            relay_recv_packets: relay_recv.packets,
+            queue_drops: queues.total_dropped(),
+            sequence_gaps: sequence.gaps,
+            sequence_reordered: sequence.duplicate_or_reordered,
+            runtime_rtt_sent: runtime_rtt.sent,
+            runtime_rtt_timeouts: runtime_rtt.timed_out,
+            hook_send_over_500_ms: hook_send.over_500_ms,
+            hook_send_over_1000_ms: hook_send.over_1000_ms,
+            relay_gap_over_500_ms: relay_recv.gap.over_500_ms,
+            relay_gap_over_1000_ms: relay_recv.gap.over_1000_ms,
         }
     }
 
-    fn snapshot(&self) -> PacketStageSnapshot {
-        PacketStageSnapshot {
-            packets: self.packets,
-            bytes: self.bytes,
-            gap: self.gaps.summary(),
+    fn delta(self, previous: Self, duration: Duration) -> SessionHealthWindow {
+        SessionHealthWindow {
+            duration_seconds: duration.as_secs(),
+            hook_in_packets: self
+                .hook_in_packets
+                .saturating_sub(previous.hook_in_packets),
+            relay_recv_packets: self
+                .relay_recv_packets
+                .saturating_sub(previous.relay_recv_packets),
+            queue_drops: self.queue_drops.saturating_sub(previous.queue_drops),
+            sequence_gaps: self.sequence_gaps.saturating_sub(previous.sequence_gaps),
+            sequence_reordered: self
+                .sequence_reordered
+                .saturating_sub(previous.sequence_reordered),
+            runtime_rtt_sent: self
+                .runtime_rtt_sent
+                .saturating_sub(previous.runtime_rtt_sent),
+            runtime_rtt_timeouts: self
+                .runtime_rtt_timeouts
+                .saturating_sub(previous.runtime_rtt_timeouts),
+            hook_send_over_500_ms: self
+                .hook_send_over_500_ms
+                .saturating_sub(previous.hook_send_over_500_ms),
+            hook_send_over_1000_ms: self
+                .hook_send_over_1000_ms
+                .saturating_sub(previous.hook_send_over_1000_ms),
+            relay_gap_over_500_ms: self
+                .relay_gap_over_500_ms
+                .saturating_sub(previous.relay_gap_over_500_ms),
+            relay_gap_over_1000_ms: self
+                .relay_gap_over_1000_ms
+                .saturating_sub(previous.relay_gap_over_1000_ms),
         }
     }
 }
 
-#[derive(Debug, Default)]
-struct QueueStats {
-    outbound_enqueued: u64,
-    outbound_full: u64,
-    outbound_dropped: u64,
-    inbound_enqueued: u64,
-    inbound_full: u64,
-    inbound_dropped: u64,
+struct QualityAssessment {
+    quality: SessionQuality,
+    confidence: QualityConfidence,
+    reasons: Vec<SessionQualityReason>,
 }
 
-impl QueueStats {
-    fn observe_outbound(&mut self, accepted: bool) {
-        if accepted {
-            self.outbound_enqueued = self.outbound_enqueued.saturating_add(1);
-        } else {
-            self.outbound_full = self.outbound_full.saturating_add(1);
-            self.outbound_dropped = self.outbound_dropped.saturating_add(1);
-        }
-    }
-
-    fn observe_inbound(&mut self, accepted: bool) {
-        if accepted {
-            self.inbound_enqueued = self.inbound_enqueued.saturating_add(1);
-        } else {
-            self.inbound_full = self.inbound_full.saturating_add(1);
-            self.inbound_dropped = self.inbound_dropped.saturating_add(1);
-        }
-    }
-
-    fn snapshot(&self) -> QueueHealthSnapshot {
-        QueueHealthSnapshot {
-            outbound_enqueued: self.outbound_enqueued,
-            outbound_full: self.outbound_full,
-            outbound_dropped: self.outbound_dropped,
-            inbound_enqueued: self.inbound_enqueued,
-            inbound_full: self.inbound_full,
-            inbound_dropped: self.inbound_dropped,
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct SequenceStats {
-    first_packets: u64,
-    in_order: u64,
-    gaps: u64,
-    duplicate_or_reordered: u64,
-    last_by_peer: HashMap<u64, u32>,
-}
-
-impl SequenceStats {
-    fn observe(&mut self, peer: u64, source_sequence: u32) {
-        if source_sequence == 0 {
-            return;
-        }
-        let Some(previous) = self.last_by_peer.get_mut(&peer) else {
-            self.first_packets = self.first_packets.saturating_add(1);
-            self.last_by_peer.insert(peer, source_sequence);
-            return;
+fn classify_quality(elapsed_seconds: u64, window: SessionHealthWindow) -> QualityAssessment {
+    let has_evidence =
+        window.hook_in_packets > 0 || window.relay_recv_packets > 0 || window.runtime_rtt_sent > 0;
+    if elapsed_seconds < ACTIVE_TRAFFIC_STARTUP_GRACE_SECONDS || !has_evidence {
+        return QualityAssessment {
+            quality: SessionQuality::Unavailable,
+            confidence: QualityConfidence::None,
+            reasons: vec![SessionQualityReason::StartupOrIdle],
         };
-        let expected = previous.saturating_add(1);
-        if source_sequence == expected {
-            self.in_order = self.in_order.saturating_add(1);
-            *previous = source_sequence;
-        } else if source_sequence > expected {
-            self.gaps = self.gaps.saturating_add(1);
-            *previous = source_sequence;
+    }
+
+    let mut reasons = Vec::new();
+    let mut poor = false;
+    if window.queue_drops > 0 {
+        reasons.push(SessionQualityReason::LocalQueueDrop);
+        poor = true;
+    }
+    if window.sequence_gaps >= WATCH_SEQUENCE_GAPS {
+        reasons.push(SessionQualityReason::SequenceGap);
+        poor |= window.sequence_gaps >= POOR_SEQUENCE_GAPS;
+    }
+    if window.sequence_reordered >= WATCH_DUPLICATE_OR_REORDERED {
+        reasons.push(SessionQualityReason::SequenceReordered);
+    }
+    if window.hook_send_over_500_ms > 0 {
+        reasons.push(SessionQualityReason::HookSendStall);
+        poor |= window.hook_send_over_1000_ms > 0;
+    }
+    if window.runtime_rtt_timeouts > 0 {
+        reasons.push(SessionQualityReason::RuntimeRttTimeout);
+        poor |= window.runtime_rtt_timeouts >= 3;
+    }
+    reasons.sort_unstable();
+    let evidence_count = window
+        .hook_in_packets
+        .saturating_add(window.relay_recv_packets)
+        .saturating_add(window.runtime_rtt_sent);
+    QualityAssessment {
+        quality: if poor {
+            SessionQuality::Poor
+        } else if reasons.is_empty() {
+            SessionQuality::Good
         } else {
-            self.duplicate_or_reordered = self.duplicate_or_reordered.saturating_add(1);
-        }
-    }
-
-    fn snapshot(&self) -> SequenceHealthSnapshot {
-        SequenceHealthSnapshot {
-            first_packets: self.first_packets,
-            in_order: self.in_order,
-            gaps: self.gaps,
-            duplicate_or_reordered: self.duplicate_or_reordered,
-            tracked_peers: self.last_by_peer.len(),
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct RuntimeRttStats {
-    next_id: u64,
-    sent: u64,
-    received: u64,
-    timed_out: u64,
-    pending: HashMap<u64, Instant>,
-    latency: LatencyAccumulator,
-}
-
-impl RuntimeRttStats {
-    fn next_ping(&mut self, now: Instant) -> u64 {
-        self.next_id = self.next_id.saturating_add(1);
-        let id = self.next_id;
-        self.sent = self.sent.saturating_add(1);
-        self.pending.insert(id, now);
-        id
-    }
-
-    fn observe_pong(&mut self, id: u64, now: Instant) {
-        if let Some(sent_at) = self.pending.remove(&id) {
-            self.received = self.received.saturating_add(1);
-            self.latency.observe(now.duration_since(sent_at));
-        }
-    }
-
-    fn expire(&mut self, now: Instant, timeout: Duration) {
-        let before = self.pending.len();
-        self.pending
-            .retain(|_, sent_at| now.duration_since(*sent_at) <= timeout);
-        let expired = before.saturating_sub(self.pending.len());
-        self.timed_out = self
-            .timed_out
-            .saturating_add(u64::try_from(expired).unwrap_or(u64::MAX));
-    }
-
-    fn snapshot(&self, enabled: bool) -> RuntimeRttSnapshot {
-        RuntimeRttSnapshot {
-            enabled,
-            sent: self.sent,
-            received: self.received,
-            timed_out: self.timed_out,
-            pending: self.pending.len(),
-            latency: self.latency.summary(),
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct LatencyAccumulator {
-    count: u64,
-    min_ms: Option<u64>,
-    max_ms: Option<u64>,
-    over_200_ms: u64,
-    over_500_ms: u64,
-    over_1000_ms: u64,
-    samples: Vec<u64>,
-}
-
-impl LatencyAccumulator {
-    fn observe(&mut self, duration: Duration) {
-        let millis = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
-        self.count = self.count.saturating_add(1);
-        self.min_ms = Some(self.min_ms.map_or(millis, |current| current.min(millis)));
-        self.max_ms = Some(self.max_ms.map_or(millis, |current| current.max(millis)));
-        if millis > 200 {
-            self.over_200_ms = self.over_200_ms.saturating_add(1);
-        }
-        if millis > 500 {
-            self.over_500_ms = self.over_500_ms.saturating_add(1);
-        }
-        if millis > 1_000 {
-            self.over_1000_ms = self.over_1000_ms.saturating_add(1);
-        }
-        if self.samples.len() < LATENCY_SAMPLE_CAPACITY {
-            self.samples.push(millis);
+            SessionQuality::Watch
+        },
+        confidence: if evidence_count >= 40 {
+            QualityConfidence::High
+        } else if evidence_count >= 10 {
+            QualityConfidence::Medium
         } else {
-            let index = usize::try_from(self.count).unwrap_or(0) % LATENCY_SAMPLE_CAPACITY;
-            self.samples[index] = millis;
-        }
+            QualityConfidence::Low
+        },
+        reasons,
     }
-
-    fn summary(&self) -> LatencySummary {
-        let mut samples = self.samples.clone();
-        samples.sort_unstable();
-        LatencySummary {
-            count: self.count,
-            min_ms: self.min_ms,
-            median_ms: percentile(&samples, 50),
-            p95_ms: percentile(&samples, 95),
-            max_ms: self.max_ms,
-            over_200_ms: self.over_200_ms,
-            over_500_ms: self.over_500_ms,
-            over_1000_ms: self.over_1000_ms,
-        }
-    }
-}
-
-fn percentile(sorted_samples: &[u64], percentile: usize) -> Option<u64> {
-    if sorted_samples.is_empty() {
-        return None;
-    }
-    let numerator = sorted_samples.len().saturating_sub(1) * percentile;
-    let index = (numerator + 50) / 100;
-    sorted_samples.get(index).copied()
-}
-
-fn classify_quality(
-    elapsed_seconds: u64,
-    hook_in_recv: PacketStageSnapshot,
-    relay_recv: PacketStageSnapshot,
-    queues: QueueHealthSnapshot,
-    source_sequence: SequenceHealthSnapshot,
-    runtime_rtt: RuntimeRttSnapshot,
-    hook_out_send_duration: LatencySummary,
-) -> SessionQuality {
-    let has_evidence = hook_in_recv.packets > 0 || relay_recv.packets > 0 || runtime_rtt.sent > 0;
-    if !has_evidence {
-        return SessionQuality::Unavailable;
-    }
-    let active_traffic = elapsed_seconds >= ACTIVE_TRAFFIC_STARTUP_GRACE_SECONDS
-        && hook_in_recv.packets >= ACTIVE_TRAFFIC_MIN_PACKETS
-        && relay_recv.packets >= ACTIVE_TRAFFIC_MIN_PACKETS;
-
-    if queues.total_dropped() > 0 {
-        return SessionQuality::Poor;
-    }
-
-    if !active_traffic {
-        return SessionQuality::Unavailable;
-    }
-
-    if runtime_rtt.timed_out > 0
-        || runtime_rtt.latency.p95_ms.is_some_and(|p95| {
-            p95 >= POOR_RTT_P95_MS && runtime_rtt.latency.count >= RTT_MIN_SAMPLES_FOR_QUALITY
-        })
-        || source_sequence.gaps >= POOR_SEQUENCE_GAPS
-        || relay_recv.gap.over_1000_ms > 0
-        || hook_out_send_duration.over_1000_ms > 0
-    {
-        return SessionQuality::Poor;
-    }
-
-    if source_sequence.gaps >= WATCH_SEQUENCE_GAPS
-        || source_sequence.duplicate_or_reordered >= WATCH_DUPLICATE_OR_REORDERED
-        || relay_recv.gap.over_500_ms > 0
-        || hook_out_send_duration.over_500_ms > 0
-        || runtime_rtt.latency.p95_ms.is_some_and(|p95| {
-            p95 >= WATCH_RTT_P95_MS && runtime_rtt.latency.count >= RTT_MIN_SAMPLES_FOR_QUALITY
-        })
-    {
-        return SessionQuality::Watch;
-    }
-    SessionQuality::Good
 }
 
 fn display_ms(value: Option<u64>) -> String {
@@ -526,165 +452,5 @@ fn display_ms(value: Option<u64>) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn latency_summary_reports_percentiles_and_thresholds() {
-        let mut accumulator = LatencyAccumulator::default();
-
-        for value in [10, 50, 210, 510, 1_100] {
-            accumulator.observe(Duration::from_millis(value));
-        }
-
-        let summary = accumulator.summary();
-
-        assert_eq!(summary.count, 5);
-        assert_eq!(summary.min_ms, Some(10));
-        assert_eq!(summary.median_ms, Some(210));
-        assert_eq!(summary.p95_ms, Some(1_100));
-        assert_eq!(summary.max_ms, Some(1_100));
-        assert_eq!(summary.over_200_ms, 3);
-        assert_eq!(summary.over_500_ms, 2);
-        assert_eq!(summary.over_1000_ms, 1);
-    }
-
-    #[test]
-    fn sequence_stats_classify_gaps_and_reordered_packets() {
-        let mut stats = SequenceStats::default();
-
-        stats.observe(7, 1);
-        stats.observe(7, 2);
-        stats.observe(7, 5);
-        stats.observe(7, 4);
-
-        let snapshot = stats.snapshot();
-
-        assert_eq!(snapshot.first_packets, 1);
-        assert_eq!(snapshot.in_order, 1);
-        assert_eq!(snapshot.gaps, 1);
-        assert_eq!(snapshot.duplicate_or_reordered, 1);
-    }
-
-    #[test]
-    fn queue_stats_count_enqueued_and_dropped_packets() {
-        let mut stats = QueueStats::default();
-
-        stats.observe_outbound(true);
-        stats.observe_outbound(false);
-        stats.observe_inbound(true);
-        stats.observe_inbound(false);
-
-        let snapshot = stats.snapshot();
-
-        assert_eq!(snapshot.outbound_enqueued, 1);
-        assert_eq!(snapshot.outbound_full, 1);
-        assert_eq!(snapshot.inbound_enqueued, 1);
-        assert_eq!(snapshot.inbound_full, 1);
-        assert_eq!(snapshot.total_dropped(), 2);
-    }
-
-    #[test]
-    fn runtime_rtt_times_out_without_marking_session_failed() {
-        let start = Instant::now();
-        let mut health = SessionHealth::new(true, Duration::from_millis(10), start);
-        let active = start + Duration::from_secs(ACTIVE_TRAFFIC_STARTUP_GRACE_SECONDS);
-
-        for _ in 0..ACTIVE_TRAFFIC_MIN_PACKETS {
-            health.observe_hook_in_recv(1, active);
-            health.observe_relay_recv(1, active);
-        }
-
-        let id = health.next_health_ping(active).unwrap();
-        health.snapshot(active + Duration::from_millis(20));
-        health.observe_health_pong(id, active + Duration::from_millis(30));
-        let snapshot = health.snapshot(active + Duration::from_millis(30));
-
-        assert_eq!(snapshot.runtime_rtt.sent, 1);
-        assert_eq!(snapshot.runtime_rtt.received, 0);
-        assert_eq!(snapshot.runtime_rtt.timed_out, 1);
-        assert_eq!(snapshot.quality, SessionQuality::Poor);
-    }
-
-    #[test]
-    fn startup_sequence_gap_does_not_mark_quality_poor() {
-        let quality = classify_quality(
-            5,
-            PacketStageSnapshot {
-                packets: 1,
-                ..PacketStageSnapshot::default()
-            },
-            PacketStageSnapshot {
-                packets: 1,
-                ..PacketStageSnapshot::default()
-            },
-            QueueHealthSnapshot::default(),
-            SequenceHealthSnapshot {
-                gaps: 1,
-                ..SequenceHealthSnapshot::default()
-            },
-            RuntimeRttSnapshot::default(),
-            LatencySummary::default(),
-        );
-
-        assert_eq!(quality, SessionQuality::Unavailable);
-    }
-
-    #[test]
-    fn startup_runtime_rtt_timeout_does_not_mark_quality_poor() {
-        let quality = classify_quality(
-            5,
-            PacketStageSnapshot::default(),
-            PacketStageSnapshot::default(),
-            QueueHealthSnapshot::default(),
-            SequenceHealthSnapshot::default(),
-            RuntimeRttSnapshot {
-                enabled: true,
-                sent: 1,
-                timed_out: 1,
-                ..RuntimeRttSnapshot::default()
-            },
-            LatencySummary::default(),
-        );
-
-        assert_eq!(quality, SessionQuality::Unavailable);
-    }
-
-    #[test]
-    fn active_sequence_gaps_are_thresholded() {
-        let watch = classify_quality(
-            60,
-            active_packets(),
-            active_packets(),
-            QueueHealthSnapshot::default(),
-            SequenceHealthSnapshot {
-                gaps: 1,
-                ..SequenceHealthSnapshot::default()
-            },
-            RuntimeRttSnapshot::default(),
-            LatencySummary::default(),
-        );
-        let poor = classify_quality(
-            60,
-            active_packets(),
-            active_packets(),
-            QueueHealthSnapshot::default(),
-            SequenceHealthSnapshot {
-                gaps: 10,
-                ..SequenceHealthSnapshot::default()
-            },
-            RuntimeRttSnapshot::default(),
-            LatencySummary::default(),
-        );
-
-        assert_eq!(watch, SessionQuality::Watch);
-        assert_eq!(poor, SessionQuality::Poor);
-    }
-
-    fn active_packets() -> PacketStageSnapshot {
-        PacketStageSnapshot {
-            packets: ACTIVE_TRAFFIC_MIN_PACKETS,
-            ..PacketStageSnapshot::default()
-        }
-    }
-}
+#[path = "session_health_tests.rs"]
+mod tests;

@@ -26,7 +26,9 @@ pub(super) async fn supervise_session(
                 &event_tx,
                 log_event(LogLevel::Info, "Session runtime is running"),
             );
-            if config.mode != SessionMode::Official {
+            if config.mode != SessionMode::Official
+                && let SessionRouteConfig::ExternalRelay(route) = &config.route
+            {
                 send_event(
                     &event_tx,
                     log_event(
@@ -35,8 +37,8 @@ pub(super) async fn supervise_session(
                             "Bridge local IPC ready: version={}.{} relay={} transport={} packet_queue={PACKET_QUEUE_CAPACITY}",
                             tractor_beam_hook_ipc::PROTOCOL_MAJOR,
                             tractor_beam_hook_ipc::PROTOCOL_MINOR,
-                            config.relay,
-                            config.transport
+                            route.relay,
+                            route.transport
                         ),
                     ),
                 );
@@ -125,6 +127,15 @@ pub(super) async fn start_runtime_tasks_inner(
     cancellation: &CancellationToken,
     event_tx: &RuntimeEventSender,
 ) -> io::Result<RuntimeTasks> {
+    let relay_route = match &config.route {
+        SessionRouteConfig::ExternalRelay(route) => route,
+        SessionRouteConfig::LanDirect(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Direct LAN sessions are not available in this build",
+            ));
+        }
+    };
     if config.mode != SessionMode::Official && native_hook.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -167,7 +178,9 @@ pub(super) async fn start_runtime_tasks_inner(
         event_tx.clone(),
         cancellation.clone(),
     ));
-    let (relay, peers) = RelayTransport::connect_session(config).await?;
+    let (relay, peers) =
+        RelayTransport::connect_session(relay_route, &config.steam_id64, &config.display_name)
+            .await?;
     let peer_count = peers.len();
     send_event(event_tx, RuntimeEvent::RoomPeersUpdated(peers.clone()));
     send_event(

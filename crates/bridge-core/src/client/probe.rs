@@ -17,7 +17,7 @@ use tokio::{runtime::Builder, time};
 use crate::protocol::{Frame, decode_frame};
 
 use super::{
-    BridgeClient, LogLevel, RelayEndpoint, SessionConfig, SessionMode, TransportChoice,
+    BridgeClient, ExternalRelayConfig, LogLevel, RelayEndpoint, TransportChoice,
     packet_flow::encode_outbound_relay_packet,
     relay_transport::{RelayTransport, complete_relay_join},
     state::{HookIpcState, RuntimeEvent, log_event},
@@ -256,15 +256,11 @@ impl ProbePeer {
         steam_id64: &'static str,
         display_name: &str,
     ) -> io::Result<Self> {
-        let config = SessionConfig {
+        let route = ExternalRelayConfig {
             relay: relay.clone(),
             relay_name: None,
             transport,
             session_credential,
-            mode: SessionMode::Pure,
-            steam_id64: steam_id64.to_owned(),
-            display_name: display_name.to_owned(),
-            session_health: super::session_config::SessionHealthConfig::default(),
         };
         let build = crate::build_info::current();
         let steam = steam_id64.parse::<u64>().map_err(io::Error::other)?;
@@ -273,7 +269,8 @@ impl ProbePeer {
         complete_relay_join(
             &mut relay_transport.sender,
             &mut relay_transport.receiver,
-            &config,
+            &route,
+            display_name,
         )
         .await?;
         Ok(Self {

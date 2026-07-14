@@ -46,7 +46,7 @@ pub(super) async fn supervise_session(
 
             let stop_reason = wait_for_session_end(
                 &cancellation,
-                &mut runtime_tasks.essential,
+                &mut runtime_tasks.route,
                 &mut runtime_tasks.support,
             )
             .await;
@@ -61,7 +61,7 @@ pub(super) async fn supervise_session(
                 .await;
                 send_event(&event_tx, log_event(LogLevel::Warn, message));
             }
-            shutdown_tasks(runtime_tasks.essential, &event_tx).await;
+            shutdown_tasks(runtime_tasks.route, &event_tx).await;
             shutdown_tasks(runtime_tasks.support, &event_tx).await;
             emit_health_summary(&event_tx, &runtime_tasks.health).await;
         }
@@ -151,7 +151,7 @@ pub(super) async fn start_runtime_tasks_inner(
             cancellation.clone(),
         ));
         return Ok(RuntimeTasks {
-            essential: JoinSet::new(),
+            route: JoinSet::new(),
             support,
             health: None,
         });
@@ -237,7 +237,7 @@ pub(super) async fn start_runtime_tasks_inner(
     ));
 
     Ok(RuntimeTasks {
-        essential: tasks,
+        route: tasks,
         support,
         health,
     })
@@ -253,13 +253,13 @@ pub(super) fn test_native_hook_paths() -> tractor_beam_isaac_injector::NativeHoo
 
 async fn wait_for_session_end(
     cancellation: &CancellationToken,
-    essential: &mut JoinSet<io::Result<()>>,
+    route: &mut JoinSet<io::Result<()>>,
     support: &mut JoinSet<io::Result<()>>,
 ) -> Option<String> {
     tokio::select! {
         () = cancellation.cancelled() => None,
-        result = essential.join_next(), if !essential.is_empty() => {
-            task_exit_message("Bridge session task", cancellation, result)
+        result = route.join_next(), if !route.is_empty() => {
+            task_exit_message("Bridge route task", cancellation, result)
         }
         result = support.join_next(), if !support.is_empty() => {
             task_exit_message("Bridge lifecycle task", cancellation, result)

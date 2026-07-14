@@ -18,7 +18,7 @@ use crate::protocol::{Frame, decode_frame};
 
 use super::{
     BridgeClient, ExternalRelayConfig, LogLevel, RelayEndpoint, TransportChoice,
-    packet_flow::encode_outbound_relay_packet,
+    packet_flow::decode_outbound_hook_packet,
     relay_transport::{RelayTransport, complete_relay_join},
     state::{HookIpcState, RuntimeEvent, log_event},
 };
@@ -298,7 +298,7 @@ impl ProbePeer {
         };
         self.transport
             .sender
-            .send_data_datagram(encode_outbound_relay_packet(packet)?)
+            .send_data_datagram(decode_outbound_hook_packet(packet))
             .await
     }
 

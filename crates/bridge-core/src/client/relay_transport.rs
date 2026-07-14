@@ -18,7 +18,9 @@ use crate::protocol::{
     encode_client_control,
 };
 
-use super::{RelayEndpoint, SessionConfig, TransportChoice, packet_flow::OutboundRelayPacket};
+use super::{
+    ExternalRelayConfig, RelayEndpoint, TransportChoice, packet_flow::OutboundRelayPacket,
+};
 
 mod bootstrap;
 mod pow;
@@ -33,8 +35,14 @@ type TcpFramed = Framed<TcpStream, LengthDelimitedCodec>;
 pub(super) struct RelayTransport {
     pub(super) sender: RelayTransportSender,
     pub(super) receiver: RelayTransportReceiver,
-    config: Option<SessionConfig>,
+    session: Option<RelaySessionConfig>,
     enabled_capabilities: u64,
+}
+
+#[derive(Clone)]
+struct RelaySessionConfig {
+    route: ExternalRelayConfig,
+    display_name: String,
 }
 
 pub(super) struct RelayTransportSender {
@@ -90,34 +98,40 @@ impl RelayTransport {
                 udp,
                 udp_buffer: Box::new([0; MAX_RELAY_DATAGRAM_SIZE]),
             },
-            config: None,
+            session: None,
             enabled_capabilities,
         })
     }
 
     pub(super) async fn connect_session(
-        config: &SessionConfig,
+        route: &ExternalRelayConfig,
+        steam_id64: &str,
+        display_name: &str,
     ) -> io::Result<(Self, Vec<PeerPresenceInfo>)> {
         let build = crate::build_info::current();
-        let steam_id64 = config
-            .steam_id64
+        let steam_id64 = steam_id64
             .parse::<u64>()
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "SteamID64 is invalid"))?;
         let mut relay = Self::connect(
-            &config.relay,
-            config.transport,
+            &route.relay,
+            route.transport,
             build.version,
             build.git_hash,
             steam_id64,
         )
         .await?;
-        let peers = complete_relay_join(&mut relay.sender, &mut relay.receiver, config).await?;
-        relay.config = Some(config.clone());
+        let peers =
+            complete_relay_join(&mut relay.sender, &mut relay.receiver, route, display_name)
+                .await?;
+        relay.session = Some(RelaySessionConfig {
+            route: route.clone(),
+            display_name: display_name.to_owned(),
+        });
         Ok((relay, peers))
     }
 
     pub(super) async fn reconnect(&mut self) -> io::Result<RecoveryKind> {
-        let config = self.config.clone().ok_or_else(|| {
+        let session = self.session.clone().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Relay session is not reconnectable",
@@ -139,8 +153,8 @@ impl RelayTransport {
         let next_probe_id = self.sender.next_probe_id;
         let build = crate::build_info::current();
         let mut replacement = Self::connect(
-            &config.relay,
-            config.transport,
+            &session.route.relay,
+            session.route.transport,
             build.version,
             build.git_hash,
             self.sender.from_steam_id64,
@@ -182,7 +196,8 @@ impl RelayTransport {
                     let peers = complete_relay_join(
                         &mut replacement.sender,
                         &mut replacement.receiver,
-                        &config,
+                        &session.route,
+                        &session.display_name,
                     )
                     .await?;
                     break RecoveryKind::FullJoin { peers };
@@ -205,7 +220,7 @@ impl RelayTransport {
                 _ => {}
             }
         };
-        replacement.config = Some(config);
+        replacement.session = Some(session);
         *self = replacement;
         Ok(recovery)
     }
@@ -308,11 +323,12 @@ impl RelayTransportReceiver {
 pub(super) async fn complete_relay_join(
     sender: &mut RelayTransportSender,
     receiver: &mut RelayTransportReceiver,
-    config: &SessionConfig,
+    route: &ExternalRelayConfig,
+    display_name: &str,
 ) -> io::Result<Vec<PeerPresenceInfo>> {
     time::timeout(
         RELAY_JOIN_TIMEOUT,
-        complete_relay_join_inner(sender, receiver, config),
+        complete_relay_join_inner(sender, receiver, route, display_name),
     )
     .await
     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Relay join timed out"))?
@@ -332,18 +348,19 @@ pub(super) async fn send_control(
 async fn complete_relay_join_inner(
     sender: &mut RelayTransportSender,
     receiver: &mut RelayTransportReceiver,
-    config: &SessionConfig,
+    route: &ExternalRelayConfig,
+    display_name: &str,
 ) -> io::Result<Vec<PeerPresenceInfo>> {
-    let profile = match config.transport {
+    let profile = match route.transport {
         TransportChoice::Tcp => DataProfile::Tcp,
         TransportChoice::Udp => DataProfile::Udp,
     };
     send_control(
         sender,
         &ClientControl::JoinBegin {
-            session_credential: SecretString::new(config.session_credential.wire_secret()),
+            session_credential: SecretString::new(route.session_credential.wire_secret()),
             steam_id64: sender.from_steam_id64,
-            display_name: Some(config.display_name.clone()),
+            display_name: Some(display_name.to_owned()),
             data_profile: profile,
         },
     )
@@ -359,7 +376,7 @@ async fn complete_relay_join_inner(
             } if algorithm == "sha256" => {
                 let proof = solve_pow(
                     &challenge_id,
-                    config.session_credential.as_bytes(),
+                    route.session_credential.as_bytes(),
                     sender.from_steam_id64,
                     &nonce,
                     difficulty_bits,

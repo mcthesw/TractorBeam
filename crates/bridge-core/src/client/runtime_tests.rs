@@ -6,8 +6,8 @@ use std::{
 };
 
 use crate::client::{
-    QualityConfidence, SessionHealthConfig, SessionHealthSnapshot, SessionQuality,
-    SmoothnessReason, TransportChoice,
+    ExternalRelayConfig, LanDirectConfig, QualityConfidence, SessionHealthConfig,
+    SessionHealthSnapshot, SessionQuality, SmoothnessReason, TransportChoice,
 };
 
 use super::*;
@@ -33,10 +33,12 @@ fn validates_relay_endpoint() {
 #[test]
 fn validates_session_config() {
     let config = SessionConfig {
-        relay: RelayEndpoint::new("relay.example.com", 25_910),
-        relay_name: None,
-        transport: TransportChoice::Udp,
-        session_credential: crate::SessionCredential::generate(),
+        route: SessionRouteConfig::ExternalRelay(ExternalRelayConfig {
+            relay: RelayEndpoint::new("relay.example.com", 25_910),
+            relay_name: None,
+            transport: TransportChoice::Udp,
+            session_credential: crate::SessionCredential::generate(),
+        }),
         mode: SessionMode::Pure,
         steam_id64: "76561198000000001".to_owned(),
         display_name: "Alice".to_owned(),
@@ -44,6 +46,28 @@ fn validates_session_config() {
     };
 
     assert!(config.validate().is_ok());
+}
+
+#[test]
+fn validates_lan_session_without_relay_fields() {
+    let config = SessionConfig {
+        route: SessionRouteConfig::LanDirect(LanDirectConfig {
+            session_credential: crate::SessionCredential::generate(),
+        }),
+        mode: SessionMode::Pure,
+        steam_id64: "76561198000000001".to_owned(),
+        display_name: "Alice".to_owned(),
+        session_health: SessionHealthConfig::default(),
+    };
+
+    assert!(config.validate().is_ok());
+
+    let mut client = BridgeClient::new();
+    let error = client.start_session(&config).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "Direct LAN sessions are not available in this build"
+    );
 }
 
 #[test]

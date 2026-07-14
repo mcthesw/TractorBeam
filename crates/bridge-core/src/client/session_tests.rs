@@ -59,10 +59,14 @@ fn runtime_rtt_timeout_is_nonfatal() {
     let relay = TestRelay::spawn();
     let handle = spawn_bridge_worker(
         SessionConfig {
-            relay: super::super::RelayEndpoint::new("127.0.0.1", relay.address.port()),
-            relay_name: None,
-            transport: super::super::TransportChoice::Tcp,
-            session_credential: super::super::SessionCredential::generate(),
+            route: super::super::SessionRouteConfig::ExternalRelay(
+                super::super::ExternalRelayConfig {
+                    relay: super::super::RelayEndpoint::new("127.0.0.1", relay.address.port()),
+                    relay_name: None,
+                    transport: super::super::TransportChoice::Tcp,
+                    session_credential: super::super::SessionCredential::generate(),
+                },
+            ),
             mode: super::super::SessionMode::Pure,
             steam_id64: "76561198000000001".to_owned(),
             display_name: "Test".to_owned(),
@@ -109,10 +113,12 @@ async fn official_mode_owns_a_cancellable_process_lifecycle_task() {
 
 fn test_session_config(port: u16) -> SessionConfig {
     SessionConfig {
-        relay: super::super::RelayEndpoint::new("127.0.0.1", port),
-        relay_name: None,
-        transport: super::super::TransportChoice::Tcp,
-        session_credential: super::super::SessionCredential::generate(),
+        route: super::super::SessionRouteConfig::ExternalRelay(super::super::ExternalRelayConfig {
+            relay: super::super::RelayEndpoint::new("127.0.0.1", port),
+            relay_name: None,
+            transport: super::super::TransportChoice::Tcp,
+            session_credential: super::super::SessionCredential::generate(),
+        }),
         mode: super::super::SessionMode::Pure,
         steam_id64: "76561198000000001".to_owned(),
         display_name: "Test".to_owned(),

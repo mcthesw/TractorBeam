@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     io,
     net::{IpAddr, SocketAddr, SocketAddrV6},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -11,11 +11,13 @@ use rand::RngExt as _;
 use sha2::{Digest as _, Sha256};
 use tokio::{
     net::{TcpListener, TcpStream, UdpSocket},
-    sync::Semaphore,
+    sync::{Semaphore, mpsc},
     task::JoinHandle,
     time,
 };
 use tokio_util::{codec::LengthDelimitedCodec, sync::CancellationToken};
+#[cfg(test)]
+use tractor_beam_direct_protocol::LinkId;
 use tractor_beam_direct_protocol::{
     CAP_HOST_CANDIDATES, ControlErrorCode, ControlMessage, HostCandidate, KNOWN_CAPABILITIES,
     MAX_CANDIDATES, MAX_CONTROL_PAYLOAD, PeerDescriptor, PeerIdentity, ProtocolRange,
@@ -23,19 +25,26 @@ use tractor_beam_direct_protocol::{
     select_capabilities, select_protocol,
 };
 
-use super::LanAdapterAddress;
+use super::{
+    LanAdapterAddress,
+    link::{
+        accept_inbound_join, establish_outbound, local_descriptor, membership_links,
+        run_membership_dialer,
+    },
+    membership::Membership,
+};
 use crate::client::{LanJoinCode, SessionCredential};
 
 const CONTROL_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
-const CONTROL_TOTAL_TIMEOUT: Duration = Duration::from_secs(3);
+pub(super) const CONTROL_TOTAL_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_PENDING_CONTROL_CONNECTIONS: usize = 32;
-const SUPPORTED_PROTOCOLS: [ProtocolRange; 1] = [ProtocolRange {
+pub(super) const SUPPORTED_PROTOCOLS: [ProtocolRange; 1] = [ProtocolRange {
     major: tractor_beam_direct_protocol::PROTOCOL_MAJOR,
     min_minor: 0,
     max_minor: tractor_beam_direct_protocol::PROTOCOL_MINOR,
 }];
 
-type ControlStream = tokio_util::codec::Framed<TcpStream, LengthDelimitedCodec>;
+pub(super) type ControlStream = tokio_util::codec::Framed<TcpStream, LengthDelimitedCodec>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LanProbeResult {
@@ -45,6 +54,19 @@ pub struct LanProbeResult {
     pub enabled_capabilities: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LanPeerConnectionState {
+    Discovered,
+    Connected,
+    Reconnecting,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LanPeerState {
+    pub peer: PeerDescriptor,
+    pub connection: LanPeerConnectionState,
+}
+
 pub struct LanControlPlane {
     shared: Arc<ControlShared>,
     session_credential: SessionCredential,
@@ -52,11 +74,14 @@ pub struct LanControlPlane {
     _data_sockets: Vec<Arc<UdpSocket>>,
     cancellation: CancellationToken,
     listener_tasks: Vec<JoinHandle<()>>,
+    background_tasks: Vec<JoinHandle<()>>,
 }
 
-struct ControlShared {
-    descriptor: PeerDescriptor,
-    session_proof: SessionProof,
+pub(super) struct ControlShared {
+    pub session_proof: SessionProof,
+    pub membership: Mutex<Membership>,
+    pub cancellation: CancellationToken,
+    pub dial_tx: mpsc::UnboundedSender<PeerDescriptor>,
 }
 
 impl LanControlPlane {
@@ -91,7 +116,7 @@ impl LanControlPlane {
             }
             let listener = TcpListener::bind(bind_address).await?;
             let endpoint = listener.local_addr()?;
-            let data_socket = Arc::new(UdpSocket::bind(endpoint).await?);
+            let data_socket = Arc::new(UdpSocket::bind(bind_address).await?);
             let priority = u32::try_from(adapters.len() - index).unwrap_or(1).max(1);
             bound.push((
                 listener,
@@ -104,31 +129,32 @@ impl LanControlPlane {
             .iter()
             .map(|(_, _, candidate)| candidate.endpoint)
             .collect::<Vec<_>>();
-        let shared = Arc::new(ControlShared {
-            descriptor: PeerDescriptor {
-                identity,
-                display_name: Some(display_name),
-                control_candidates: bound.iter().map(|(_, _, candidate)| *candidate).collect(),
-                capabilities: KNOWN_CAPABILITIES,
-            },
-            session_proof: session_proof(session_credential),
-        });
+        let descriptor = PeerDescriptor {
+            identity,
+            display_name: Some(display_name),
+            control_candidates: bound.iter().map(|(_, _, candidate)| *candidate).collect(),
+            capabilities: KNOWN_CAPABILITIES,
+        };
         encode_control(&ControlMessage::PeerSnapshot {
-            peers: vec![shared.descriptor.clone()],
+            peers: vec![descriptor.clone()],
         })
         .map_err(io::Error::other)?;
 
         let cancellation = CancellationToken::new();
+        let (dial_tx, dial_rx) = mpsc::unbounded_channel();
+        let shared = Arc::new(ControlShared {
+            session_proof: session_proof(session_credential),
+            membership: Mutex::new(Membership::new(descriptor)),
+            cancellation: cancellation.clone(),
+            dial_tx,
+        });
         let mut data_sockets = Vec::with_capacity(bound.len());
         let mut listener_tasks = Vec::with_capacity(bound.len());
         for (listener, data_socket, _) in bound {
             data_sockets.push(data_socket);
-            listener_tasks.push(tokio::spawn(run_listener(
-                listener,
-                shared.clone(),
-                cancellation.clone(),
-            )));
+            listener_tasks.push(tokio::spawn(run_listener(listener, shared.clone())));
         }
+        let background_tasks = vec![tokio::spawn(run_membership_dialer(shared.clone(), dial_rx))];
 
         Ok(Self {
             shared,
@@ -137,26 +163,114 @@ impl LanControlPlane {
             _data_sockets: data_sockets,
             cancellation,
             listener_tasks,
+            background_tasks,
         })
     }
 
     #[must_use]
     pub fn invitation(&self) -> LanJoinCode {
+        let identity = self
+            .shared
+            .membership
+            .lock()
+            .expect("LAN membership lock poisoned")
+            .local()
+            .identity;
         LanJoinCode {
-            introducer: self.shared.descriptor.identity,
+            introducer: identity,
             control_endpoints: self.control_endpoints.clone(),
             session_credential: self.session_credential,
         }
     }
 
     #[must_use]
-    pub fn descriptor(&self) -> &PeerDescriptor {
-        &self.shared.descriptor
+    pub fn descriptor(&self) -> PeerDescriptor {
+        self.shared
+            .membership
+            .lock()
+            .expect("LAN membership lock poisoned")
+            .local()
+            .clone()
     }
 
     #[must_use]
     pub fn control_endpoints(&self) -> &[SocketAddr] {
         &self.control_endpoints
+    }
+
+    pub async fn join(&self, invitation: &LanJoinCode, endpoint: SocketAddr) -> io::Result<()> {
+        if !invitation.control_endpoints.contains(&endpoint) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "selected Introducer endpoint is not in the LAN invitation",
+            ));
+        }
+        if session_proof(invitation.session_credential) != self.shared.session_proof {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "LAN invitation credential does not match the local room",
+            ));
+        }
+        establish_outbound(self.shared.clone(), invitation.introducer, vec![endpoint]).await
+    }
+
+    #[must_use]
+    pub fn peer_states(&self) -> Vec<LanPeerState> {
+        let membership = self
+            .shared
+            .membership
+            .lock()
+            .expect("LAN membership lock poisoned");
+        let mut states = membership
+            .connected_descriptors()
+            .into_iter()
+            .map(|peer| LanPeerState {
+                peer,
+                connection: LanPeerConnectionState::Connected,
+            })
+            .collect::<Vec<_>>();
+        states.extend(
+            membership
+                .hinted_descriptors()
+                .into_iter()
+                .map(|peer| LanPeerState {
+                    connection: if membership.is_recovering(peer.identity) {
+                        LanPeerConnectionState::Reconnecting
+                    } else {
+                        LanPeerConnectionState::Discovered
+                    },
+                    peer,
+                }),
+        );
+        states.sort_by_key(|state| state.peer.identity);
+        states
+    }
+
+    #[cfg(test)]
+    fn test_link_id(&self, identity: PeerIdentity) -> Option<LinkId> {
+        self.shared
+            .membership
+            .lock()
+            .expect("LAN membership lock poisoned")
+            .links()
+            .into_iter()
+            .find(|link| link.descriptor.identity == identity)
+            .map(|link| link.key.link_id)
+    }
+
+    #[cfg(test)]
+    fn test_interrupt_peer(&self, identity: PeerIdentity) {
+        if let Some(link) = self
+            .shared
+            .membership
+            .lock()
+            .expect("LAN membership lock poisoned")
+            .links()
+            .into_iter()
+            .find(|link| link.descriptor.identity == identity)
+        {
+            link.cancellation.cancel();
+        }
     }
 
     pub async fn probe(invitation: &LanJoinCode) -> Vec<LanProbeResult> {
@@ -184,8 +298,15 @@ impl LanControlPlane {
     }
 
     pub async fn shutdown(mut self) {
+        for link in membership_links(&self.shared) {
+            let _ = link.sender.try_send(ControlMessage::Leave);
+        }
+        tokio::task::yield_now().await;
         self.cancellation.cancel();
         for task in self.listener_tasks.drain(..) {
+            let _ = task.await;
+        }
+        for task in self.background_tasks.drain(..) {
             let _ = task.await;
         }
     }
@@ -197,18 +318,17 @@ impl Drop for LanControlPlane {
         for task in &self.listener_tasks {
             task.abort();
         }
+        for task in &self.background_tasks {
+            task.abort();
+        }
     }
 }
 
-async fn run_listener(
-    listener: TcpListener,
-    shared: Arc<ControlShared>,
-    cancellation: CancellationToken,
-) {
+async fn run_listener(listener: TcpListener, shared: Arc<ControlShared>) {
     let permits = Arc::new(Semaphore::new(MAX_PENDING_CONTROL_CONNECTIONS));
     loop {
         tokio::select! {
-            () = cancellation.cancelled() => return,
+            () = shared.cancellation.cancelled() => return,
             accepted = listener.accept() => {
                 let Ok((stream, _)) = accepted else {
                     return;
@@ -219,14 +339,14 @@ async fn run_listener(
                 let shared = shared.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
-                    let _ = handle_initial_control(stream, &shared).await;
+                    let _ = handle_initial_control(stream, shared).await;
                 });
             }
         }
     }
 }
 
-async fn handle_initial_control(stream: TcpStream, shared: &ControlShared) -> io::Result<()> {
+async fn handle_initial_control(stream: TcpStream, shared: Arc<ControlShared>) -> io::Result<()> {
     let mut framed = framed(stream);
     let Some(payload) = time::timeout(CONTROL_ATTEMPT_TIMEOUT, framed.next())
         .await
@@ -238,7 +358,7 @@ async fn handle_initial_control(stream: TcpStream, shared: &ControlShared) -> io
         ));
     };
     let message = decode_control(&payload.map_err(io::Error::other)?).map_err(io::Error::other)?;
-    let response = match message {
+    match message {
         ControlMessage::ProbeRequest {
             transaction_id,
             introducer,
@@ -246,7 +366,9 @@ async fn handle_initial_control(stream: TcpStream, shared: &ControlShared) -> io
             required_capabilities,
             optional_capabilities,
             session_proof,
-        } if introducer == shared.descriptor.identity && session_proof == shared.session_proof => {
+        } if introducer == local_descriptor(&shared).identity
+            && session_proof == shared.session_proof =>
+        {
             let selected_protocol =
                 select_protocol(&SUPPORTED_PROTOCOLS, &supported_protocol_ranges)
                     .map_err(io::Error::other)?;
@@ -256,25 +378,60 @@ async fn handle_initial_control(stream: TcpStream, shared: &ControlShared) -> io
                 KNOWN_CAPABILITIES,
             )
             .map_err(io::Error::other)?;
-            ControlMessage::ProbeResponse {
-                transaction_id,
-                introducer: shared.descriptor.identity,
-                selected_protocol,
-                enabled_capabilities,
-            }
+            send_control(
+                &mut framed,
+                &ControlMessage::ProbeResponse {
+                    transaction_id,
+                    introducer: local_descriptor(&shared).identity,
+                    selected_protocol,
+                    enabled_capabilities,
+                },
+            )
+            .await
         }
-        ControlMessage::ProbeRequest { .. } => ControlMessage::Error {
-            code: ControlErrorCode::InvalidCredential,
-            message: "LAN invitation is not valid for this peer".to_owned(),
-            retryable: false,
-        },
-        _ => ControlMessage::JoinRejected {
-            code: ControlErrorCode::AdmissionRejected,
-            message: "LAN membership admission is not available".to_owned(),
-            retryable: false,
-        },
-    };
-    send_control(&mut framed, &response).await
+        ControlMessage::ProbeRequest { .. } => {
+            send_control(
+                &mut framed,
+                &ControlMessage::Error {
+                    code: ControlErrorCode::InvalidCredential,
+                    message: "LAN invitation is not valid for this peer".to_owned(),
+                    retryable: false,
+                },
+            )
+            .await
+        }
+        ControlMessage::JoinRequest {
+            link_id,
+            peer,
+            supported_protocol_ranges,
+            required_capabilities,
+            optional_capabilities,
+            session_proof,
+        } => {
+            accept_inbound_join(
+                framed,
+                shared,
+                link_id,
+                peer,
+                supported_protocol_ranges,
+                required_capabilities,
+                optional_capabilities,
+                session_proof,
+            )
+            .await
+        }
+        _ => {
+            send_control(
+                &mut framed,
+                &ControlMessage::JoinRejected {
+                    code: ControlErrorCode::InvalidState,
+                    message: "expected LAN probe or join request".to_owned(),
+                    retryable: false,
+                },
+            )
+            .await
+        }
+    }
 }
 
 async fn probe_endpoint(
@@ -329,14 +486,17 @@ async fn probe_endpoint(
     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "LAN probe timed out"))?
 }
 
-fn framed(stream: TcpStream) -> ControlStream {
+pub(super) fn framed(stream: TcpStream) -> ControlStream {
     let codec = LengthDelimitedCodec::builder()
         .max_frame_length(MAX_CONTROL_PAYLOAD)
         .new_codec();
     tokio_util::codec::Framed::new(stream, codec)
 }
 
-async fn send_control(stream: &mut ControlStream, message: &ControlMessage) -> io::Result<()> {
+pub(super) async fn send_control(
+    stream: &mut ControlStream,
+    message: &ControlMessage,
+) -> io::Result<()> {
     let payload = encode_control(message).map_err(io::Error::other)?;
     stream.send(payload).await.map_err(io::Error::other)
 }
@@ -348,7 +508,7 @@ fn session_proof(credential: SessionCredential) -> SessionProof {
     SessionProof::from_bytes(hash.finalize().into())
 }
 
-fn nonzero_random<const N: usize>() -> [u8; N] {
+pub(super) fn nonzero_random<const N: usize>() -> [u8; N] {
     loop {
         let value = rand::rng().random::<[u8; N]>();
         if value.iter().any(|byte| *byte != 0) {
@@ -365,97 +525,5 @@ fn scoped_address(adapter: &LanAdapterAddress, port: u16) -> SocketAddr {
 }
 
 #[cfg(test)]
-mod tests {
-    use tractor_beam_direct_protocol::InstanceId;
-
-    use super::*;
-
-    fn loopback_adapter(id: u32) -> LanAdapterAddress {
-        LanAdapterAddress {
-            adapter_id: format!("test-{id}"),
-            name: format!("Loopback {id}"),
-            address: IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-            interface_index: id,
-        }
-    }
-
-    fn identity(id: u8) -> PeerIdentity {
-        PeerIdentity::new(u64::from(id), InstanceId::from_bytes([id; 16]))
-    }
-
-    #[tokio::test]
-    async fn invitation_is_created_only_after_tcp_and_udp_bind() {
-        let credential = SessionCredential::from_bytes([7; 16]);
-        let room = LanControlPlane::create(
-            identity(1),
-            "Alice".to_owned(),
-            credential,
-            &[loopback_adapter(1)],
-        )
-        .await
-        .unwrap();
-        let invitation = room.invitation();
-
-        assert_eq!(invitation.introducer, identity(1));
-        assert_eq!(invitation.control_endpoints, room.control_endpoints());
-        assert_ne!(invitation.control_endpoints[0].port(), 0);
-        room.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn probe_is_bounded_non_mutating_and_credential_scoped() {
-        let credential = SessionCredential::from_bytes([7; 16]);
-        let room = LanControlPlane::create(
-            identity(1),
-            "Alice".to_owned(),
-            credential,
-            &[loopback_adapter(1)],
-        )
-        .await
-        .unwrap();
-        let invitation = room.invitation();
-
-        let results = LanControlPlane::probe(&invitation).await;
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].endpoint, invitation.control_endpoints[0]);
-        assert_eq!(room.descriptor().identity, identity(1));
-
-        let mut wrong = invitation;
-        wrong.session_credential = SessionCredential::from_bytes([8; 16]);
-        assert!(LanControlPlane::probe(&wrong).await.is_empty());
-        room.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn probe_returns_zero_or_many_results_in_endpoint_order() {
-        let credential = SessionCredential::from_bytes([7; 16]);
-        let room = LanControlPlane::create(
-            identity(1),
-            "Alice".to_owned(),
-            credential,
-            &[
-                loopback_adapter(1),
-                LanAdapterAddress {
-                    adapter_id: "test-2".to_owned(),
-                    name: "Loopback 2".to_owned(),
-                    address: "127.0.0.2".parse().unwrap(),
-                    interface_index: 2,
-                },
-            ],
-        )
-        .await
-        .unwrap();
-
-        let results = LanControlPlane::probe(&room.invitation()).await;
-        assert_eq!(results.len(), 2);
-        assert!(results[0].endpoint < results[1].endpoint);
-
-        let unreachable = LanJoinCode {
-            introducer: identity(1),
-            control_endpoints: vec!["127.0.0.1:1".parse().unwrap()],
-            session_credential: credential,
-        };
-        assert!(LanControlPlane::probe(&unreachable).await.is_empty());
-        room.shutdown().await;
-    }
-}
+#[path = "control_tests.rs"]
+mod tests;

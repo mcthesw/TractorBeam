@@ -404,6 +404,9 @@ join_code.imported:
 join_code.invalid:
   zh_CN: "联机码无效"
   en_US: "Invalid join code"
+join_code.lan_not_available:
+  zh_CN: "当前版本尚未开放局域网房间入口"
+  en_US: "LAN room entry is not available in this version"
 join_code.required:
   zh_CN: "请粘贴联机码"
   en_US: "Paste a Join Code"

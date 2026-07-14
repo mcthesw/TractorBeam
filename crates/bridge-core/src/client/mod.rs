@@ -30,7 +30,7 @@ pub use input_delay::{
     InputDelayError, InputDelayEvidence, InputDelayEvidenceBlocker, InputDelayOperation,
     InputDelayReport, InputDelayStatus,
 };
-pub use join_code::{JoinCode, JoinCodeError, SessionCredential};
+pub use join_code::{JoinCode, JoinCodeError, LanJoinCode, RelayJoinCode, SessionCredential};
 pub use logging::{
     ClientLogSink, ClientSessionLog, ClientSessionLogContext, emit_client_log_event,
 };

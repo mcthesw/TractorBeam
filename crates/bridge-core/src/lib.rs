@@ -5,6 +5,7 @@ pub mod client;
 pub mod diagnostics;
 pub mod steam;
 
+pub use tractor_beam_direct_protocol as direct_protocol;
 pub use tractor_beam_relay_protocol as protocol;
 
 pub use client::{
@@ -14,14 +15,15 @@ pub use client::{
     DEFAULT_RELAY_PROBE_PAYLOAD_BYTES, HookIpcConnectionState, HookIpcState,
     HookReceiveProbeReport, HookStartupPhase, HookStartupState, InputDelayError,
     InputDelayEvidence, InputDelayEvidenceBlocker, InputDelayOperation, InputDelayReport,
-    InputDelayStatus, JoinCode, JoinCodeError, LightPingReport, LightPingTarget,
+    InputDelayStatus, JoinCode, JoinCodeError, LanJoinCode, LightPingReport, LightPingTarget,
     LoadedClientConfig, LogEntry, LogLevel, PRODUCT_NAME, QualityConfidence,
     READINESS_PROBE_CONNECTION_PROFILES, READINESS_PROBE_PAYLOAD_BYTES,
     READINESS_PROBE_SAMPLES_PER_CASE, ReadinessProbeCaseReport, ReadinessProbeReport,
-    RelayEndpoint, RelayLinkState, RelayPreset, RelayProbeReport, RoomPathQualitySnapshot,
-    RoomPathQualityState, RuntimeState, SessionConfig, SessionCredential, SessionHealthConfig,
-    SessionHealthSnapshot, SessionHealthSummary, SessionHealthWindow, SessionMode, SessionQuality,
-    SessionQualityReason, SessionStatus, SessionStopReason, SmoothnessReason, SmoothnessSnapshot,
-    SteamIdentity, TransportChoice, app_data_config_path, bundle_config_path,
-    emit_client_log_event, load_client_config, runtime_name, save_client_config_selection,
+    RelayEndpoint, RelayJoinCode, RelayLinkState, RelayPreset, RelayProbeReport,
+    RoomPathQualitySnapshot, RoomPathQualityState, RuntimeState, SessionConfig, SessionCredential,
+    SessionHealthConfig, SessionHealthSnapshot, SessionHealthSummary, SessionHealthWindow,
+    SessionMode, SessionQuality, SessionQualityReason, SessionStatus, SessionStopReason,
+    SmoothnessReason, SmoothnessSnapshot, SteamIdentity, TransportChoice, app_data_config_path,
+    bundle_config_path, emit_client_log_event, load_client_config, runtime_name,
+    save_client_config_selection,
 };

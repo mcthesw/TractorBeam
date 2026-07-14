@@ -35,4 +35,3 @@ blocked_cidrs = []
 # [telemetry]
 # otlp_endpoint = "http://127.0.0.1:4317"
 # service_instance_id = "relay-guangzhou-1"
-# data_trace_sample_ratio = 0.001

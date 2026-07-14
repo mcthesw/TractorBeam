@@ -14,9 +14,7 @@ use crate::client::{
     relay_transport::{RelayTransport, send_control},
     state::{RuntimeEvent, log_event},
 };
-use crate::protocol::v2::{
-    ClientControl, Frame, ServerControl, decode_frame, decode_server_control,
-};
+use crate::protocol::{ClientControl, Frame, ServerControl, decode_frame, decode_server_control};
 
 const LIGHT_PING_COUNT: u8 = 5;
 const LIGHT_PING_TIMEOUT: Duration = Duration::from_secs(2);

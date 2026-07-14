@@ -1,3 +1,5 @@
+//! Fixed binary data and probe frame codecs.
+
 use bytes::{Buf as _, BufMut as _, Bytes, BytesMut};
 use thiserror::Error;
 

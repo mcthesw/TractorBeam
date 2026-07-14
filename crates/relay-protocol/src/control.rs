@@ -1,3 +1,5 @@
+//! Bounded control-plane messages and codecs.
+
 use bytes::Bytes;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;

@@ -14,7 +14,7 @@ use bytes::Bytes;
 use serde::Serialize;
 use tokio::{runtime::Builder, time};
 
-use crate::protocol::v2::{DATA_FRAME_OVERHEAD, Frame, decode_frame};
+use crate::protocol::{Frame, decode_frame};
 
 use super::{
     BridgeClient, LogLevel, RelayEndpoint, SessionConfig, SessionMode, TransportChoice,
@@ -32,7 +32,7 @@ pub use readiness::{
 
 pub(super) const PROBE_A_STEAM: &str = "76561198000000101";
 pub(super) const PROBE_B_STEAM: &str = "76561198000000102";
-pub const DEFAULT_RELAY_PROBE_PAYLOAD_BYTES: usize = 2_048 - DATA_FRAME_OVERHEAD;
+pub const DEFAULT_RELAY_PROBE_PAYLOAD_BYTES: usize = 1_800;
 pub(super) const MAX_RELAY_PROBE_PAYLOAD_BYTES: usize = 60_000;
 const DATA_TIMEOUT: Duration = Duration::from_secs(3);
 

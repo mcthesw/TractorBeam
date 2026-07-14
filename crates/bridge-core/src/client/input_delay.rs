@@ -3,6 +3,7 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
+use serde::Serialize;
 use thiserror::Error;
 use tractor_beam_hook_ipc::{ErrorCode, InputDelayCommand};
 
@@ -40,6 +41,25 @@ pub struct InputDelayStatus {
     pub updated_at: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputDelayEvidenceBlocker {
+    SessionNotRunning,
+    UnsupportedMode,
+    HookNotReady,
+    CurrentDelayUnknown,
+    SmoothnessUnavailable,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct InputDelayEvidence {
+    pub recommendation_possible: bool,
+    pub blocker: Option<InputDelayEvidenceBlocker>,
+    pub current_delay: Option<i32>,
+    pub current_delay_observed_at: Option<u64>,
+    pub smoothness: super::SmoothnessSnapshot,
+}
+
 #[derive(Debug, Error)]
 pub enum InputDelayError {
     #[error("session is not running")]
@@ -55,6 +75,44 @@ pub enum InputDelayError {
 }
 
 impl super::BridgeClient {
+    #[must_use]
+    pub fn input_delay_evidence(&self) -> InputDelayEvidence {
+        let current_delay = self
+            .state
+            .latest_input_delay_status
+            .as_ref()
+            .and_then(|status| status.result.as_ref().ok().copied());
+        let current_delay_observed_at = current_delay.and(
+            self.state
+                .latest_input_delay_status
+                .as_ref()
+                .map(|status| status.updated_at),
+        );
+        let blocker = if self.state.status != SessionStatus::Running {
+            Some(InputDelayEvidenceBlocker::SessionNotRunning)
+        } else if !matches!(
+            self.state.active_session_mode,
+            Some(SessionMode::Fallback | SessionMode::Pure)
+        ) {
+            Some(InputDelayEvidenceBlocker::UnsupportedMode)
+        } else if self.state.hook_ipc.connection != HookIpcConnectionState::Connected {
+            Some(InputDelayEvidenceBlocker::HookNotReady)
+        } else if current_delay.is_none() {
+            Some(InputDelayEvidenceBlocker::CurrentDelayUnknown)
+        } else if self.state.smoothness.level == super::SessionQuality::Unavailable {
+            Some(InputDelayEvidenceBlocker::SmoothnessUnavailable)
+        } else {
+            None
+        };
+        InputDelayEvidence {
+            recommendation_possible: blocker.is_none(),
+            blocker,
+            current_delay,
+            current_delay_observed_at,
+            smoothness: self.state.smoothness.clone(),
+        }
+    }
+
     pub fn read_input_delay(&mut self) -> Result<InputDelayReport, InputDelayError> {
         self.ensure_input_delay_available()?;
         let id = next_request_id();
@@ -128,4 +186,39 @@ impl super::BridgeClient {
 
 fn next_request_id() -> u32 {
     NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::{BridgeClient, LoadedClientConfig, QualityConfidence, SessionQuality};
+
+    #[test]
+    fn evidence_is_read_only_and_requires_current_delay_and_quality() {
+        let mut client = BridgeClient::with_config(LoadedClientConfig::default());
+        assert_eq!(
+            client.input_delay_evidence().blocker,
+            Some(InputDelayEvidenceBlocker::SessionNotRunning)
+        );
+
+        client.state.status = SessionStatus::Running;
+        client.state.active_session_mode = Some(SessionMode::Pure);
+        client.state.hook_ipc.connection = HookIpcConnectionState::Connected;
+        assert_eq!(
+            client.input_delay_evidence().blocker,
+            Some(InputDelayEvidenceBlocker::CurrentDelayUnknown)
+        );
+
+        client.state.latest_input_delay_status = Some(InputDelayStatus {
+            operation: InputDelayOperation::Read,
+            result: Ok(3),
+            updated_at: 42,
+        });
+        client.state.smoothness.level = SessionQuality::Good;
+        client.state.smoothness.confidence = QualityConfidence::High;
+        let evidence = client.input_delay_evidence();
+        assert!(evidence.recommendation_possible);
+        assert_eq!(evidence.current_delay, Some(3));
+        assert_eq!(evidence.current_delay_observed_at, Some(42));
+    }
 }

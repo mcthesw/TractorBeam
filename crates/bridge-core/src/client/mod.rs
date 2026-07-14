@@ -17,6 +17,7 @@ mod runtime;
 mod session;
 mod session_config;
 mod session_health;
+mod smoothness;
 mod state;
 #[cfg(test)]
 mod test_relay;
@@ -25,7 +26,10 @@ pub use config::{
     CLIENT_CONFIG_FILE, ClientConfig, ClientConfigSelection, LoadedClientConfig, RelayPreset,
     app_data_config_path, bundle_config_path, load_client_config, save_client_config_selection,
 };
-pub use input_delay::{InputDelayError, InputDelayOperation, InputDelayReport, InputDelayStatus};
+pub use input_delay::{
+    InputDelayError, InputDelayEvidence, InputDelayEvidenceBlocker, InputDelayOperation,
+    InputDelayReport, InputDelayStatus,
+};
 pub use join_code::{JoinCode, JoinCodeError, SessionCredential};
 pub use logging::{
     ClientLogSink, ClientSessionLog, ClientSessionLogContext, emit_client_log_event,
@@ -42,7 +46,11 @@ pub use session_config::{
     ConfigError, ConnectionProfile, RelayEndpoint, SessionConfig, SessionHealthConfig, SessionMode,
     SteamIdentity, TransportChoice,
 };
-pub use session_health::{SessionHealthSnapshot, SessionHealthSummary, SessionQuality};
+pub use session_health::{
+    QualityConfidence, SessionHealthSnapshot, SessionHealthSummary, SessionHealthWindow,
+    SessionQuality, SessionQualityReason,
+};
+pub use smoothness::{SmoothnessReason, SmoothnessSnapshot};
 pub use state::{
     ClientIncidentKind, ClientIncidentSnapshot, Counters, HookIpcConnectionState, HookIpcState,
     HookStartupPhase, HookStartupState, LogEntry, LogLevel, RelayLinkState, RuntimeState,

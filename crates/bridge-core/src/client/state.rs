@@ -1,7 +1,6 @@
 use std::{
     fmt::{self, Display},
     path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use tokio::sync::mpsc::Sender;
@@ -10,6 +9,11 @@ use super::{
     InputDelayStatus, SessionHealthSnapshot, SessionMode, SteamIdentity,
     probe::{HookReceiveProbeReport, ReadinessProbeReport},
 };
+
+#[path = "state/time.rs"]
+mod time;
+use time::unix_millis;
+pub(super) use time::unix_seconds;
 
 pub(super) const MAX_IN_MEMORY_LOGS: usize = 2_000;
 const MAX_CLIENT_INCIDENT_SNAPSHOTS: usize = 16;
@@ -332,6 +336,7 @@ pub struct RuntimeState {
     pub latest_hook_receive_probe_error: Option<String>,
     pub latest_session_health: Option<SessionHealthSnapshot>,
     pub latest_session_health_summary: Option<SessionHealthSnapshot>,
+    pub smoothness: super::SmoothnessSnapshot,
     pub latest_input_delay_status: Option<InputDelayStatus>,
     pub hook_launch_parameters_path_written: Option<PathBuf>,
     pub hook_launch_parameters_cleanup: Option<String>,
@@ -340,7 +345,7 @@ pub struct RuntimeState {
     pub last_stop_reason: Option<SessionStopReason>,
     pub client_incidents: Vec<ClientIncidentSnapshot>,
     pub light_ping_reports: Vec<super::probe::LightPingReport>,
-    pub room_peers: Vec<crate::protocol::v2::PeerPresenceInfo>,
+    pub room_peers: Vec<crate::protocol::PeerPresenceInfo>,
     pub room_path_quality: Vec<super::RoomPathQualitySnapshot>,
     pub relay_link: RelayLinkState,
 }
@@ -358,7 +363,7 @@ pub(super) enum RuntimeEvent {
     SessionEnded(SessionStopReason),
     Stopped,
     LightPingFinished(Box<super::probe::LightPingReport>),
-    RoomPeersUpdated(Vec<crate::protocol::v2::PeerPresenceInfo>),
+    RoomPeersUpdated(Vec<crate::protocol::PeerPresenceInfo>),
     RoomPathQualityUpdated(Vec<super::RoomPathQualitySnapshot>),
     RelayLinkChanged(RelayLinkState),
 }
@@ -397,20 +402,6 @@ pub(super) fn error_counter() -> Counters {
         errors: 1,
         ..Counters::default()
     }
-}
-
-pub(super) fn unix_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
-}
-
-fn unix_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 #[cfg(test)]

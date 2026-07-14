@@ -32,9 +32,21 @@ is strict for the lifetime of a running session and never silently falls back.
 Capability-gated fixed binary Probe Frames measure **Room Path Quality** between
 Bridge Clients over that same selected data profile. The target Bridge Client
 echoes them locally; they never enter Native Hook or Isaac packet queues. The
-typed per-Peer result stays in Bridge Core for the Room UI and future local
-Input Delay coordination. Bridge Client does not export these measurements to
-an observability backend.
+typed per-Peer result stays in Bridge Core. The application combines only fresh,
+bounded Room Path Quality windows with recent Session Health deltas to publish a
+current smoothness level, confidence, freshness, and evidence reasons. Lifetime
+diagnostic counters remain available but do not permanently degrade the current
+estimate after recovery. Relay-wide OTel metrics are never an input to a player
+estimate.
+
+Bridge Core also exposes read-only Input Delay evidence: current delay
+availability, the current smoothness snapshot (including the worst current peer
+path), and an explicit blocker when the evidence is incomplete. This contract
+does not convert milliseconds to delay units, recommend a value, coordinate
+peers, or issue a Hook write. Manual Read/Write remains explicitly gated on a
+running Fallback/Pure session with Hook IPC Ready, and written values are not
+auto-restored. Bridge Client does not export these measurements to an
+observability backend.
 
 The wire contract lives in `relay-protocol`. Socket ownership and retry policy do
 not. `bridge-relay` maps wire values into its domain state, while `bridge-core`

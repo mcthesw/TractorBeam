@@ -1,3 +1,5 @@
+//! Bootstrap negotiation codec and compatibility selection.
+
 use bytes::{BufMut as _, Bytes, BytesMut};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

@@ -7,7 +7,7 @@ use std::{
 use bytes::Bytes;
 use tractor_beam_hook_ipc::GamePacket as HookGamePacket;
 
-use crate::protocol::v2::{
+use crate::protocol::{
     DataFrame, Frame, PeerPresenceInfo, ProbeFrame, ServerControl, decode_frame,
     decode_server_control,
 };
@@ -146,7 +146,7 @@ pub(super) fn encode_outbound_relay_packet(
     let sent_bytes = u64::try_from(packet.payload.len()).unwrap_or(u64::MAX);
     Ok(OutboundRelayPacket {
         summary: PacketSummary {
-            wire_bytes: crate::protocol::v2::DATA_FRAME_OVERHEAD + packet.payload.len(),
+            wire_bytes: crate::protocol::DATA_FRAME_OVERHEAD + packet.payload.len(),
             ..summary
         },
         to_steam_id64: packet.peer,

@@ -1,3 +1,5 @@
+//! Fixed-size frame duplicate window.
+
 pub const FRAME_ID_WINDOW_BITS: u64 = 128;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

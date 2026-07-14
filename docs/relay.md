@@ -54,11 +54,11 @@ Relay applies packet and byte limits per connection, validates sender identity,
 Room membership, selected profile, UDP tuple, target membership, and monotonic
 frame window before forwarding. Duplicate and too-old frames are discarded.
 
-Startup/bootstrap transitions, disconnect/resume outcomes, expiry, and a
-30-second aggregate metrics snapshot are structured logs. Metrics include Join,
-disconnect, Resume, expiry, received/forwarded, duplicate, rejected, and
-rate-limited counts. Never log Session Credentials, connection ids, resume/path
-credentials, SteamID64 values, display names, or peer addresses.
+Startup/bootstrap transitions, disconnect/resume outcomes, expiry, and anomalies
+are structured logs. Continuous workload, latency, queue pressure, and active
+state belong to metrics and are not repeated as periodic INFO logs. Never log
+Session Credentials, connection ids, resume/path credentials, SteamID64 values,
+display names, or peer addresses.
 
 Relay Protocol v2 also forwards capability-gated Room Path Quality Probe Frames.
 They use the selected TCP or validated UDP data path and remain separate from
@@ -68,6 +68,7 @@ user-visible RTT/jitter/loss calculation.
 
 ## Compatibility
 
-Relay v2 has no v1 listener or fallback. Old Clients and Join Codes are rejected
-by the hard-cut release. Bootstrap incompatibility is returned with a stable
-schema/protocol/capability reason before admission.
+The Relay implements only Relay Protocol v2 (`TBR2`); there is no legacy v1
+listener, fallback, runtime module, or API namespace. Old Clients and Join Codes
+are rejected by the hard-cut release. Bootstrap incompatibility is returned
+with a stable schema/protocol/capability reason before admission.

@@ -4295,6 +4295,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tractor-beam-direct-protocol"
+version = "0.2.1"
+dependencies = [
+ "bytes",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "tractor-beam-gui"
 version = "0.2.1"
 dependencies = [

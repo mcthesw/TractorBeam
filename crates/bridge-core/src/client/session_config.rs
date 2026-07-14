@@ -157,10 +157,7 @@ impl From<crate::steam::SteamAccount> for SteamIdentity {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionConfig {
-    pub relay: RelayEndpoint,
-    pub relay_name: Option<String>,
-    pub transport: TransportChoice,
-    pub session_credential: SessionCredential,
+    pub route: SessionRouteConfig,
     pub mode: SessionMode,
     pub steam_id64: String,
     pub display_name: String,
@@ -169,8 +166,10 @@ pub struct SessionConfig {
 
 impl SessionConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.mode != SessionMode::Official {
-            self.relay.validate()?;
+        if self.mode != SessionMode::Official
+            && let SessionRouteConfig::ExternalRelay(route) = &self.route
+        {
+            route.relay.validate()?;
         }
         if self.steam_id64.trim().is_empty() {
             return Err(ConfigError::MissingSteamId);
@@ -183,6 +182,25 @@ impl SessionConfig {
             .map_err(|_| ConfigError::InvalidSessionHealth)?;
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SessionRouteConfig {
+    ExternalRelay(ExternalRelayConfig),
+    LanDirect(LanDirectConfig),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalRelayConfig {
+    pub relay: RelayEndpoint,
+    pub relay_name: Option<String>,
+    pub transport: TransportChoice,
+    pub session_credential: SessionCredential,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LanDirectConfig {
+    pub session_credential: SessionCredential,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

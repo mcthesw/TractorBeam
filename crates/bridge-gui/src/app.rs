@@ -10,9 +10,10 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, ScrollArea};
 use rust_i18n::t;
 use tractor_beam_core::{
-    ClientConfigSelection, ConnectionProfile, InputDelayError, JoinCode, LightPingTarget,
-    RelayEndpoint, RelayJoinCode, RelayPreset, RuntimeState, SessionConfig, SessionCredential,
-    SessionHealthConfig, SessionMode, SteamIdentity, TransportChoice,
+    ClientConfigSelection, ConnectionProfile, ExternalRelayConfig, InputDelayError, JoinCode,
+    LightPingTarget, RelayEndpoint, RelayJoinCode, RelayPreset, RuntimeState, SessionConfig,
+    SessionCredential, SessionHealthConfig, SessionMode, SessionRouteConfig, SteamIdentity,
+    TransportChoice,
 };
 
 use crate::{
@@ -191,10 +192,12 @@ impl BridgeApp {
     fn session_config(&self) -> SessionConfig {
         let (steam_id64, display_name) = self.current_identity();
         SessionConfig {
-            relay: RelayEndpoint::new(self.relay_host.trim(), self.relay_port),
-            relay_name: self.selected_relay_preset().map(|relay| relay.name.clone()),
-            transport: self.transport,
-            session_credential: self.session_credential,
+            route: SessionRouteConfig::ExternalRelay(ExternalRelayConfig {
+                relay: RelayEndpoint::new(self.relay_host.trim(), self.relay_port),
+                relay_name: self.selected_relay_preset().map(|relay| relay.name.clone()),
+                transport: self.transport,
+                session_credential: self.session_credential,
+            }),
             mode: self.mode,
             steam_id64,
             display_name,

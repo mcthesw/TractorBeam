@@ -2,7 +2,7 @@ use std::{fs, io};
 
 use super::{
     ConfigError, InputDelayError, LoadedClientConfig, RelayEndpoint, SessionConfig, SessionMode,
-    hook_config, hook_ipc,
+    SessionRouteConfig, hook_config, hook_ipc,
     logging::{ClientLogSink, ClientSessionLog, ClientSessionLogContext, TracingClientLogSink},
     probe, session,
     state::{self, log_entry, trim_logs},
@@ -250,6 +250,16 @@ impl BridgeClient {
 
     pub fn start_session(&mut self, config: &SessionConfig) -> Result<(), ClientError> {
         config.validate()?;
+        let relay_route = match &config.route {
+            SessionRouteConfig::ExternalRelay(route) => route,
+            SessionRouteConfig::LanDirect(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "Direct LAN sessions are not available in this build",
+                )
+                .into());
+            }
+        };
         self.stop_session();
         self.state.last_stop_reason = None;
         self.state.latest_hook_receive_probe = None;
@@ -270,9 +280,9 @@ impl BridgeClient {
         self.active_session_log = self
             .log_sink
             .start_session(ClientSessionLogContext {
-                relay_name: config.relay_name.clone(),
-                relay: config.relay.clone(),
-                transport: config.transport,
+                relay_name: relay_route.relay_name.clone(),
+                relay: relay_route.relay.clone(),
+                transport: relay_route.transport,
                 mode: config.mode,
             })
             .ok();
@@ -337,11 +347,17 @@ impl BridgeClient {
         self.state.active_session_mode = Some(config.mode);
         self.log(LogLevel::Info, format!("Starting {} session", config.mode));
         if config.mode != SessionMode::Official {
-            if let Some(name) = &config.relay_name {
+            if let Some(name) = &relay_route.relay_name {
                 self.log(LogLevel::Info, format!("Relay preset: {name}"));
             }
-            self.log(LogLevel::Info, format!("Relay endpoint: {}", config.relay));
-            self.log(LogLevel::Info, format!("Transport: {}", config.transport));
+            self.log(
+                LogLevel::Info,
+                format!("Relay endpoint: {}", relay_route.relay),
+            );
+            self.log(
+                LogLevel::Info,
+                format!("Transport: {}", relay_route.transport),
+            );
         }
         self.log(
             LogLevel::Info,

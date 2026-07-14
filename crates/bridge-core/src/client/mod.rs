@@ -43,8 +43,9 @@ pub use probe::{
 pub use room_path_quality::{RoomPathQualitySnapshot, RoomPathQualityState};
 pub use runtime::{BridgeClient, ClientError, runtime_name};
 pub use session_config::{
-    ConfigError, ConnectionProfile, RelayEndpoint, SessionConfig, SessionHealthConfig, SessionMode,
-    SteamIdentity, TransportChoice,
+    ConfigError, ConnectionProfile, ExternalRelayConfig, LanDirectConfig, RelayEndpoint,
+    SessionConfig, SessionHealthConfig, SessionMode, SessionRouteConfig, SteamIdentity,
+    TransportChoice,
 };
 pub use session_health::{
     QualityConfidence, SessionHealthSnapshot, SessionHealthSummary, SessionHealthWindow,

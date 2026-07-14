@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 use crate::protocol::{ClientControl, PeerPresenceInfo, ProbePhase};
 
 use super::{
-    LogLevel, SessionConfig, SessionMode,
+    LogLevel, SessionConfig, SessionMode, SessionRouteConfig,
     hook_ipc::{self, HookIpcSession, InputDelayCall},
     packet_flow::{
         InboundGamePacket, InboundRelayDatagram, OutboundRelayPacket, PacketObserver,

@@ -170,6 +170,18 @@ errors:
 session_quality:
   zh_CN: "会话质量"
   en_US: "Session quality"
+quality.summary.collecting:
+  zh_CN: "正在收集最新联机数据"
+  en_US: "Collecting current connection data"
+quality.summary.good:
+  zh_CN: "当前联机流畅"
+  en_US: "The current connection is smooth"
+quality.summary.watch:
+  zh_CN: "检测到短时波动"
+  en_US: "Short connection fluctuations detected"
+quality.summary.poor:
+  zh_CN: "检测到持续卡顿风险"
+  en_US: "Sustained stutter risk detected"
 health.runtime_rtt:
   zh_CN: "链路 RTT"
   en_US: "Runtime RTT"

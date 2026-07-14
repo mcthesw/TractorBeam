@@ -96,7 +96,7 @@ impl BridgeApp {
                 ui.label(format!(
                     "{}: {}",
                     t!("session_quality"),
-                    quality_label(health.quality)
+                    quality_label(state.smoothness.level)
                 ));
                 if let Some(p95) = health.runtime_rtt.latency.p95_ms {
                     ui.monospace(format!("RTT p95 {p95} ms"));
@@ -195,6 +195,15 @@ pub(super) fn quality_label(quality: SessionQuality) -> Cow<'static, str> {
         SessionQuality::Good => t!("quality.good"),
         SessionQuality::Watch => t!("quality.watch"),
         SessionQuality::Poor => t!("quality.poor"),
+    }
+}
+
+pub(super) fn smoothness_summary(quality: SessionQuality) -> Cow<'static, str> {
+    match quality {
+        SessionQuality::Unavailable => t!("quality.summary.collecting"),
+        SessionQuality::Good => t!("quality.summary.good"),
+        SessionQuality::Watch => t!("quality.summary.watch"),
+        SessionQuality::Poor => t!("quality.summary.poor"),
     }
 }
 

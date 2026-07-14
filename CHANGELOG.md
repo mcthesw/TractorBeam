@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.2.2](https://github.com/mcthesw/TractorBeam/compare/v0.2.1...v0.2.2) (2026-07-14)
+
+
+### Features
+
+* **client:** add input delay control API ([46a7984](https://github.com/mcthesw/TractorBeam/commit/46a7984c5b2746710fb0de5b712c2e1c6a5aade0))
+* **client:** add Relay v2 transport recovery ([443a1ec](https://github.com/mcthesw/TractorBeam/commit/443a1ece5fa520f951819e03cd4ca23da1d53bdb))
+* **client:** expose actionable smoothness evidence ([1967457](https://github.com/mcthesw/TractorBeam/commit/1967457bdd0ca44f809f1d27238bf944b969e431))
+* **client:** simplify rooms and troubleshooting workflows ([0dfdce5](https://github.com/mcthesw/TractorBeam/commit/0dfdce5cec6aeec1f64d894fab8e567a5b195267))
+* **gui:** add input delay settings controls ([75e24be](https://github.com/mcthesw/TractorBeam/commit/75e24be69c9123d063da5f08ab181051d2232085))
+* **native-hook:** add input delay control endpoint ([3d5ef06](https://github.com/mcthesw/TractorBeam/commit/3d5ef06ef72066d72861acea4dcd8c6e71379e73))
+* **network:** add peer room path quality ([2db4699](https://github.com/mcthesw/TractorBeam/commit/2db46990434ba9928ccb00e3797cbe3cd18c6212))
+* **protocol:** define the Relay Protocol v2 wire contract ([986a13a](https://github.com/mcthesw/TractorBeam/commit/986a13ac350e9155c352da9cb8160388a6e3f79d))
+* **relay:** export OpenTelemetry signals ([d2e03c0](https://github.com/mcthesw/TractorBeam/commit/d2e03c057e5f152c3d06e634c28eb0c40c8a7071))
+* **relay:** implement resumable Relay Protocol v2 sessions ([330acaa](https://github.com/mcthesw/TractorBeam/commit/330acaa74eb57e88294cffe3d74ad75373d2a6e6))
+* **relay:** make traffic limits configurable ([98e0a8b](https://github.com/mcthesw/TractorBeam/commit/98e0a8b5e7c0195a0eae4972ba0b47ed5781505c))
+* **relay:** support structured JSON logs ([1a2750d](https://github.com/mcthesw/TractorBeam/commit/1a2750d2a1fa5ac9d32d4e8ac5ed7a9c559ecc8a))
+
+
+### Bug Fixes
+
+* **native-hook:** use fixed input delay offset ([1c1008b](https://github.com/mcthesw/TractorBeam/commit/1c1008bc8b67ce7c675cdae20e6e1ee120616229))
+
+
+### Code Refactoring
+
+* **client:** isolate application runtime and local IPC adapter ([d29cc81](https://github.com/mcthesw/TractorBeam/commit/d29cc81087cf646cfc8133a39443e72f6668ca68))
+* **client:** move config tests into a focused module ([63ca3f8](https://github.com/mcthesw/TractorBeam/commit/63ca3f86da2fde7500cebdeb42fd4b4704ba41e0))
+* **gui:** present smoothness through focused application modules ([419703a](https://github.com/mcthesw/TractorBeam/commit/419703a17a8efcb87b2cf1b6b620895e46ef95a3))
+* **injector:** isolate Windows elevation helpers ([4f1d0e3](https://github.com/mcthesw/TractorBeam/commit/4f1d0e38304b0a3d74f29d48cb054aece11fbeb8))
+* **ipc:** split codec and connection responsibilities ([e1b66c7](https://github.com/mcthesw/TractorBeam/commit/e1b66c72b3ad2ca3e2cb7d8811f5dd0f5109a5fd))
+* **native-hook:** move local IPC to owned worker ([97ffcf5](https://github.com/mcthesw/TractorBeam/commit/97ffcf5bd41e62dd55500763e7de30d9e7d96cfe))
+* **protocol:** remove Relay Protocol v1 ([13946fc](https://github.com/mcthesw/TractorBeam/commit/13946fc37853446eb5614294c0963a0b359502c7))
+* **relay:** isolate protocol v1 and add size metrics ([d616d0d](https://github.com/mcthesw/TractorBeam/commit/d616d0d302b8b07c51af184be99932717abda00c))
+* **relay:** remove v1 runtime and simplify observability ([d9a95b9](https://github.com/mcthesw/TractorBeam/commit/d9a95b9840e4f518dc9e510a0e49283438d537e2))
+
+
+### Documentation
+
+* define input delay terminology ([77f8848](https://github.com/mcthesw/TractorBeam/commit/77f8848c95245dece8c91d4426b53d1bfadb0938))
+* document relay and client quality contracts ([af469f4](https://github.com/mcthesw/TractorBeam/commit/af469f42a5160bf467982bb004e672ec21a1bb03))
+* document runtime and protocol boundaries ([34e6040](https://github.com/mcthesw/TractorBeam/commit/34e60409a5b05f8fa934d7ea6bc051c5e3465869))
+* **protocol:** record the Relay Protocol v2 decisions ([1fe0e9f](https://github.com/mcthesw/TractorBeam/commit/1fe0e9ffc4e9f0cb602d6e0d6a131165f36327d9))
+* **protocol:** sync Relay v2 architecture and contracts ([d7f1710](https://github.com/mcthesw/TractorBeam/commit/d7f17101d95e8f5a38031873b56cd01a03f24d0a))
+* **relay:** document observability operations ([9858c63](https://github.com/mcthesw/TractorBeam/commit/9858c6381678a08ce573a7e4788d50da4d6bbcac))
+* **relay:** document structured log collection ([09338b6](https://github.com/mcthesw/TractorBeam/commit/09338b6f67c5d486cab844460a9d488000bf107f))
+* **spec:** codify the Relay Protocol v2 contract ([c640129](https://github.com/mcthesw/TractorBeam/commit/c6401296fe9dfc3b534fe0af516eb71d49b0d543))
+
 ## [0.2.1](https://github.com/mcthesw/TractorBeam/compare/v0.2.0...v0.2.1) (2026-07-05)
 
 

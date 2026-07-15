@@ -17,7 +17,7 @@ use tractor_beam_core::{
 use helpers::*;
 
 use super::{
-    BridgeApp,
+    BridgeApp, RouteChoice, route_switch_allowed,
     status::{connection_profile_label, quality_label, smoothness_summary},
     widgets::{account_label, detail_counters, help_icon, label_with_help, selected_account_label},
 };
@@ -28,7 +28,30 @@ impl BridgeApp {
         ui.add_space(8.0);
 
         ui.add_enabled_ui(self.mutations_enabled(), |ui| {
-            self.relay_section(ui);
+            label_with_help(ui, t!("route"), t!("help.route"));
+            let route_before = self.route;
+            let can_switch = route_switch_allowed(
+                self.application_snapshot.lan_room.is_some(),
+                self.client_state().status,
+            );
+            ui.add_enabled_ui(can_switch, |ui| {
+                ui.horizontal(|ui| {
+                    ui.radio_value(
+                        &mut self.route,
+                        RouteChoice::ExternalRelay,
+                        t!("route.relay"),
+                    );
+                    ui.radio_value(&mut self.route, RouteChoice::LanDirect, t!("route.lan"));
+                });
+            });
+            if self.route != route_before {
+                self.lan_create_dialog_open = false;
+                self.join_code_message = None;
+            }
+            ui.add_space(6.0);
+            if self.route == RouteChoice::ExternalRelay {
+                self.relay_section(ui);
+            }
             ui.add_space(8.0);
 
             self.steam_section(ui);
@@ -44,7 +67,11 @@ impl BridgeApp {
         self.hook_progress_ui(ui);
         ui.add_space(8.0);
 
-        self.room_members_ui(ui);
+        if self.route == RouteChoice::LanDirect {
+            self.lan_room_ui(ui);
+        } else {
+            self.room_members_ui(ui);
+        }
     }
 
     fn relay_section(&mut self, ui: &mut egui::Ui) {
@@ -147,42 +174,132 @@ impl BridgeApp {
     }
 
     fn join_code_ui(&mut self, ui: &mut egui::Ui) {
-        let join_code_label = t!("join_code");
-        let copy_label = t!("join_code.copy");
-        let import_label = t!("join_code.import");
-        let generate_label = t!("room.generate");
+        let lan_direct = self.route == RouteChoice::LanDirect;
+        let lan_room_active = self.application_snapshot.lan_room.is_some();
+        let join_code_label = if lan_direct {
+            t!("lan.join_code")
+        } else {
+            t!("relay.join_code")
+        };
+        let join_code_help = if lan_direct {
+            t!("help.lan_join_code")
+        } else {
+            t!("help.join_code")
+        };
+        label_with_help(ui, join_code_label, join_code_help);
         ui.horizontal(|ui| {
-            ui.label(join_code_label);
-            help_icon(ui, t!("help.join_code"));
-        });
-        ui.horizontal(|ui| {
-            if ui.button(copy_label).clicked() {
-                match self.copy_join_code() {
-                    Ok(code) => {
-                        ui.ctx().copy_text(code);
+            if lan_direct {
+                if ui
+                    .add_enabled(
+                        lan_room_active || self.mutations_enabled(),
+                        egui::Button::new(t!("join_code.copy")),
+                    )
+                    .clicked()
+                {
+                    if let Some(room) = &self.application_snapshot.lan_room {
+                        ui.ctx().copy_text(room.invitation_code.clone());
                         self.join_code_message = Some(t!("join_code.copied").into_owned());
-                    }
-                    Err(error) => {
-                        self.join_code_message =
-                            Some(format!("{}: {error}", t!("join_code.invalid")));
+                    } else if !self.application.enumerate_lan_adapters() {
+                        self.show_busy_status();
                     }
                 }
-            }
-            if ui.button(import_label).clicked() {
-                self.read_join_code_from_clipboard();
-            }
-            if ui
-                .add_enabled(self.mutations_enabled(), egui::Button::new(generate_label))
-                .clicked()
-            {
-                self.session_credential = SessionCredential::generate();
-                self.join_code_input.clear();
-                self.join_code_message = Some(t!("room.generated").into_owned());
+                if ui
+                    .add_enabled(
+                        !lan_room_active && self.mutations_enabled(),
+                        egui::Button::new(t!("join_code.import")),
+                    )
+                    .clicked()
+                {
+                    self.read_join_code_from_clipboard();
+                }
+            } else {
+                if ui.button(t!("join_code.copy")).clicked() {
+                    match self.copy_join_code() {
+                        Ok(code) => {
+                            ui.ctx().copy_text(code);
+                            self.join_code_message = Some(t!("join_code.copied").into_owned());
+                        }
+                        Err(error) => {
+                            self.join_code_message =
+                                Some(format!("{}: {error}", t!("join_code.invalid")));
+                        }
+                    }
+                }
+                if ui.button(t!("join_code.import")).clicked() {
+                    self.read_join_code_from_clipboard();
+                }
+                if ui
+                    .add_enabled(
+                        self.mutations_enabled(),
+                        egui::Button::new(t!("room.generate")),
+                    )
+                    .clicked()
+                {
+                    self.session_credential = SessionCredential::generate();
+                    self.join_code_input.clear();
+                    self.join_code_message = Some(t!("room.generated").into_owned());
+                }
             }
         });
         if let Some(message) = &self.join_code_message {
             ui.add_space(4.0);
             ui.label(message);
+        }
+    }
+
+    fn lan_room_ui(&self, ui: &mut egui::Ui) {
+        let Some(room) = &self.application_snapshot.lan_room else {
+            ui.label(t!("lan.no_room"));
+            return;
+        };
+        ui.separator();
+        ui.heading(t!("lan.peers"));
+        if room.peers.is_empty() {
+            ui.label(t!("room.empty"));
+        }
+        for peer in &room.peers {
+            let path = room
+                .paths
+                .iter()
+                .find(|path| path.peer == peer.peer.identity);
+            ui.horizontal(|ui| {
+                ui.label(
+                    peer.peer
+                        .display_name
+                        .as_deref()
+                        .unwrap_or(t!("display_name").as_ref()),
+                );
+                ui.label(match peer.connection {
+                    tractor_beam_core::LanPeerConnectionState::Discovered => {
+                        t!("lan.peer_discovered")
+                    }
+                    tractor_beam_core::LanPeerConnectionState::Connected => {
+                        t!("lan.peer_connected")
+                    }
+                    tractor_beam_core::LanPeerConnectionState::Reconnecting => {
+                        t!("lan.peer_reconnecting")
+                    }
+                });
+                ui.label(path.map_or_else(
+                    || t!("lan.path_unavailable").into_owned(),
+                    |path| match path.status {
+                        tractor_beam_core::LanPeerPathStatus::Checking => {
+                            t!("lan.path_checking").into_owned()
+                        }
+                        tractor_beam_core::LanPeerPathStatus::Usable => {
+                            t!("lan.path_usable").into_owned()
+                        }
+                        tractor_beam_core::LanPeerPathStatus::Unavailable => {
+                            t!("lan.path_unavailable").into_owned()
+                        }
+                    },
+                ));
+                if let Some(path) =
+                    path.and_then(|path| path.local_endpoint.zip(path.remote_endpoint))
+                {
+                    ui.monospace(format!("{} → {}", path.0, path.1));
+                }
+            });
         }
     }
 

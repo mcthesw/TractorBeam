@@ -122,7 +122,8 @@ impl BridgeApp {
                 | ApplicationOperation::WritingInputDelay
                 | ApplicationOperation::OpeningLogs
                 | ApplicationOperation::ExportingTroubleshootingPackage
-                | ApplicationOperation::ReadingClipboard => t!("status.working"),
+                | ApplicationOperation::ReadingClipboard
+                | ApplicationOperation::ConfiguringLan => t!("status.working"),
             };
         }
         match &self.client_state().relay_link {

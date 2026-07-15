@@ -85,13 +85,79 @@ impl BridgeApp {
                 Ok(_) => {
                     self.join_code_input.clear();
                     self.join_code_message = None;
+                    self.lan_probe_results.clear();
+                    self.selected_lan_probe = None;
+                    self.pending_lan_invitation = None;
                     self.join_code_dialog_open = true;
                 }
                 Err(error) => {
                     tracing::debug!(error = %error, "Clipboard text unavailable; opening manual Join Code input");
                     self.join_code_input.clear();
                     self.join_code_message = None;
+                    self.lan_probe_results.clear();
+                    self.selected_lan_probe = None;
+                    self.pending_lan_invitation = None;
                     self.join_code_dialog_open = true;
+                }
+            },
+            ApplicationEvent::LanAdaptersEnumerated(result) => match result {
+                Ok(adapters) if !adapters.is_empty() => {
+                    self.lan_adapters = default_lan_adapter_selection(adapters);
+                    self.lan_create_dialog_open = true;
+                    self.join_code_message = None;
+                }
+                Ok(_) => self.join_code_message = Some(t!("lan.no_adapters").into_owned()),
+                Err(error) => {
+                    self.join_code_message = Some(format!("{}: {error}", t!("lan.adapters_failed")))
+                }
+            },
+            ApplicationEvent::LanProbeFinished(result) => match result {
+                Ok((_, results))
+                    if lan_probe_disposition(results.len())
+                        == LanProbeDisposition::NoneReachable =>
+                {
+                    self.join_code_message = Some(t!("lan.probe_none").into_owned());
+                }
+                Ok((invitation, results))
+                    if lan_probe_disposition(results.len()) == LanProbeDisposition::JoinOne =>
+                {
+                    let endpoint = results[0].endpoint;
+                    self.pending_lan_invitation = Some(invitation.clone());
+                    self.join_lan_room(invitation, endpoint);
+                }
+                Ok((invitation, results)) => {
+                    self.pending_lan_invitation = Some(invitation);
+                    self.lan_probe_results = results;
+                    self.selected_lan_probe = Some(0);
+                    self.join_code_dialog_open = true;
+                }
+                Err(error) => {
+                    self.join_code_message = Some(format!("{}: {error}", t!("lan.probe_failed")))
+                }
+            },
+            ApplicationEvent::LanRoomCreated(result) => match result {
+                Ok(code) => {
+                    self.route = RouteChoice::LanDirect;
+                    self.join_code_message = Some(t!("lan.created").into_owned());
+                    self.lan_create_dialog_open = false;
+                    self.pending_lan_invitation =
+                        JoinCode::decode(&code).ok().and_then(|code| match code {
+                            JoinCode::LanDirect(code) => Some(code),
+                            _ => None,
+                        });
+                }
+                Err(error) => {
+                    self.join_code_message = Some(format!("{}: {error}", t!("lan.create_failed")))
+                }
+            },
+            ApplicationEvent::LanRoomJoined(result) => match result {
+                Ok(()) => {
+                    self.route = RouteChoice::LanDirect;
+                    self.join_code_dialog_open = false;
+                    self.join_code_message = Some(t!("lan.joined").into_owned());
+                }
+                Err(error) => {
+                    self.join_code_message = Some(format!("{}: {error}", t!("lan.join_failed")))
                 }
             },
             ApplicationEvent::SelectionSaveFailed(error) => {

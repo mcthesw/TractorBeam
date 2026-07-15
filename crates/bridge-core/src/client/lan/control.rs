@@ -34,7 +34,7 @@ use super::{
     membership::Membership,
     path::{LanPeerPathState, PathManager},
 };
-use crate::client::{LanJoinCode, SessionCredential};
+use crate::client::{LanJoinCode, LogLevel, SessionCredential, emit_client_log_event};
 
 const CONTROL_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
 pub(super) const CONTROL_TOTAL_TIMEOUT: Duration = Duration::from_secs(3);
@@ -108,24 +108,63 @@ impl LanControlPlane {
 
         let mut seen = HashSet::new();
         let mut bound = Vec::with_capacity(adapters.len());
-        for (index, adapter) in adapters.iter().enumerate() {
+        let mut last_bind_error = None;
+        let mut skipped_bind_count = 0usize;
+        for adapter in adapters {
             let bind_address = scoped_address(adapter, 0);
             if !seen.insert(bind_address) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("duplicate LAN adapter address: {}", adapter.address),
-                ));
+                continue;
             }
-            let listener = TcpListener::bind(bind_address).await?;
-            let endpoint = listener.local_addr()?;
-            let data_socket = Arc::new(UdpSocket::bind(bind_address).await?);
-            let priority = u32::try_from(adapters.len() - index).unwrap_or(1).max(1);
-            bound.push((
-                listener,
-                data_socket,
-                HostCandidate::new(endpoint, priority, 0).map_err(io::Error::other)?,
+            match bind_adapter(bind_address).await {
+                Ok(candidate) => bound.push(candidate),
+                Err(error) => {
+                    skipped_bind_count = skipped_bind_count.saturating_add(1);
+                    last_bind_error = Some(error);
+                }
+            }
+        }
+        if bound.is_empty() {
+            return Err(last_bind_error.map_or_else(
+                || {
+                    io::Error::new(
+                        io::ErrorKind::AddrNotAvailable,
+                        "none of the selected LAN adapter addresses is available",
+                    )
+                },
+                |error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!("none of the selected LAN adapter addresses is available: {error}"),
+                    )
+                },
             ));
         }
+        if skipped_bind_count > 0 {
+            let last_error = last_bind_error
+                .as_ref()
+                .map_or_else(|| "unknown error".to_owned(), ToString::to_string);
+            emit_client_log_event(
+                None,
+                None,
+                LogLevel::Info,
+                &format!(
+                    "Ignored {skipped_bind_count} unavailable LAN adapter address(es); bound {}: {last_error}",
+                    bound.len()
+                ),
+            );
+        }
+
+        let bound_count = bound.len();
+        let bound = bound
+            .into_iter()
+            .enumerate()
+            .map(|(index, (listener, data_socket, endpoint))| {
+                let priority = u32::try_from(bound_count - index).unwrap_or(1).max(1);
+                HostCandidate::new(endpoint, priority, 0)
+                    .map(|candidate| (listener, data_socket, candidate))
+                    .map_err(io::Error::other)
+            })
+            .collect::<io::Result<Vec<_>>>()?;
 
         let control_endpoints = bound
             .iter()
@@ -145,11 +184,7 @@ impl LanControlPlane {
         let cancellation = CancellationToken::new();
         let path_sockets = bound
             .iter()
-            .enumerate()
-            .map(|(index, (_, socket, _))| {
-                let priority = u32::try_from(adapters.len() - index).unwrap_or(1).max(1);
-                (socket.clone(), priority)
-            })
+            .map(|(_, socket, candidate)| (socket.clone(), candidate.priority))
             .collect();
         let (paths, inbound) =
             PathManager::new(identity, path_sockets, cancellation.clone()).await?;
@@ -353,6 +388,15 @@ impl LanControlPlane {
         tokio::task::yield_now().await;
         self.cancellation.cancel();
     }
+}
+
+async fn bind_adapter(
+    bind_address: SocketAddr,
+) -> io::Result<(TcpListener, Arc<UdpSocket>, SocketAddr)> {
+    let listener = TcpListener::bind(bind_address).await?;
+    let endpoint = listener.local_addr()?;
+    let data_socket = Arc::new(UdpSocket::bind(bind_address).await?);
+    Ok((listener, data_socket, endpoint))
 }
 
 impl std::fmt::Debug for LanControlPlane {

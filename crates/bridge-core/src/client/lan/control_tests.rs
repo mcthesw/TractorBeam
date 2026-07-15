@@ -93,6 +93,58 @@ async fn invitation_is_created_only_after_tcp_and_udp_bind() {
 }
 
 #[tokio::test]
+async fn unavailable_adapter_addresses_are_ignored_when_one_can_bind() {
+    let credential = SessionCredential::from_bytes([7; 16]);
+    let unavailable = LanAdapterAddress {
+        adapter_id: "unavailable".to_owned(),
+        name: "Unavailable adapter".to_owned(),
+        address: "192.0.2.1".parse().unwrap(),
+        interface_index: 1,
+    };
+    let room = LanControlPlane::create(
+        identity(1),
+        "Alice".to_owned(),
+        credential,
+        &[unavailable, loopback_adapter(1)],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(room.control_endpoints().len(), 1);
+    assert!(room.control_endpoints()[0].ip().is_loopback());
+    room.shutdown().await;
+}
+
+#[tokio::test]
+async fn creation_fails_when_no_selected_address_can_bind() {
+    let unavailable = LanAdapterAddress {
+        adapter_id: "unavailable".to_owned(),
+        name: "Unavailable adapter".to_owned(),
+        address: "192.0.2.1".parse().unwrap(),
+        interface_index: 1,
+    };
+    let result = LanControlPlane::create(
+        identity(1),
+        "Alice".to_owned(),
+        SessionCredential::from_bytes([7; 16]),
+        &[unavailable],
+    )
+    .await;
+
+    match result {
+        Err(error) => assert!(
+            error
+                .to_string()
+                .starts_with("none of the selected LAN adapter addresses is available")
+        ),
+        Ok(room) => {
+            room.shutdown().await;
+            panic!("documentation address unexpectedly bound")
+        }
+    }
+}
+
+#[tokio::test]
 async fn probe_is_bounded_non_mutating_and_credential_scoped() {
     let credential = SessionCredential::from_bytes([7; 16]);
     let room = LanControlPlane::create(

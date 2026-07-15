@@ -32,8 +32,8 @@ pub use readiness::{
 
 pub(super) const PROBE_A_STEAM: &str = "76561198000000101";
 pub(super) const PROBE_B_STEAM: &str = "76561198000000102";
-pub const DEFAULT_RELAY_PROBE_PAYLOAD_BYTES: usize = 1_800;
-pub(super) const MAX_RELAY_PROBE_PAYLOAD_BYTES: usize = 60_000;
+pub const DEFAULT_RELAY_PROBE_PAYLOAD_BYTES: usize = crate::protocol::MAX_DATA_PAYLOAD;
+pub(super) const MAX_RELAY_PROBE_PAYLOAD_BYTES: usize = crate::protocol::MAX_DATA_PAYLOAD;
 const DATA_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -420,6 +420,15 @@ mod tests {
         );
 
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn accepts_protocol_maximum_relay_probe_payload() {
+        assert!(validate_probe_payload(MAX_RELAY_PROBE_PAYLOAD_BYTES).is_ok());
+        assert_eq!(
+            MAX_RELAY_PROBE_PAYLOAD_BYTES,
+            crate::protocol::MAX_DATA_PAYLOAD
+        );
     }
 
     #[test]

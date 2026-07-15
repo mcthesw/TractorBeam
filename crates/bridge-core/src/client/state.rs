@@ -231,17 +231,17 @@ impl ClientIncidentSnapshot {
 fn data_plane_stalled(health: &SessionHealthSnapshot) -> bool {
     health.elapsed_seconds >= DATA_PLANE_STALL_MIN_ELAPSED_SECONDS
         && ((health.hook_in_recv.packets >= DATA_PLANE_STALL_MIN_PACKETS
-            && health.relay_recv.packets == 0)
-            || (health.relay_recv.packets >= DATA_PLANE_STALL_MIN_PACKETS
+            && health.network_recv.packets == 0)
+            || (health.network_recv.packets >= DATA_PLANE_STALL_MIN_PACKETS
                 && health.hook_out_send_duration.count == 0))
 }
 
 fn incident_summary(kind: ClientIncidentKind, health: &SessionHealthSnapshot) -> String {
     let base = format!(
-        "elapsed={}s hook_in={} relay_recv={} hook_out_sends={} rtt_sent={} rtt_recv={} rtt_timeout={} queue_drops={} seq_gaps={}",
+        "elapsed={}s hook_in={} network_recv={} hook_out_sends={} rtt_sent={} rtt_recv={} rtt_timeout={} queue_drops={} seq_gaps={}",
         health.elapsed_seconds,
         health.hook_in_recv.packets,
-        health.relay_recv.packets,
+        health.network_recv.packets,
         health.hook_out_send_duration.count,
         health.runtime_rtt.sent,
         health.runtime_rtt.received,

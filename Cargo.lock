@@ -4278,7 +4278,7 @@ dependencies = [
 
 [[package]]
 name = "tractor-beam-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "backon",
  "bs58",
@@ -4310,7 +4310,7 @@ dependencies = [
 
 [[package]]
 name = "tractor-beam-direct-protocol"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "serde",
@@ -4320,7 +4320,7 @@ dependencies = [
 
 [[package]]
 name = "tractor-beam-gui"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "arboard",
  "chrono",
@@ -4338,7 +4338,7 @@ dependencies = [
 
 [[package]]
 name = "tractor-beam-hook-ipc"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "postcard",
  "serde",
@@ -4347,7 +4347,7 @@ dependencies = [
 
 [[package]]
 name = "tractor-beam-isaac-injector"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "clap",
  "sysinfo",
@@ -4357,7 +4357,7 @@ dependencies = [
 
 [[package]]
 name = "tractor-beam-native-hook"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "interprocess",
  "tractor-beam-hook-ipc",
@@ -4366,7 +4366,7 @@ dependencies = [
 
 [[package]]
 name = "tractor-beam-relay"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "argh",
  "bs58",
@@ -4391,7 +4391,7 @@ dependencies = [
 
 [[package]]
 name = "tractor-beam-relay-protocol"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "serde",

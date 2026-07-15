@@ -86,5 +86,5 @@ designed incompatible v3.
 UDP duplication/deduplication or hop-by-hop UDP FEC may wrap complete v2 Data
 Frames later. They must be negotiated on the control plane, remain bounded by
 Relay packet/byte limits, and must not change Native Hook packet semantics.
-Specified-LAN/direct-peer work from issue #38 is also a separate route adapter;
+Direct LAN work from issue #38 is implemented as a separate route adapter;
 v2 does not choose that topology in advance.

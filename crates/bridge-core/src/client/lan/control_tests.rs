@@ -1,7 +1,7 @@
 use tractor_beam_direct_protocol::InstanceId;
 
 use super::*;
-use crate::client::LanPeerPathStatus;
+use crate::client::{LanPeerPathStatus, packet_flow::OutboundGamePacket};
 
 fn loopback_adapter(id: u32) -> LanAdapterAddress {
     LanAdapterAddress {
@@ -61,6 +61,16 @@ async fn wait_usable_paths(room: &LanControlPlane, expected: usize) {
     })
     .await;
     assert!(result.is_ok(), "path states: {:?}", room.path_states());
+}
+
+fn game_packet(target: u64, sequence: u32, payload: &'static [u8]) -> OutboundGamePacket {
+    OutboundGamePacket {
+        to_steam_id64: target,
+        source_sequence: sequence,
+        channel: 3,
+        send_type: 1,
+        payload: bytes::Bytes::from_static(payload),
+    }
 }
 
 #[tokio::test]
@@ -244,4 +254,59 @@ async fn abrupt_pair_loss_recovers_without_restarting_room() {
     wait_connected(&bob, 1).await;
     alice.shutdown().await;
     bob.shutdown().await;
+}
+
+#[tokio::test]
+async fn direct_gameplay_is_targeted_bounded_and_drops_stale_sequence() {
+    let credential = SessionCredential::from_bytes([12; 16]);
+    let alice = room(1, credential).await;
+    let bob = room(2, credential).await;
+    let carol = room(3, credential).await;
+    let mut alice_inbound = alice.take_inbound().unwrap();
+    let mut bob_inbound = bob.take_inbound().unwrap();
+    let mut carol_inbound = carol.take_inbound().unwrap();
+    let invitation = alice.invitation();
+    bob.join(&invitation, invitation.control_endpoints[0])
+        .await
+        .unwrap();
+    carol
+        .join(&invitation, invitation.control_endpoints[0])
+        .await
+        .unwrap();
+    wait_usable_paths(&alice, 2).await;
+    wait_usable_paths(&bob, 2).await;
+    wait_usable_paths(&carol, 2).await;
+
+    alice
+        .send_game(game_packet(identity(2).steam_id64, 7, b"hello"))
+        .await
+        .unwrap();
+    let received = time::timeout(Duration::from_secs(2), bob_inbound.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(received.from_steam_id64, identity(1).steam_id64);
+    assert_eq!(received.source_sequence, 7);
+    assert_eq!(received.channel, 3);
+    assert_eq!(received.send_type, 1);
+    assert_eq!(received.payload, bytes::Bytes::from_static(b"hello"));
+    assert!(carol_inbound.try_recv().is_err());
+
+    alice
+        .send_game(game_packet(identity(2).steam_id64, 7, b"stale"))
+        .await
+        .unwrap();
+    time::sleep(Duration::from_millis(100)).await;
+    assert!(bob_inbound.try_recv().is_err());
+    assert!(
+        alice
+            .send_game(game_packet(99, 8, b"missing"))
+            .await
+            .is_err()
+    );
+    assert!(alice_inbound.try_recv().is_err());
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+    carol.shutdown().await;
 }

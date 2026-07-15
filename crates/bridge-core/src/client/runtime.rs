@@ -3,7 +3,10 @@ use std::{fs, io};
 use super::{
     ConfigError, InputDelayError, LoadedClientConfig, RelayEndpoint, SessionConfig, SessionMode,
     SessionRouteConfig, hook_config, hook_ipc,
-    logging::{ClientLogSink, ClientSessionLog, ClientSessionLogContext, TracingClientLogSink},
+    logging::{
+        ClientLogSink, ClientSessionLog, ClientSessionLogContext, ClientSessionLogRoute,
+        TracingClientLogSink,
+    },
     probe, session,
     state::{self, log_entry, trim_logs},
 };
@@ -250,15 +253,13 @@ impl BridgeClient {
 
     pub fn start_session(&mut self, config: &SessionConfig) -> Result<(), ClientError> {
         config.validate()?;
-        let relay_route = match &config.route {
-            SessionRouteConfig::ExternalRelay(route) => route,
-            SessionRouteConfig::LanDirect(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "Direct LAN sessions are not available in this build",
-                )
-                .into());
-            }
+        let log_route = match &config.route {
+            SessionRouteConfig::ExternalRelay(route) => ClientSessionLogRoute::ExternalRelay {
+                relay_name: route.relay_name.clone(),
+                relay: route.relay.clone(),
+                transport: route.transport,
+            },
+            SessionRouteConfig::LanDirect(_) => ClientSessionLogRoute::LanDirect,
         };
         self.stop_session();
         self.state.last_stop_reason = None;
@@ -280,9 +281,7 @@ impl BridgeClient {
         self.active_session_log = self
             .log_sink
             .start_session(ClientSessionLogContext {
-                relay_name: relay_route.relay_name.clone(),
-                relay: relay_route.relay.clone(),
-                transport: relay_route.transport,
+                route: log_route,
                 mode: config.mode,
             })
             .ok();
@@ -347,17 +346,18 @@ impl BridgeClient {
         self.state.active_session_mode = Some(config.mode);
         self.log(LogLevel::Info, format!("Starting {} session", config.mode));
         if config.mode != SessionMode::Official {
-            if let Some(name) = &relay_route.relay_name {
-                self.log(LogLevel::Info, format!("Relay preset: {name}"));
+            match &config.route {
+                SessionRouteConfig::ExternalRelay(route) => {
+                    if let Some(name) = &route.relay_name {
+                        self.log(LogLevel::Info, format!("Relay preset: {name}"));
+                    }
+                    self.log(LogLevel::Info, format!("Relay endpoint: {}", route.relay));
+                    self.log(LogLevel::Info, format!("Transport: {}", route.transport));
+                }
+                SessionRouteConfig::LanDirect(_) => {
+                    self.log(LogLevel::Info, "Session route: direct LAN");
+                }
             }
-            self.log(
-                LogLevel::Info,
-                format!("Relay endpoint: {}", relay_route.relay),
-            );
-            self.log(
-                LogLevel::Info,
-                format!("Transport: {}", relay_route.transport),
-            );
         }
         self.log(
             LogLevel::Info,

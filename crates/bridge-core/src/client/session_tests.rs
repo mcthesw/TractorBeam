@@ -1,5 +1,6 @@
 use std::{
     io,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -109,6 +110,60 @@ async fn official_mode_owns_a_cancellable_process_lifecycle_task() {
     assert!(tasks.health.is_none());
     cancellation.cancel();
     shutdown_tasks(tasks.support, &event_tx).await;
+}
+
+#[tokio::test]
+async fn lan_mode_attaches_existing_room_without_relay() {
+    let credential = super::super::SessionCredential::from_bytes([21; 16]);
+    let room = Arc::new(
+        super::super::LanControlPlane::create(
+            tractor_beam_direct_protocol::PeerIdentity::new(
+                76_561_198_000_000_001,
+                tractor_beam_direct_protocol::InstanceId::from_bytes([1; 16]),
+            ),
+            "Test".to_owned(),
+            credential,
+            &[super::super::LanAdapterAddress {
+                adapter_id: "test-loopback".to_owned(),
+                name: "Loopback".to_owned(),
+                address: "127.0.0.1".parse().unwrap(),
+                interface_index: 1,
+            }],
+        )
+        .await
+        .unwrap(),
+    );
+    let config = SessionConfig {
+        route: super::super::SessionRouteConfig::LanDirect(super::super::LanDirectConfig {
+            session_credential: credential,
+            room: Some(room.clone()),
+        }),
+        mode: super::super::SessionMode::Pure,
+        steam_id64: "76561198000000001".to_owned(),
+        display_name: "Test".to_owned(),
+        session_health: super::super::SessionHealthConfig::default(),
+    };
+    let cancellation = CancellationToken::new();
+    let (event_tx, _event_rx) = tokio_mpsc::channel(EVENT_QUEUE_CAPACITY);
+    let (_control, control_rx) = hook_ipc::control_channel();
+    let tasks = start_runtime_tasks_inner(
+        &config,
+        Some(SessionNativeHook::new(
+            test_native_hook_paths(),
+            HookIpcSession::test(),
+        )),
+        Some(control_rx),
+        &cancellation,
+        &event_tx,
+    )
+    .await
+    .unwrap();
+
+    assert!(!tasks.route.is_empty());
+    cancellation.cancel();
+    shutdown_tasks(tasks.route, &event_tx).await;
+    shutdown_tasks(tasks.support, &event_tx).await;
+    room.stop().await;
 }
 
 fn test_session_config(port: u16) -> SessionConfig {

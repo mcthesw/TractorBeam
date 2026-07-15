@@ -171,7 +171,8 @@ pub(super) fn run_connection(
                     ),
                     HookToClient::Goodbye => {
                         reject_pending(&mut pending);
-                        return Ok(ConnectionEnd::Disconnected);
+                        context.cancellation.cancel();
+                        return Ok(ConnectionEnd::Shutdown);
                     }
                 },
                 Err(error) if is_disconnect(&error) => {

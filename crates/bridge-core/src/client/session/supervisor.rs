@@ -172,7 +172,8 @@ pub(super) async fn start_runtime_tasks_inner(
     let (outbound_tx, outbound_rx) = tokio_mpsc::channel(PACKET_QUEUE_CAPACITY);
     let health = config.session_health.enabled.then(|| {
         Arc::new(Mutex::new(SessionHealth::new(
-            config.session_health.runtime_rtt_enabled,
+            config.session_health.runtime_rtt_enabled
+                && matches!(&config.route, SessionRouteConfig::ExternalRelay(_)),
             Duration::from_secs(config.session_health.runtime_rtt_timeout_seconds),
             Instant::now(),
         )))
@@ -214,9 +215,6 @@ pub(super) async fn start_runtime_tasks_inner(
                     event_tx: event_tx.clone(),
                     cancellation: cancellation.clone(),
                     health: health.clone(),
-                    health_snapshot_interval: Duration::from_secs(
-                        config.session_health.snapshot_interval_seconds,
-                    ),
                     runtime_rtt_interval: Duration::from_secs(
                         config.session_health.runtime_rtt_interval_seconds,
                     ),
@@ -246,6 +244,7 @@ pub(super) async fn start_runtime_tasks_inner(
                 outbound_rx,
                 event_tx.clone(),
                 cancellation.clone(),
+                health.clone(),
             ));
             send_event(
                 event_tx,
@@ -254,6 +253,14 @@ pub(super) async fn start_runtime_tasks_inner(
             inbound_rx
         }
     };
+    if health.is_some() {
+        tasks.spawn(health_snapshot_task(
+            event_tx.clone(),
+            cancellation.clone(),
+            health.clone(),
+            Duration::from_secs(config.session_health.snapshot_interval_seconds),
+        ));
+    }
     tasks.spawn(hook_out_task(
         to_hook,
         inbound_rx,

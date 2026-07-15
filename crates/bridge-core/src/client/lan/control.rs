@@ -75,6 +75,7 @@ pub struct LanControlPlane {
     cancellation: CancellationToken,
     listener_tasks: Vec<JoinHandle<()>>,
     background_tasks: Vec<JoinHandle<()>>,
+    inbound: Mutex<Option<mpsc::Receiver<crate::client::packet_flow::InboundGamePacket>>>,
 }
 
 pub(super) struct ControlShared {
@@ -150,7 +151,8 @@ impl LanControlPlane {
                 (socket.clone(), priority)
             })
             .collect();
-        let paths = PathManager::new(identity, path_sockets, cancellation.clone()).await?;
+        let (paths, inbound) =
+            PathManager::new(identity, path_sockets, cancellation.clone()).await?;
         let (dial_tx, dial_rx) = mpsc::unbounded_channel();
         let shared = Arc::new(ControlShared {
             session_proof: session_proof(session_credential),
@@ -174,6 +176,7 @@ impl LanControlPlane {
             cancellation,
             listener_tasks,
             background_tasks,
+            inbound: Mutex::new(Some(inbound)),
         })
     }
 
@@ -261,6 +264,27 @@ impl LanControlPlane {
         self.shared.paths.states()
     }
 
+    pub(in crate::client) async fn send_game(
+        &self,
+        packet: crate::client::packet_flow::OutboundGamePacket,
+    ) -> Result<(), super::path::LanGameSendError> {
+        self.shared.paths.send_game(packet).await
+    }
+
+    pub(in crate::client) fn take_inbound(
+        &self,
+    ) -> Option<mpsc::Receiver<crate::client::packet_flow::InboundGamePacket>> {
+        self.inbound
+            .lock()
+            .expect("LAN inbound queue lock poisoned")
+            .take()
+    }
+
+    #[must_use]
+    pub fn uses_credential(&self, credential: SessionCredential) -> bool {
+        self.session_credential == credential
+    }
+
     #[cfg(test)]
     fn test_link_id(&self, identity: PeerIdentity) -> Option<LinkId> {
         self.shared
@@ -313,17 +337,31 @@ impl LanControlPlane {
     }
 
     pub async fn shutdown(mut self) {
-        for link in membership_links(&self.shared) {
-            let _ = link.sender.try_send(ControlMessage::Leave);
-        }
-        tokio::task::yield_now().await;
-        self.cancellation.cancel();
+        self.stop().await;
         for task in self.listener_tasks.drain(..) {
             let _ = task.await;
         }
         for task in self.background_tasks.drain(..) {
             let _ = task.await;
         }
+    }
+
+    pub async fn stop(&self) {
+        for link in membership_links(&self.shared) {
+            let _ = link.sender.try_send(ControlMessage::Leave);
+        }
+        tokio::task::yield_now().await;
+        self.cancellation.cancel();
+    }
+}
+
+impl std::fmt::Debug for LanControlPlane {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LanControlPlane")
+            .field("control_endpoints", &self.control_endpoints)
+            .field("session_credential", &"[REDACTED]")
+            .finish_non_exhaustive()
     }
 }
 

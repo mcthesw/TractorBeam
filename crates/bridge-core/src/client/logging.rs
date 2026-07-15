@@ -7,10 +7,18 @@ use super::{
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClientSessionLogContext {
-    pub relay_name: Option<String>,
-    pub relay: RelayEndpoint,
-    pub transport: TransportChoice,
+    pub route: ClientSessionLogRoute,
     pub mode: SessionMode,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ClientSessionLogRoute {
+    ExternalRelay {
+        relay_name: Option<String>,
+        relay: RelayEndpoint,
+        transport: TransportChoice,
+    },
+    LanDirect,
 }
 
 pub trait ClientLogSink: Debug + Send + Sync {
@@ -88,25 +96,38 @@ pub fn emit_client_log_event(
     level: LogLevel,
     message: &str,
 ) {
-    let relay_name = context.and_then(|context| context.relay_name.as_deref());
-    let relay = context.map(|context| context.relay.to_string());
-    let transport = context.map(|context| context.transport.to_string());
+    let route = context.map(|context| match context.route {
+        ClientSessionLogRoute::ExternalRelay { .. } => "external_relay",
+        ClientSessionLogRoute::LanDirect => "lan_direct",
+    });
+    let relay_name = context.and_then(|context| match &context.route {
+        ClientSessionLogRoute::ExternalRelay { relay_name, .. } => relay_name.as_deref(),
+        ClientSessionLogRoute::LanDirect => None,
+    });
+    let relay = context.and_then(|context| match &context.route {
+        ClientSessionLogRoute::ExternalRelay { relay, .. } => Some(relay.to_string()),
+        ClientSessionLogRoute::LanDirect => None,
+    });
+    let transport = context.and_then(|context| match context.route {
+        ClientSessionLogRoute::ExternalRelay { transport, .. } => Some(transport.to_string()),
+        ClientSessionLogRoute::LanDirect => None,
+    });
     let mode = context.map(|context| context.mode.to_string());
     match level {
         LogLevel::Trace => tracing::trace!(
-            session_id, relay_name, relay, transport, mode, "{}", message
+            session_id, route, relay_name, relay, transport, mode, "{}", message
         ),
         LogLevel::Debug => tracing::debug!(
-            session_id, relay_name, relay, transport, mode, "{}", message
+            session_id, route, relay_name, relay, transport, mode, "{}", message
         ),
         LogLevel::Info => tracing::info!(
-            session_id, relay_name, relay, transport, mode, "{}", message
+            session_id, route, relay_name, relay, transport, mode, "{}", message
         ),
         LogLevel::Warn => tracing::warn!(
-            session_id, relay_name, relay, transport, mode, "{}", message
+            session_id, route, relay_name, relay, transport, mode, "{}", message
         ),
         LogLevel::Error => tracing::error!(
-            session_id, relay_name, relay, transport, mode, "{}", message
+            session_id, route, relay_name, relay, transport, mode, "{}", message
         ),
     }
 }

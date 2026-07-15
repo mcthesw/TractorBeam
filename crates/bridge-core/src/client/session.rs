@@ -40,11 +40,13 @@ use super::{
 };
 
 mod data_plane;
+mod lan_route;
 
 use data_plane::{
     RelayTransportTaskContext, emit_health_summary, hook_in_task, hook_out_task,
     relay_transport_task,
 };
+use lan_route::lan_route_task;
 
 const EVENT_QUEUE_CAPACITY: usize = 512;
 const PACKET_QUEUE_CAPACITY: usize = 256;

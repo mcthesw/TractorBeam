@@ -33,8 +33,10 @@ pub use input_delay::{
 };
 pub use join_code::{JoinCode, JoinCodeError, LanJoinCode, RelayJoinCode, SessionCredential};
 pub use lan::{
-    LanAdapterAddress, LanControlPlane, LanPeerConnectionState, LanPeerPathState,
-    LanPeerPathStatus, LanPeerState, LanProbeResult, enumerate_lan_adapter_addresses,
+    LanAdapter, LanAdapterAddress, LanAdapterSelectionError, LanControlPlane,
+    LanPeerConnectionState, LanPeerPathState, LanPeerPathStatus, LanPeerState, LanProbeResult,
+    LanRoomHandle, MAX_SELECTED_LAN_ADAPTERS, default_lan_adapters,
+    enumerate_lan_adapter_addresses, enumerate_lan_adapters, lan_candidate_addresses,
 };
 pub use logging::{
     ClientLogSink, ClientSessionLog, ClientSessionLogContext, ClientSessionLogRoute,

@@ -11,9 +11,10 @@ use eframe::egui::{self, ScrollArea};
 use rust_i18n::t;
 use tractor_beam_core::{
     ClientConfigSelection, ConnectionProfile, ExternalRelayConfig, InputDelayError, JoinCode,
-    LightPingTarget, RelayEndpoint, RelayJoinCode, RelayPreset, RuntimeState, SessionConfig,
-    SessionCredential, SessionHealthConfig, SessionMode, SessionRouteConfig, SteamIdentity,
-    TransportChoice,
+    LanAdapter, LanDirectConfig, LanJoinCode, LanProbeResult, LightPingTarget, RelayEndpoint,
+    RelayJoinCode, RelayPreset, RuntimeState, SessionConfig, SessionCredential,
+    SessionHealthConfig, SessionMode, SessionRouteConfig, SessionStatus, SteamIdentity,
+    TransportChoice, default_lan_adapters,
 };
 
 use crate::{
@@ -76,6 +77,45 @@ enum Page {
     About,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum RouteChoice {
+    #[default]
+    ExternalRelay,
+    LanDirect,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LanProbeDisposition {
+    NoneReachable,
+    JoinOne,
+    Choose,
+}
+
+fn default_lan_adapter_selection(adapters: Vec<LanAdapter>) -> Vec<(LanAdapter, bool)> {
+    let defaults = default_lan_adapters(&adapters);
+    adapters
+        .into_iter()
+        .map(|adapter| {
+            let selected = defaults
+                .iter()
+                .any(|default| default.adapter_id == adapter.adapter_id);
+            (adapter, selected)
+        })
+        .collect()
+}
+
+fn lan_probe_disposition(result_count: usize) -> LanProbeDisposition {
+    match result_count {
+        0 => LanProbeDisposition::NoneReachable,
+        1 => LanProbeDisposition::JoinOne,
+        _ => LanProbeDisposition::Choose,
+    }
+}
+
+fn route_switch_allowed(lan_room_active: bool, status: SessionStatus) -> bool {
+    !lan_room_active && status == SessionStatus::Idle
+}
+
 pub struct BridgeApp {
     application: ApplicationHandle,
     application_snapshot: ApplicationSnapshot,
@@ -84,6 +124,7 @@ pub struct BridgeApp {
     language: Language,
     page: Page,
     relay_presets: Vec<RelayPreset>,
+    route: RouteChoice,
     selected_relay: Option<usize>,
     relay_host: String,
     relay_port: u16,
@@ -100,6 +141,11 @@ pub struct BridgeApp {
     join_code_dialog_open: bool,
     join_code_input: String,
     join_code_message: Option<String>,
+    lan_create_dialog_open: bool,
+    lan_adapters: Vec<(LanAdapter, bool)>,
+    pending_lan_invitation: Option<LanJoinCode>,
+    lan_probe_results: Vec<LanProbeResult>,
+    selected_lan_probe: Option<usize>,
     last_troubleshooting_package: Option<std::path::PathBuf>,
     session_health: SessionHealthConfig,
 }
@@ -121,6 +167,7 @@ impl BridgeApp {
             language,
             page: Page::Home,
             relay_presets: Vec::new(),
+            route: RouteChoice::ExternalRelay,
             selected_relay: None,
             relay_host: String::new(),
             relay_port: 25_910,
@@ -137,6 +184,11 @@ impl BridgeApp {
             join_code_dialog_open: false,
             join_code_input: String::new(),
             join_code_message: None,
+            lan_create_dialog_open: false,
+            lan_adapters: Vec::new(),
+            pending_lan_invitation: None,
+            lan_probe_results: Vec::new(),
+            selected_lan_probe: None,
             last_troubleshooting_package: None,
             session_health: SessionHealthConfig::default(),
         }
@@ -191,13 +243,25 @@ impl BridgeApp {
 
     fn session_config(&self) -> SessionConfig {
         let (steam_id64, display_name) = self.current_identity();
-        SessionConfig {
-            route: SessionRouteConfig::ExternalRelay(ExternalRelayConfig {
+        let route = match self.route {
+            RouteChoice::ExternalRelay => SessionRouteConfig::ExternalRelay(ExternalRelayConfig {
                 relay: RelayEndpoint::new(self.relay_host.trim(), self.relay_port),
                 relay_name: self.selected_relay_preset().map(|relay| relay.name.clone()),
                 transport: self.transport,
                 session_credential: self.session_credential,
             }),
+            RouteChoice::LanDirect => SessionRouteConfig::LanDirect(LanDirectConfig {
+                session_credential: self
+                    .pending_lan_invitation
+                    .as_ref()
+                    .map_or(self.session_credential, |invitation| {
+                        invitation.session_credential
+                    }),
+                room: None,
+            }),
+        };
+        SessionConfig {
+            route,
             mode: self.mode,
             steam_id64,
             display_name,
@@ -420,6 +484,7 @@ impl eframe::App for BridgeApp {
 
         self.start_error_dialog(ui.ctx());
         self.join_code_dialog(ui.ctx());
+        self.lan_create_dialog(ui.ctx());
     }
 }
 

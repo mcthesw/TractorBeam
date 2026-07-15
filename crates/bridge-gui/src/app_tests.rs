@@ -1,5 +1,36 @@
 use super::*;
 
+#[test]
+fn lan_probe_results_require_choice_only_when_multiple_are_reachable() {
+    assert_eq!(lan_probe_disposition(0), LanProbeDisposition::NoneReachable);
+    assert_eq!(lan_probe_disposition(1), LanProbeDisposition::JoinOne);
+    assert_eq!(lan_probe_disposition(2), LanProbeDisposition::Choose);
+}
+
+#[test]
+fn lan_creation_selects_every_recommended_adapter_by_default() {
+    let adapters = vec![LanAdapter {
+        adapter_id: "7:test".to_owned(),
+        name: "Virtual LAN".to_owned(),
+        interface_index: 7,
+        addresses: vec![tractor_beam_core::LanAdapterAddress {
+            adapter_id: "7:test".to_owned(),
+            name: "Virtual LAN".to_owned(),
+            address: "10.10.0.2".parse().unwrap(),
+            interface_index: 7,
+        }],
+    }];
+    let selected = default_lan_adapter_selection(adapters);
+    assert!(selected.iter().all(|(_, selected)| *selected));
+}
+
+#[test]
+fn route_switch_requires_an_idle_client_without_a_lan_room() {
+    assert!(route_switch_allowed(false, SessionStatus::Idle));
+    assert!(!route_switch_allowed(true, SessionStatus::Idle));
+    assert!(!route_switch_allowed(false, SessionStatus::Running));
+}
+
 fn account(steam_id64: &str, most_recent: bool) -> SteamIdentity {
     SteamIdentity {
         steam_id64: steam_id64.to_owned(),

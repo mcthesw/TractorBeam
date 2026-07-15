@@ -12,8 +12,10 @@ use std::{
 
 use tractor_beam_core::{
     BridgeClient, ClientConfigSelection, ClientError, InputDelayError, InputDelayReport,
+    LanAdapter, LanJoinCode, LanPeerPathState, LanPeerState, LanProbeResult, LanRoomHandle,
     LightPingTarget, LoadedClientConfig, RelayEndpoint, RuntimeState, SessionConfig, SessionStatus,
-    load_client_config, save_client_config_selection,
+    default_lan_adapters, enumerate_lan_adapters, lan_candidate_addresses, load_client_config,
+    save_client_config_selection,
 };
 
 use crate::logging::ClientLogFiles;
@@ -55,6 +57,7 @@ pub(crate) enum ApplicationOperation {
     OpeningLogs,
     ExportingTroubleshootingPackage,
     ReadingClipboard,
+    ConfiguringLan,
     ShuttingDown,
 }
 
@@ -66,7 +69,15 @@ pub(crate) struct ApplicationSnapshot {
     pub(crate) runtime: RuntimeState,
     pub(crate) loaded_config: Option<LoadedClientConfig>,
     pub(crate) shutdown_complete: bool,
+    pub(crate) lan_room: Option<LanRoomSnapshot>,
     command_generation: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LanRoomSnapshot {
+    pub(crate) invitation_code: String,
+    pub(crate) peers: Vec<LanPeerState>,
+    pub(crate) paths: Vec<LanPeerPathState>,
 }
 
 impl ApplicationSnapshot {
@@ -98,6 +109,10 @@ pub(crate) enum ApplicationEvent {
     LogDirectoryOpened(Result<PathBuf, String>),
     TroubleshootingPackageExported(Result<Option<PathBuf>, String>),
     ClipboardReadFinished(Result<String, String>),
+    LanAdaptersEnumerated(Result<Vec<LanAdapter>, String>),
+    LanProbeFinished(Result<(LanJoinCode, Vec<LanProbeResult>), String>),
+    LanRoomCreated(Result<String, String>),
+    LanRoomJoined(Result<(), String>),
     SelectionSaveFailed(String),
     CommandRejected,
     ShutdownComplete,
@@ -117,6 +132,19 @@ enum ApplicationCommand {
     ExportTroubleshootingPackage,
     ClearLogs,
     ReadClipboard,
+    EnumerateLanAdapters,
+    CreateLanRoom {
+        steam_id64: u64,
+        display_name: String,
+        adapters: Vec<LanAdapter>,
+    },
+    ProbeLanJoin(LanJoinCode),
+    JoinLanRoom {
+        steam_id64: u64,
+        display_name: String,
+        invitation: LanJoinCode,
+        endpoint: std::net::SocketAddr,
+    },
 }
 
 #[derive(Debug)]
@@ -257,6 +285,42 @@ impl ApplicationHandle {
         self.submit(ApplicationCommand::ReadClipboard)
     }
 
+    pub(crate) fn enumerate_lan_adapters(&self) -> bool {
+        self.submit(ApplicationCommand::EnumerateLanAdapters)
+    }
+
+    pub(crate) fn create_lan_room(
+        &self,
+        steam_id64: u64,
+        display_name: String,
+        adapters: Vec<LanAdapter>,
+    ) -> bool {
+        self.submit(ApplicationCommand::CreateLanRoom {
+            steam_id64,
+            display_name,
+            adapters,
+        })
+    }
+
+    pub(crate) fn probe_lan_join(&self, invitation: LanJoinCode) -> bool {
+        self.submit(ApplicationCommand::ProbeLanJoin(invitation))
+    }
+
+    pub(crate) fn join_lan_room(
+        &self,
+        steam_id64: u64,
+        display_name: String,
+        invitation: LanJoinCode,
+        endpoint: std::net::SocketAddr,
+    ) -> bool {
+        self.submit(ApplicationCommand::JoinLanRoom {
+            steam_id64,
+            display_name,
+            invitation,
+            endpoint,
+        })
+    }
+
     pub(crate) fn persist_selection(&self, selection: ClientConfigSelection) {
         *lock(&self.pending_selection) = Some(selection);
     }
@@ -282,6 +346,7 @@ fn run_application(
     mut bootstrap_factory: BootstrapFactory,
 ) {
     let mut client = bootstrap(&snapshot, &mut bootstrap_factory);
+    let mut lan_room: Option<LanRoomHandle> = None;
 
     loop {
         match control.swap(CONTROL_NONE, Ordering::AcqRel) {
@@ -304,6 +369,7 @@ fn run_application(
                 if let Some(client) = client.as_mut() {
                     set_operation(&snapshot, client, Some(ApplicationOperation::Stopping));
                     client.stop_session();
+                    lan_room = None;
                     set_operation(&snapshot, client, None);
                     send_application_event(&event_tx, &snapshot, ApplicationEvent::StopFinished);
                 }
@@ -315,6 +381,9 @@ fn run_application(
             && client.poll_events()
         {
             publish_client(&snapshot, client);
+        }
+        if let Some(active_client) = client.as_mut() {
+            publish_lan_room(&snapshot, active_client, lan_room.as_ref());
         }
 
         if let Some(selection) = lock(&pending_selection).take()
@@ -363,7 +432,13 @@ fn run_application(
                     send_application_event(&event_tx, &snapshot, ApplicationEvent::CommandRejected);
                     continue;
                 }
-                handle_command(queued.command, active_client, &snapshot, &event_tx);
+                handle_command(
+                    queued.command,
+                    active_client,
+                    &mut lan_room,
+                    &snapshot,
+                    &event_tx,
+                );
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -373,6 +448,32 @@ fn run_application(
                 return;
             }
         }
+    }
+}
+
+fn publish_lan_room(
+    snapshot: &Arc<SnapshotStore>,
+    client: &mut BridgeClient,
+    room: Option<&LanRoomHandle>,
+) {
+    let Some(room) = room else {
+        client.update_lan_state(Vec::new(), Vec::new());
+        if lock(&snapshot.value).lan_room.is_some() {
+            update_snapshot(snapshot, |snapshot| snapshot.lan_room = None);
+        }
+        return;
+    };
+    let invitation_code = room.invitation_code().unwrap_or_default();
+    let peers = room.peer_states();
+    let paths = room.path_states();
+    client.update_lan_state(peers.clone(), paths.clone());
+    let next = Some(LanRoomSnapshot {
+        invitation_code,
+        peers,
+        paths,
+    });
+    if lock(&snapshot.value).lan_room != next {
+        update_snapshot(snapshot, |snapshot| snapshot.lan_room = next);
     }
 }
 

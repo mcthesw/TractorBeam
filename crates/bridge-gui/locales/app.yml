@@ -1,4 +1,97 @@
 _version: 2
+route:
+  zh_CN: "联机方式"
+  en_US: "Connection route"
+route.relay:
+  zh_CN: "外部 Relay"
+  en_US: "External Relay"
+route.lan:
+  zh_CN: "局域网直连"
+  en_US: "LAN Direct"
+help.route:
+  zh_CN: "外部 Relay 与局域网直连互斥；切换前需要先停止当前联机。局域网直连只使用现有物理或虚拟局域网，不会连接 Relay，也不提供 NAT 穿透。"
+  en_US: "External Relay and LAN Direct are mutually exclusive. Stop the current session before switching. LAN Direct only uses an existing physical or virtual LAN; it does not contact a Relay or provide NAT traversal."
+lan.create_title:
+  zh_CN: "创建局域网联机码"
+  en_US: "Create LAN Join Code"
+lan.adapters:
+  zh_CN: "用于局域网联机的网卡"
+  en_US: "Adapters for LAN play"
+lan.disclosure:
+  zh_CN: "默认选择更可能用于局域网联机的网卡；你也可以手动调整，最多选择 8 张。创建时会自动忽略当前不可用的地址。联机码包含最终可用的 IP 和临时房间凭据，请只分享给可信玩家。"
+  en_US: "Adapters most likely to work for LAN play are selected by default; you may adjust the selection, up to 8 adapters. Addresses that are currently unavailable are ignored when creating the room. The Join Code contains the usable IPs and a temporary room credential; share it only with trusted players."
+lan.adapters_selected:
+  zh_CN: "已选择"
+  en_US: "Selected"
+lan.create_confirm:
+  zh_CN: "创建并复制"
+  en_US: "Create and copy"
+lan.no_adapters:
+  zh_CN: "没有找到可用的网卡地址。"
+  en_US: "No usable adapter address was found."
+lan.adapters_failed:
+  zh_CN: "读取网卡失败"
+  en_US: "Could not read adapters"
+lan.probing:
+  zh_CN: "正在查找可连接的局域网节点…"
+  en_US: "Looking for reachable LAN peers…"
+lan.probe_none:
+  zh_CN: "未找到可连接的节点，请检查防火墙和虚拟局域网。"
+  en_US: "No reachable peer was found. Check the firewall and virtual LAN."
+lan.probe_failed:
+  zh_CN: "局域网探测失败"
+  en_US: "LAN probe failed"
+lan.choose_endpoint:
+  zh_CN: "找到多个可连接地址，请选择一个初始入口："
+  en_US: "Multiple reachable addresses were found. Choose an initial entry point:"
+lan.created:
+  zh_CN: "局域网联机码已创建并复制。"
+  en_US: "LAN Join Code created and copied."
+lan.create_failed:
+  zh_CN: "创建局域网房间失败"
+  en_US: "Could not create LAN room"
+lan.joined:
+  zh_CN: "已加入局域网房间。"
+  en_US: "Joined the LAN room."
+lan.join_failed:
+  zh_CN: "加入局域网房间失败"
+  en_US: "Could not join LAN room"
+lan.stop_before_switch:
+  zh_CN: "请先停止当前局域网房间，再切换联机方式。"
+  en_US: "Stop the current LAN room before switching routes."
+lan.identity_required:
+  zh_CN: "请先选择 Steam 账号或填写有效的 SteamID64。"
+  en_US: "Select a Steam account or enter a valid SteamID64 first."
+lan.no_room:
+  zh_CN: "尚未创建或加入局域网房间。"
+  en_US: "No LAN room has been created or joined."
+lan.peers:
+  zh_CN: "局域网成员与路径"
+  en_US: "LAN peers and paths"
+lan.path_unavailable:
+  zh_CN: "路径不可用"
+  en_US: "Path unavailable"
+lan.path_checking:
+  zh_CN: "正在检查路径"
+  en_US: "Checking path"
+lan.path_usable:
+  zh_CN: "直连可用"
+  en_US: "Direct path available"
+lan.peer_discovered:
+  zh_CN: "已发现"
+  en_US: "Discovered"
+lan.peer_connected:
+  zh_CN: "已连接"
+  en_US: "Connected"
+lan.peer_reconnecting:
+  zh_CN: "正在重连"
+  en_US: "Reconnecting"
+lan.join_code:
+  zh_CN: "局域网联机码"
+  en_US: "LAN Join Code"
+help.lan_join_code:
+  zh_CN: "尚未加入房间时，复制会先让你选择要公开的网卡，再创建联机码。任何已加入的玩家都可以复制自己的局域网联机码邀请其他人；最初创建者离开不会结束房间。"
+  en_US: "Before joining a room, Copy first lets you choose which adapters to disclose, then creates the Join Code. Any admitted player can copy their own LAN Join Code to invite others; the original creator leaving does not end the room."
 home:
   zh_CN: "首页"
   en_US: "Home"
@@ -317,6 +410,9 @@ help.steam_account:
 help.join_code:
   zh_CN: "联机码包含 Relay 位置和房间凭据。房主复制后发给其他玩家；加入者导入收到的联机码；新房间会立即生成新的凭据并使当前联机码失效"
   en_US: "The Join Code contains the Relay location and Room credential. Hosts copy and share it; joining players import it; New Room immediately creates a new credential and invalidates the current code"
+relay.join_code:
+  zh_CN: "Relay 联机码"
+  en_US: "Relay Join Code"
 help.mode:
   zh_CN: "Official 只使用游戏原有的联机方式；Fallback 优先使用 Tractor Beam，并允许官方联机作为后备；Pure 只使用 Tractor Beam"
   en_US: "Official uses only the game's original networking; Fallback prefers Tractor Beam and keeps official networking as a backup; Pure uses only Tractor Beam"
@@ -387,11 +483,11 @@ join_code:
   zh_CN: "联机码"
   en_US: "Join code"
 join_code.copy:
-  zh_CN: "复制联机码"
-  en_US: "Copy join code"
+  zh_CN: "复制"
+  en_US: "Copy"
 join_code.import:
-  zh_CN: "导入联机码"
-  en_US: "Import join code"
+  zh_CN: "导入"
+  en_US: "Import"
 join_code.paste:
   zh_CN: "粘贴朋友发来的联机码"
   en_US: "Paste a join code"

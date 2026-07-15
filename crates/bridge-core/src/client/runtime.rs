@@ -86,6 +86,19 @@ impl BridgeClient {
         &self.state
     }
 
+    pub fn update_lan_state(
+        &mut self,
+        peers: Vec<super::LanPeerState>,
+        paths: Vec<super::LanPeerPathState>,
+    ) {
+        self.state.lan_peers = peers;
+        self.state.lan_paths = paths;
+    }
+
+    pub fn record_lan_stage(&mut self, stage: &str, result: &str) {
+        self.log(LogLevel::Info, format!("LAN stage={stage} result={result}"));
+    }
+
     #[must_use]
     pub fn loaded_config(&self) -> &LoadedClientConfig {
         &self.loaded_config

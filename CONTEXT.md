@@ -38,9 +38,13 @@ _Avoid_: transport, runtime, socket loop
 The typed `TBI2` message contract used only between one Bridge Client session and its Native Hook over a Local Socket/Windows Named Pipe.
 _Avoid_: Relay Protocol, UDP protocol, socket loop
 
-**Relay Protocol v1**:
-The byte-stable `BBR1` Envelope, control messages, and `BBG1` game-packet contract shared by the Bridge Client and Relay Server. It is independent of Local IPC Protocol.
+**Relay Protocol v2**:
+The `TBR2` compatibility bootstrap, control messages, and bounded binary data/probe frames shared by the Bridge Client and Relay Server.
 _Avoid_: Local IPC Protocol, Relay Transport, room state
+
+**Direct Protocol**:
+The versioned, bounded control, path-check, and gameplay-frame contract exchanged directly between two Peers in a LAN Session.
+_Avoid_: Relay Protocol, LAN discovery policy, adapter selection
 
 **Relay Transport**:
 The network carriage selected to move Protocol envelopes between a Bridge Client and a Relay Server.
@@ -76,7 +80,7 @@ The authority that publishes trusted Relay Server metadata.
 _Avoid_: relay, server list
 
 **Session Credential**:
-A high-entropy bearer secret that identifies one Relay Server forwarding scope and authorizes peers to join it.
+A high-entropy bearer secret that identifies one Room and authorizes Peers to join it.
 _Avoid_: room name, admission, session key
 
 **Room**:
@@ -84,16 +88,32 @@ The player-facing co-op group whose peers share one Session Credential; it has n
 _Avoid_: room name, relay registry key, lobby code
 
 **Room Path Quality**:
-The measured round-trip latency, variation, and probe loss between two Bridge Clients through their selected Relay Server data path.
+The measured round-trip latency, variation, and probe loss between two Bridge Clients over their selected gameplay path.
 _Avoid_: Relay latency, game packet loss, connection score
 
 **Join Code**:
-The single player-shareable value that carries a Relay Server location and one Session Credential.
+The single player-shareable value that carries one Room entry point and one Session Credential.
 _Avoid_: room code, invite code, admission code
 
 **Peer**:
-A player endpoint that has joined a forwarding scope with a Session Credential through a Relay Server.
+A player endpoint admitted to one Room with a Session Credential.
 _Avoid_: user, member
+
+**LAN Session**:
+A session whose Peers are already mutually IP-reachable through a physical LAN or third-party virtual LAN.
+_Avoid_: Internet P2P, automatic NAT traversal
+
+**Room Creator**:
+The Peer that creates a LAN Session by generating its Session Credential and first LAN Join Code; it has no special runtime authority.
+_Avoid_: Room Host, game host, coordinator
+
+**Introducer**:
+The Peer named by a LAN Join Code that supplies one joining Peer with the Room's current Peer-discovery information.
+_Avoid_: Room Host, Relay Server, leader
+
+**Peer Path**:
+The nominated direct gameplay path between two Peers in a LAN Session.
+_Avoid_: Relay path, room entry point
 
 **Diagnostics Bundle**:
 A support artifact containing run logs, environment facts, counters, and errors.
@@ -119,15 +139,24 @@ _Avoid_: normal relay mode
 - A **Client Bundle** contains one **Bridge GUI**, one **Bridge Client**, one **Native Hook**, and one **Injector**.
 - **Bridge Core** provides the code used by the **Bridge GUI** to control a **Bridge Client** session.
 - A **Bridge Client** and **Native Hook** exchange **Local IPC Protocol** messages.
-- A **Bridge Client** and **Relay Server** exchange **Relay Protocol v1** messages.
+- A **Bridge Client** and **Relay Server** exchange **Relay Protocol v2** messages.
+- Two **Bridge Clients** exchange **Direct Protocol** messages over one **Peer Path** in a **LAN Session**.
 - A **Bridge GUI** controls a **Bridge Client**.
-- A **Bridge Client** joins at most one **Room** using one **Session Credential** on one **Relay Server** per active session.
-- A **Bridge Client** uses one **Transport Choice** to exchange **Protocol** envelopes with a **Relay Server** during an active session.
+- A **Bridge Client** joins at most one **Room** using one **Session Credential** per active session.
+- A **LAN Session** is initially created by exactly one **Room Creator**.
+- Every admitted **Peer** is equal and may create a **Join Code** naming itself as **Introducer**.
+- An **Introducer** assists discovery for one join and gains no control over membership or gameplay.
+- A **LAN Session** carries baseline gameplay traffic over pairwise **Peer Paths**.
+- **LAN Session** membership may change while each **Peer Path** becomes usable or recovers independently.
+- Selecting an **Introducer** endpoint establishes the initial join path and a local candidate preference; it does not pin the **LAN Session** to one adapter.
+- Every **Peer Path** nominates and recovers its direct candidate pair independently; different paths may use different local adapters.
+- Established **Peer Paths** do not depend on the original **Room Creator** or any particular **Introducer**.
+- A **Bridge Client** uses one **Transport Choice** to exchange **Protocol** envelopes with a **Relay Server** during an external Relay session.
 - **Input Delay** is adjusted through the **Bridge GUI** and applied by the
   **Native Hook** when Isaac is ready.
 - A **Relay Server** forwards packets only among **Peers** admitted with the same **Session Credential**.
-- A **Join Code** contains exactly one **Relay Server** location and one **Session Credential**.
-- **Room Path Quality** describes one Bridge Client's measured path to another **Peer**, not either Client's path to the **Relay Server** alone.
+- A **Join Code** contains exactly one Relay or LAN discovery entry point and one **Session Credential**; one LAN entry point may carry a bounded set of endpoint candidates for the same **Introducer**.
+- **Room Path Quality** describes one Bridge Client's selected gameplay path to another **Peer**, whether direct or relayed.
 - Creating a new **Room** rotates the **Session Credential**; stopping and restarting the same local session does not.
 - A **Directory Service** publishes metadata about one or more **Relay Servers**.
 - A **Diagnostics Bundle** describes one local **Bridge Client** run.
@@ -148,6 +177,7 @@ _Avoid_: normal relay mode
 - "sidecar" was used for the early local bridge process. Resolved: use **Bridge Client** for the product term.
 - "server" was used for both relay forwarding and future trusted server discovery. Resolved: use **Relay Server** for forwarding and **Directory Service** for trusted metadata.
 - "protocol" and "transport" were used interchangeably. Resolved: use **Protocol** for message formats and **Relay Transport** for network carriage.
-- One "Protocol" previously implied one format shared by all three runtime components. Resolved: use **Local IPC Protocol** for Bridge Client/Native Hook and **Relay Protocol v1** for Bridge Client/Relay Server.
+- One "Protocol" previously implied one format shared by all three runtime components. Resolved: use **Local IPC Protocol** for Bridge Client/Native Hook and **Relay Protocol v2** for Bridge Client/Relay Server.
 - "mode" was used for both session behavior and network carriage. Resolved: use **Official Mode**, **Fallback Mode**, and **Pure Mode** for session behavior; use **Transport Choice** for UDP or TCP carriage.
 - "room", "room name", "admission", and "join code" described overlapping parts of one player-visible join flow. Resolved: **Room** remains the player-facing co-op group, but it has no separately editable name; use **Session Credential** for its single high-entropy routing/admission secret and **Join Code** for the value players copy or import.
+- "host" can mean the Isaac game/lobby host or a Tractor Beam discovery entry point. Resolved: avoid **Room Host**; use **Room Creator** only for room creation and **Introducer** for the Peer named by a particular LAN Join Code.

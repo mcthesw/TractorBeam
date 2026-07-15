@@ -336,7 +336,11 @@ async fn run_link(
                         }
                     }
                     ControlMessage::ControlPong { .. } => {}
-                    _ => {}
+                    other => {
+                        if is_active_link(&shared, remote.identity, key) {
+                            let _ = shared.paths.handle_control(remote.identity, other);
+                        }
+                    }
                 }
             }
             _ = anti_entropy.tick() => {
@@ -448,11 +452,25 @@ fn end_dial(shared: &ControlShared, identity: PeerIdentity, failed: bool) {
 }
 
 fn register_link(shared: &ControlShared, link: ActiveLink) -> RegisterResult {
+    let descriptor = link.descriptor.clone();
+    let sender = link.sender.clone();
+    let result = shared
+        .membership
+        .lock()
+        .expect("LAN membership lock poisoned")
+        .register(link);
+    if matches!(result, RegisterResult::Accepted { .. }) {
+        shared.paths.peer_connected(descriptor, sender);
+    }
+    result
+}
+
+fn is_active_link(shared: &ControlShared, identity: PeerIdentity, key: LinkKey) -> bool {
     shared
         .membership
         .lock()
         .expect("LAN membership lock poisoned")
-        .register(link)
+        .is_active_link(identity, key)
 }
 
 fn remove_link(
@@ -461,11 +479,15 @@ fn remove_link(
     key: LinkKey,
     graceful: bool,
 ) -> bool {
-    shared
+    let removed = shared
         .membership
         .lock()
         .expect("LAN membership lock poisoned")
-        .remove_link(identity, key, graceful)
+        .remove_link(identity, key, graceful);
+    if removed {
+        shared.paths.peer_disconnected(identity);
+    }
+    removed
 }
 
 fn broadcast_snapshot(shared: &ControlShared) {

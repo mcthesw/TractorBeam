@@ -24,6 +24,7 @@ use crate::protocol::{ClientControl, PeerPresenceInfo, ProbePhase};
 use super::{
     LogLevel, SessionConfig, SessionMode, SessionRouteConfig,
     hook_ipc::{self, HookIpcSession, InputDelayCall},
+    lan::LanGameSendError,
     packet_flow::{
         InboundGamePacket, InboundRelayDatagram, OutboundGamePacket, PacketObserver, PacketSummary,
         decode_inbound_relay_datagram, decode_outbound_hook_packet, encode_inbound_hook_packet,
@@ -43,8 +44,8 @@ mod data_plane;
 mod lan_route;
 
 use data_plane::{
-    RelayTransportTaskContext, emit_health_summary, hook_in_task, hook_out_task,
-    relay_transport_task,
+    RelayTransportTaskContext, emit_health_summary, health_snapshot_task, hook_in_task,
+    hook_out_task, observe_health, relay_transport_task,
 };
 use lan_route::lan_route_task;
 

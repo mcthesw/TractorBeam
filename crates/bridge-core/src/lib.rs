@@ -11,7 +11,7 @@ pub use tractor_beam_relay_protocol as protocol;
 pub use client::{
     BridgeClient, CLIENT_CONFIG_FILE, ClientConfig, ClientConfigSelection, ClientError,
     ClientIncidentKind, ClientIncidentSnapshot, ClientLogSink, ClientSessionLog,
-    ClientSessionLogContext, ConfigError, ConnectionProfile, Counters,
+    ClientSessionLogContext, ClientSessionLogRoute, ConfigError, ConnectionProfile, Counters,
     DEFAULT_RELAY_PROBE_PAYLOAD_BYTES, ExternalRelayConfig, HookIpcConnectionState, HookIpcState,
     HookReceiveProbeReport, HookStartupPhase, HookStartupState, InputDelayError,
     InputDelayEvidence, InputDelayEvidenceBlocker, InputDelayOperation, InputDelayReport,

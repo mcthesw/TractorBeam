@@ -1,6 +1,7 @@
 use std::{
     error::Error,
     fmt::{self, Display},
+    sync::Arc,
 };
 
 use serde::Serialize;
@@ -198,10 +199,34 @@ pub struct ExternalRelayConfig {
     pub session_credential: SessionCredential,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct LanDirectConfig {
     pub session_credential: SessionCredential,
+    pub room: Option<Arc<super::LanControlPlane>>,
 }
+
+impl fmt::Debug for LanDirectConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LanDirectConfig")
+            .field("session_credential", &"[REDACTED]")
+            .field("room_active", &self.room.is_some())
+            .finish()
+    }
+}
+
+impl PartialEq for LanDirectConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.session_credential == other.session_credential
+            && match (&self.room, &other.room) {
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
+impl Eq for LanDirectConfig {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConfigError {

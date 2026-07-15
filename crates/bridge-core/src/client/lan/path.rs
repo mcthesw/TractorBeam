@@ -7,7 +7,6 @@ use std::{
 };
 
 use bytes::Bytes;
-use rand::RngExt as _;
 use tokio::{
     net::UdpSocket,
     sync::mpsc,
@@ -20,6 +19,11 @@ use tractor_beam_direct_protocol::{
     HostCandidate, PathContext, PathId, PathToken, PeerDescriptor, PeerIdentity, TransactionId,
     decode_frame,
 };
+
+mod candidate;
+mod data;
+use candidate::{nonzero_random, path_offer, select_candidate_pair};
+pub(in crate::client) use data::LanGameSendError;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const PATH_LIVENESS_TIMEOUT: Duration = Duration::from_secs(3);
@@ -45,6 +49,7 @@ pub(super) struct PathManager {
     candidates: Vec<LocalCandidate>,
     cancellation: CancellationToken,
     inner: Mutex<PathState>,
+    inbound: mpsc::Sender<crate::client::packet_flow::InboundGamePacket>,
 }
 
 #[derive(Clone)]
@@ -60,6 +65,7 @@ struct PathState {
 }
 
 struct PeerPath {
+    identity: PeerIdentity,
     control: mpsc::Sender<ControlMessage>,
     material: Option<PathMaterial>,
     remote_candidates: Vec<HostCandidate>,
@@ -68,6 +74,9 @@ struct PeerPath {
     pending_nomination: Option<(SocketAddr, SocketAddr)>,
     next_heartbeat_id: u64,
     checking_since: Instant,
+    next_frame_id: u64,
+    last_received_frame_id: u64,
+    last_source_sequence: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -101,7 +110,10 @@ impl PathManager {
         local: PeerIdentity,
         sockets: Vec<(Arc<UdpSocket>, u32)>,
         cancellation: CancellationToken,
-    ) -> io::Result<Arc<Self>> {
+    ) -> io::Result<(
+        Arc<Self>,
+        mpsc::Receiver<crate::client::packet_flow::InboundGamePacket>,
+    )> {
         let mut candidates = Vec::with_capacity(sockets.len());
         for (socket, priority) in sockets {
             candidates.push(LocalCandidate {
@@ -110,12 +122,17 @@ impl PathManager {
                 socket,
             });
         }
-        Ok(Arc::new(Self {
-            local,
-            candidates,
-            cancellation,
-            inner: Mutex::new(PathState::default()),
-        }))
+        let (inbound, inbound_rx) = mpsc::channel(256);
+        Ok((
+            Arc::new(Self {
+                local,
+                candidates,
+                cancellation,
+                inner: Mutex::new(PathState::default()),
+                inbound,
+            }),
+            inbound_rx,
+        ))
     }
 
     pub fn start(self: &Arc<Self>) -> Vec<JoinHandle<()>> {
@@ -145,6 +162,7 @@ impl PathManager {
             let mut state = self.inner.lock().expect("LAN path lock poisoned");
             state.transactions.retain(|_, check| check.peer != remote);
             let path = PeerPath {
+                identity: remote,
                 control: control.clone(),
                 material: None,
                 remote_candidates: Vec::new(),
@@ -153,6 +171,9 @@ impl PathManager {
                 pending_nomination: None,
                 next_heartbeat_id: 1,
                 checking_since: Instant::now(),
+                next_frame_id: 1,
+                last_received_frame_id: 0,
+                last_source_sequence: 0,
             };
             state.peers.insert(remote, path);
             if self.local < remote {
@@ -463,7 +484,7 @@ impl PathManager {
         match frame {
             DirectFrame::Check(check) => self.handle_check(local, source, check),
             DirectFrame::Heartbeat(heartbeat) => self.handle_heartbeat(local, source, heartbeat),
-            DirectFrame::Data(_) => {}
+            DirectFrame::Data(data) => self.handle_data(local, source, data),
         }
     }
 
@@ -671,47 +692,6 @@ fn maintain_paths(manager: &Arc<PathManager>) {
     }
     for peer in recheck {
         manager.send_checks(peer);
-    }
-}
-
-fn path_offer(
-    local: PeerIdentity,
-    material: PathMaterial,
-    candidates: &[LocalCandidate],
-) -> ControlMessage {
-    ControlMessage::PathOffer {
-        peer: local,
-        path_id: material.id,
-        path_token: material.token,
-        data_candidates: candidates.iter().map(|candidate| candidate.wire).collect(),
-    }
-}
-
-fn select_candidate_pair(
-    checks: &BTreeMap<(SocketAddr, SocketAddr), CheckState>,
-    local_priorities: &HashMap<SocketAddr, u32>,
-    remote_priorities: &HashMap<SocketAddr, u32>,
-) -> Option<(SocketAddr, SocketAddr)> {
-    checks
-        .iter()
-        .filter(|(_, check)| check.request_seen && check.response_seen)
-        .max_by_key(|((local, remote), _)| {
-            (
-                local_priorities.get(local).copied().unwrap_or_default()
-                    + remote_priorities.get(remote).copied().unwrap_or_default(),
-                *local,
-                *remote,
-            )
-        })
-        .map(|(pair, _)| *pair)
-}
-
-fn nonzero_random<const N: usize>() -> [u8; N] {
-    loop {
-        let value = rand::rng().random::<[u8; N]>();
-        if value.iter().any(|byte| *byte != 0) {
-            return value;
-        }
     }
 }
 

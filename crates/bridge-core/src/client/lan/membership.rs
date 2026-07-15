@@ -187,6 +187,12 @@ impl Membership {
         self.active.values().cloned().collect()
     }
 
+    pub fn is_active_link(&self, identity: PeerIdentity, key: LinkKey) -> bool {
+        self.active
+            .get(&identity)
+            .is_some_and(|link| link.key == key)
+    }
+
     pub fn connected_descriptors(&self) -> Vec<PeerDescriptor> {
         let mut peers = self
             .active

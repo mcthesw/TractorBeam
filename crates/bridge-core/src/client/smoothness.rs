@@ -21,6 +21,7 @@ pub enum SmoothnessReason {
     PathLoss,
     PathJitterElevated,
     LocalQueueDrop,
+    NetworkSendDrop,
     SequenceGap,
     SequenceReordered,
     HookSendStall,
@@ -174,6 +175,7 @@ fn path_score(path: &RoomPathQualitySnapshot) -> (u16, u128, u128) {
 fn map_local_reason(reason: &SessionQualityReason) -> Option<SmoothnessReason> {
     match reason {
         SessionQualityReason::LocalQueueDrop => Some(SmoothnessReason::LocalQueueDrop),
+        SessionQualityReason::NetworkSendDrop => Some(SmoothnessReason::NetworkSendDrop),
         SessionQualityReason::SequenceGap => Some(SmoothnessReason::SequenceGap),
         SessionQualityReason::SequenceReordered => Some(SmoothnessReason::SequenceReordered),
         SessionQualityReason::HookSendStall => Some(SmoothnessReason::HookSendStall),

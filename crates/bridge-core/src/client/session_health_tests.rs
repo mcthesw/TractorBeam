@@ -88,7 +88,7 @@ fn recovered_window_is_not_degraded_by_lifetime_anomaly() {
     let mut health = SessionHealth::new(true, Duration::from_millis(10), start);
     let startup = start + Duration::from_secs(5);
     health.observe_hook_in_recv(1, startup);
-    health.observe_relay_recv(1, startup);
+    health.observe_network_recv(1, startup);
     health.observe_outbound_enqueue(false);
     assert_eq!(
         health.snapshot(startup).quality,
@@ -97,18 +97,48 @@ fn recovered_window_is_not_degraded_by_lifetime_anomaly() {
 
     let active = start + Duration::from_secs(ACTIVE_TRAFFIC_STARTUP_GRACE_SECONDS);
     health.observe_hook_in_recv(1, active);
-    health.observe_relay_recv(1, active);
+    health.observe_network_recv(1, active);
     let recovered = health.snapshot(active);
     assert_eq!(recovered.queues.total_dropped(), 1);
     assert_eq!(recovered.window.queue_drops, 0);
     assert_eq!(recovered.quality, SessionQuality::Good);
 }
 
+#[test]
+fn route_neutral_network_evidence_reports_sequence_and_send_drops() {
+    let start = Instant::now();
+    let active = start + Duration::from_secs(ACTIVE_TRAFFIC_STARTUP_GRACE_SECONDS);
+    let mut health = SessionHealth::new(false, Duration::from_secs(1), start);
+
+    health.observe_hook_in_recv(8, active);
+    health.observe_network_recv(8, active);
+    health.observe_source_sequence(42, 10);
+    health.observe_network_recv(8, active + Duration::from_millis(1));
+    health.observe_source_sequence(42, 12);
+    health.observe_network_send_drop();
+
+    let snapshot = health.snapshot(active + Duration::from_millis(2));
+
+    assert_eq!(snapshot.network_recv.packets, 2);
+    assert_eq!(snapshot.source_sequence.gaps, 1);
+    assert_eq!(snapshot.network_send_dropped, 1);
+    assert_eq!(snapshot.window.network_send_dropped, 1);
+    assert_eq!(snapshot.quality, SessionQuality::Poor);
+    assert_eq!(
+        snapshot.reasons,
+        [
+            SessionQualityReason::NetworkSendDrop,
+            SessionQualityReason::SequenceGap,
+        ]
+    );
+}
+
 const fn active_window() -> SessionHealthWindow {
     SessionHealthWindow {
         duration_seconds: 5,
         hook_in_packets: 20,
-        relay_recv_packets: 20,
+        network_recv_packets: 20,
+        network_send_dropped: 0,
         queue_drops: 0,
         sequence_gaps: 0,
         sequence_reordered: 0,
@@ -116,7 +146,7 @@ const fn active_window() -> SessionHealthWindow {
         runtime_rtt_timeouts: 0,
         hook_send_over_500_ms: 0,
         hook_send_over_1000_ms: 0,
-        relay_gap_over_500_ms: 0,
-        relay_gap_over_1000_ms: 0,
+        network_gap_over_500_ms: 0,
+        network_gap_over_1000_ms: 0,
     }
 }

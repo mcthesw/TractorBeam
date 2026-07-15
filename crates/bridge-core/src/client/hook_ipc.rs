@@ -12,6 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use interprocess::TryClone as _;
 use interprocess::local_socket::{
     GenericNamespaced, ListenerNonblockingMode, ListenerOptions, prelude::*,
 };
@@ -118,7 +119,7 @@ struct ConnectionContext<'a> {
     from_hook_tx: &'a TokioSender<GamePacket>,
     to_hook_rx: &'a Receiver<GamePacket>,
     control_rx: &'a Receiver<InputDelayCall>,
-    client_dropped: &'a AtomicU64,
+    client_dropped: &'a Arc<AtomicU64>,
     event_tx: &'a RuntimeEventSender,
     cancellation: &'a CancellationToken,
 }

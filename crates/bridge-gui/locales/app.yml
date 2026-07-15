@@ -9,8 +9,8 @@ route.lan:
   zh_CN: "局域网直连"
   en_US: "LAN Direct"
 help.route:
-  zh_CN: "外部 Relay 与局域网直连互斥；切换前需要先停止当前联机。局域网直连只使用现有物理或虚拟局域网，不会连接 Relay，也不提供 NAT 穿透。"
-  en_US: "External Relay and LAN Direct are mutually exclusive. Stop the current session before switching. LAN Direct only uses an existing physical or virtual LAN; it does not contact a Relay or provide NAT traversal."
+  zh_CN: "外部 Relay 与局域网直连互斥；切换前需要先停止当前联机。局域网直连不会连接 Relay，也不提供 NAT 穿透"
+  en_US: "External Relay and LAN Direct are mutually exclusive. Stop the current session before switching. LAN Direct does not connect to a Relay or provide NAT traversal."
 lan.create_title:
   zh_CN: "创建局域网联机码"
   en_US: "Create LAN Join Code"
@@ -18,8 +18,8 @@ lan.adapters:
   zh_CN: "用于局域网联机的网卡"
   en_US: "Adapters for LAN play"
 lan.disclosure:
-  zh_CN: "默认选择更可能用于局域网联机的网卡；你也可以手动调整，最多选择 8 张。创建时会自动忽略当前不可用的地址。联机码包含最终可用的 IP 和临时房间凭据，请只分享给可信玩家。"
-  en_US: "Adapters most likely to work for LAN play are selected by default; you may adjust the selection, up to 8 adapters. Addresses that are currently unavailable are ignored when creating the room. The Join Code contains the usable IPs and a temporary room credential; share it only with trusted players."
+  zh_CN: "默认选择更可能用于局域网联机的网卡；最多选择 8 张。创建时会自动忽略当前不可用的地址。联机码包含最终可用的 IP 和临时房间凭据，请只分享给可信玩家"
+  en_US: "Adapters most likely to work for LAN play are selected by default, up to 8 adapters. Unavailable addresses are ignored when creating the room. The Join Code contains the usable IPs and a temporary room credential; share it only with trusted players."
 lan.adapters_selected:
   zh_CN: "已选择"
   en_US: "Selected"
@@ -27,7 +27,7 @@ lan.create_confirm:
   zh_CN: "创建并复制"
   en_US: "Create and copy"
 lan.no_adapters:
-  zh_CN: "没有找到可用的网卡地址。"
+  zh_CN: "没有找到可用的网卡地址"
   en_US: "No usable adapter address was found."
 lan.adapters_failed:
   zh_CN: "读取网卡失败"
@@ -36,34 +36,34 @@ lan.probing:
   zh_CN: "正在查找可连接的局域网节点…"
   en_US: "Looking for reachable LAN peers…"
 lan.probe_none:
-  zh_CN: "未找到可连接的节点，请检查防火墙和虚拟局域网。"
+  zh_CN: "未找到可连接的节点，请检查防火墙和虚拟局域网"
   en_US: "No reachable peer was found. Check the firewall and virtual LAN."
 lan.probe_failed:
   zh_CN: "局域网探测失败"
   en_US: "LAN probe failed"
 lan.choose_endpoint:
-  zh_CN: "找到多个可连接地址，请选择一个初始入口："
-  en_US: "Multiple reachable addresses were found. Choose an initial entry point:"
+  zh_CN: "选择一个初始入口："
+  en_US: "Choose an initial entry point:"
 lan.created:
-  zh_CN: "局域网联机码已创建并复制。"
+  zh_CN: "局域网联机码已创建并复制"
   en_US: "LAN Join Code created and copied."
 lan.create_failed:
   zh_CN: "创建局域网房间失败"
   en_US: "Could not create LAN room"
 lan.joined:
-  zh_CN: "已加入局域网房间。"
+  zh_CN: "已加入局域网房间"
   en_US: "Joined the LAN room."
 lan.join_failed:
   zh_CN: "加入局域网房间失败"
   en_US: "Could not join LAN room"
 lan.stop_before_switch:
-  zh_CN: "请先停止当前局域网房间，再切换联机方式。"
+  zh_CN: "请先停止当前局域网房间，再切换联机方式"
   en_US: "Stop the current LAN room before switching routes."
 lan.identity_required:
-  zh_CN: "请先选择 Steam 账号或填写有效的 SteamID64。"
+  zh_CN: "请先选择 Steam 账号或填写有效的 SteamID64"
   en_US: "Select a Steam account or enter a valid SteamID64 first."
 lan.no_room:
-  zh_CN: "尚未创建或加入局域网房间。"
+  zh_CN: "尚未创建或加入局域网房间"
   en_US: "No LAN room has been created or joined."
 lan.peers:
   zh_CN: "局域网成员与路径"
@@ -90,8 +90,8 @@ lan.join_code:
   zh_CN: "局域网联机码"
   en_US: "LAN Join Code"
 help.lan_join_code:
-  zh_CN: "尚未加入房间时，复制会先让你选择要公开的网卡，再创建联机码。任何已加入的玩家都可以复制自己的局域网联机码邀请其他人；最初创建者离开不会结束房间。"
-  en_US: "Before joining a room, Copy first lets you choose which adapters to disclose, then creates the Join Code. Any admitted player can copy their own LAN Join Code to invite others; the original creator leaving does not end the room."
+  zh_CN: "选择网卡，创建联机码；任何已加入的玩家都可以复制自己的局域网联机码邀请其他人"
+  en_US: "Select adapters and create a Join Code; any player already in the room can copy their own LAN Join Code to invite others."
 home:
   zh_CN: "首页"
   en_US: "Home"
@@ -105,11 +105,26 @@ about:
   zh_CN: "关于"
   en_US: "About"
 about.desc:
-  zh_CN: "给以撒的结合：忏悔+ 远程联机用的中继传输工具。"
-  en_US: "Relay transport for The Binding of Isaac: Repentance+ remote co-op."
+  zh_CN: "为《以撒的结合：忏悔+》打造的轻量联机桥接工具"
+  en_US: "A lightweight co-op bridge for The Binding of Isaac: Repentance+."
 about.protocol_version:
   zh_CN: "协议版本"
   en_US: "Protocol"
+about.acknowledgements:
+  zh_CN: "感谢"
+  en_US: "Acknowledgements"
+about.acknowledgements_desc:
+  zh_CN: "感谢每一位帮助 Tractor Beam 变得更好的朋友"
+  en_US: "Thank you to everyone who helped make Tractor Beam better."
+about.identity.contributor:
+  zh_CN: "贡献者"
+  en_US: "Contributor"
+about.identity.early_tester:
+  zh_CN: "早期测试者"
+  en_US: "Early tester"
+about.source_repository:
+  zh_CN: "源码仓库(Github)"
+  en_US: "Source repository (GitHub)"
 relay.host:
   zh_CN: "Relay 地址"
   en_US: "Relay host"
@@ -201,7 +216,7 @@ status.initialization_failed:
   zh_CN: "初始化失败"
   en_US: "Initialization failed"
 status.initialization_retry_hint:
-  zh_CN: "请重试；如问题持续，可打开日志文件夹。"
+  zh_CN: "请重试；如问题持续，可打开日志文件夹"
   en_US: "Retry, or open the log folder if the problem continues."
 status.starting:
   zh_CN: "正在启动"
@@ -441,7 +456,7 @@ no:
   zh_CN: "否"
   en_US: "No"
 steam.no_accounts:
-  zh_CN: "未自动识别到 Steam 账号，可以手动填写。"
+  zh_CN: "未自动识别到 Steam 账号，可以手动填写"
   en_US: "No Steam account was detected. You can enter it manually."
 mode.official:
   zh_CN: "Official"
@@ -456,7 +471,7 @@ config.error:
   zh_CN: "配置错误"
   en_US: "Configuration error"
 config.warning:
-  zh_CN: "配置文件有误，已使用可手动修改的默认值。"
+  zh_CN: "配置文件有误，已使用可手动修改的默认值"
   en_US: "Config not applied; defaults loaded."
 config.missing_relay_host:
   zh_CN: "需要填写 Relay 地址"
@@ -513,7 +528,7 @@ join_code.dialog_title:
   zh_CN: "导入联机码"
   en_US: "Import Join Code"
 join_code.paste_hint:
-  zh_CN: "在下方粘贴联机码，然后确认导入。"
+  zh_CN: "在下方粘贴联机码，然后确认导入"
   en_US: "Paste the Join Code below, then confirm the import."
 join_code.confirm:
   zh_CN: "导入"
@@ -528,7 +543,7 @@ room.generate:
   zh_CN: "新房间"
   en_US: "New Room"
 room.generated:
-  zh_CN: "已创建新房间，请重新分享联机码。"
+  zh_CN: "已创建新房间，请重新分享联机码"
   en_US: "New room created. Share the new Join Code."
 room.reconnecting:
   zh_CN: "重连中"
@@ -564,7 +579,7 @@ hook.cancelled:
   zh_CN: "已取消"
   en_US: "Cancelled"
 hook.access_denied_hint:
-  zh_CN: "请用管理员身份运行 Bridge/Steam/以撒，或检查杀软是否放行。"
+  zh_CN: "请用管理员身份运行 Bridge/Steam/以撒，或检查杀软是否放行"
   en_US: "Run Bridge/Steam/Isaac as administrator, or allow the helper in your antivirus."
 elapsed:
   zh_CN: "已等待"

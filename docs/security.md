@@ -89,3 +89,18 @@ Exported Diagnostics Bundles redact SteamID64-like values, Relay Server
 endpoints, Room fields, and local user profile paths. This is a guardrail, not a
 promise that every possible sensitive string has been removed. Closed-test logs
 should still be shared privately.
+
+## Direct LAN boundary
+
+Direct LAN uses plaintext TCP control and UDP gameplay traffic on an existing
+physical or virtual LAN. Its Join Code discloses selected adapter addresses and
+a temporary Session Credential. The credential scopes admission and path
+checks, but it is not encryption and does not authenticate the person using it.
+Only share LAN Join Codes with intended players on a trusted network.
+
+The Client advertises host candidates only. It performs no public discovery,
+NAT traversal, STUN/TURN exchange, port mapping, embedded Relay, or automatic
+Relay fallback. Local firewall and virtual-LAN policy remain operator
+responsibilities. Diagnostics include stage and nominated-path evidence, but
+credentials, path identifiers, and path tokens must never be logged or exported;
+endpoint addresses are covered by Diagnostics Bundle redaction.

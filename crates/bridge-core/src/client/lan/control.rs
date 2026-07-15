@@ -32,6 +32,7 @@ use super::{
         run_membership_dialer,
     },
     membership::Membership,
+    path::{LanPeerPathState, PathManager},
 };
 use crate::client::{LanJoinCode, SessionCredential};
 
@@ -71,7 +72,6 @@ pub struct LanControlPlane {
     shared: Arc<ControlShared>,
     session_credential: SessionCredential,
     control_endpoints: Vec<SocketAddr>,
-    _data_sockets: Vec<Arc<UdpSocket>>,
     cancellation: CancellationToken,
     listener_tasks: Vec<JoinHandle<()>>,
     background_tasks: Vec<JoinHandle<()>>,
@@ -82,6 +82,7 @@ pub(super) struct ControlShared {
     pub membership: Mutex<Membership>,
     pub cancellation: CancellationToken,
     pub dial_tx: mpsc::UnboundedSender<PeerDescriptor>,
+    pub paths: Arc<PathManager>,
 }
 
 impl LanControlPlane {
@@ -141,26 +142,35 @@ impl LanControlPlane {
         .map_err(io::Error::other)?;
 
         let cancellation = CancellationToken::new();
+        let path_sockets = bound
+            .iter()
+            .enumerate()
+            .map(|(index, (_, socket, _))| {
+                let priority = u32::try_from(adapters.len() - index).unwrap_or(1).max(1);
+                (socket.clone(), priority)
+            })
+            .collect();
+        let paths = PathManager::new(identity, path_sockets, cancellation.clone()).await?;
         let (dial_tx, dial_rx) = mpsc::unbounded_channel();
         let shared = Arc::new(ControlShared {
             session_proof: session_proof(session_credential),
             membership: Mutex::new(Membership::new(descriptor)),
             cancellation: cancellation.clone(),
             dial_tx,
+            paths: paths.clone(),
         });
-        let mut data_sockets = Vec::with_capacity(bound.len());
         let mut listener_tasks = Vec::with_capacity(bound.len());
         for (listener, data_socket, _) in bound {
-            data_sockets.push(data_socket);
+            drop(data_socket);
             listener_tasks.push(tokio::spawn(run_listener(listener, shared.clone())));
         }
-        let background_tasks = vec![tokio::spawn(run_membership_dialer(shared.clone(), dial_rx))];
+        let mut background_tasks = paths.start();
+        background_tasks.push(tokio::spawn(run_membership_dialer(shared.clone(), dial_rx)));
 
         Ok(Self {
             shared,
             session_credential,
             control_endpoints,
-            _data_sockets: data_sockets,
             cancellation,
             listener_tasks,
             background_tasks,
@@ -244,6 +254,11 @@ impl LanControlPlane {
         );
         states.sort_by_key(|state| state.peer.identity);
         states
+    }
+
+    #[must_use]
+    pub fn path_states(&self) -> Vec<LanPeerPathState> {
+        self.shared.paths.states()
     }
 
     #[cfg(test)]

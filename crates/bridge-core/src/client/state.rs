@@ -347,6 +347,8 @@ pub struct RuntimeState {
     pub light_ping_reports: Vec<super::probe::LightPingReport>,
     pub room_peers: Vec<crate::protocol::PeerPresenceInfo>,
     pub room_path_quality: Vec<super::RoomPathQualitySnapshot>,
+    pub lan_peers: Vec<super::LanPeerState>,
+    pub lan_paths: Vec<super::LanPeerPathState>,
     pub relay_link: RelayLinkState,
 }
 

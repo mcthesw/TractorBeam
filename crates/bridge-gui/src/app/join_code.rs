@@ -4,13 +4,13 @@ use super::*;
 const LAN_CREATE_DIALOG_MAX_WIDTH: f32 = 400.0;
 const LAN_CREATE_DIALOG_HORIZONTAL_MARGIN: f32 = 32.0;
 
-fn adapter_address_tooltip(adapter: &LanAdapter) -> String {
+fn adapter_address_summary(adapter: &LanAdapter) -> String {
     adapter
         .addresses
         .iter()
         .map(|address| address.address.to_string())
         .collect::<Vec<_>>()
-        .join("\n")
+        .join(" · ")
 }
 
 fn lan_create_dialog_width(viewport_width: f32) -> f32 {
@@ -172,12 +172,10 @@ impl BridgeApp {
                             let can_select = was_selected
                                 || selected_count < tractor_beam_core::MAX_SELECTED_LAN_ADAPTERS;
                             ui.horizontal(|ui| {
-                                let response = ui
-                                    .add_enabled(
-                                        can_select,
-                                        egui::Checkbox::new(selected, &adapter.name),
-                                    )
-                                    .on_hover_text(adapter_address_tooltip(adapter));
+                                let response = ui.add_enabled(
+                                    can_select,
+                                    egui::Checkbox::new(selected, &adapter.name),
+                                );
                                 if response.changed() {
                                     if *selected {
                                         selected_count = selected_count.saturating_add(1);
@@ -185,6 +183,12 @@ impl BridgeApp {
                                         selected_count = selected_count.saturating_sub(1);
                                     }
                                 }
+                                ui.add_space(8.0);
+                                ui.label(
+                                    egui::RichText::new(adapter_address_summary(adapter))
+                                        .monospace()
+                                        .weak(),
+                                );
                             });
                         }
                     });
@@ -340,5 +344,33 @@ mod tests {
             true,
             RouteChoice::ExternalRelay
         ));
+    }
+
+    #[test]
+    fn adapter_address_summary_shows_every_local_address_inline() {
+        let adapter = LanAdapter {
+            adapter_id: "test".to_owned(),
+            name: "Test adapter".to_owned(),
+            interface_index: 1,
+            addresses: vec![
+                tractor_beam_core::LanAdapterAddress {
+                    adapter_id: "test".to_owned(),
+                    name: "Test adapter".to_owned(),
+                    address: "192.0.2.10".parse().unwrap(),
+                    interface_index: 1,
+                },
+                tractor_beam_core::LanAdapterAddress {
+                    adapter_id: "test".to_owned(),
+                    name: "Test adapter".to_owned(),
+                    address: "2001:db8::10".parse().unwrap(),
+                    interface_index: 1,
+                },
+            ],
+        };
+
+        assert_eq!(
+            adapter_address_summary(&adapter),
+            "192.0.2.10 · 2001:db8::10"
+        );
     }
 }

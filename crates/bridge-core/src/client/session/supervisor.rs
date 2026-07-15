@@ -127,15 +127,6 @@ pub(super) async fn start_runtime_tasks_inner(
     cancellation: &CancellationToken,
     event_tx: &RuntimeEventSender,
 ) -> io::Result<RuntimeTasks> {
-    let relay_route = match &config.route {
-        SessionRouteConfig::ExternalRelay(route) => route,
-        SessionRouteConfig::LanDirect(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "Direct LAN sessions are not available in this build",
-            ));
-        }
-    };
     if config.mode != SessionMode::Official && native_hook.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -178,25 +169,7 @@ pub(super) async fn start_runtime_tasks_inner(
         event_tx.clone(),
         cancellation.clone(),
     ));
-    let (relay, peers) =
-        RelayTransport::connect_session(relay_route, &config.steam_id64, &config.display_name)
-            .await?;
-    let peer_count = peers.len();
-    send_event(event_tx, RuntimeEvent::RoomPeersUpdated(peers.clone()));
-    send_event(
-        event_tx,
-        RuntimeEvent::RelayLinkChanged(RelayLinkState::Connected),
-    );
-    send_event(
-        event_tx,
-        log_event(
-            LogLevel::Info,
-            format!("Joined relay room with {peer_count} peer(s)"),
-        ),
-    );
-
     let (outbound_tx, outbound_rx) = tokio_mpsc::channel(PACKET_QUEUE_CAPACITY);
-    let (inbound_tx, inbound_rx) = tokio_mpsc::channel(PACKET_QUEUE_CAPACITY);
     let health = config.session_health.enabled.then(|| {
         Arc::new(Mutex::new(SessionHealth::new(
             config.session_health.runtime_rtt_enabled,
@@ -211,23 +184,76 @@ pub(super) async fn start_runtime_tasks_inner(
         cancellation.clone(),
         health.clone(),
     ));
-    tasks.spawn(relay_transport_task(
-        relay,
-        outbound_rx,
-        inbound_tx,
-        RelayTransportTaskContext {
-            event_tx: event_tx.clone(),
-            cancellation: cancellation.clone(),
-            health: health.clone(),
-            health_snapshot_interval: Duration::from_secs(
-                config.session_health.snapshot_interval_seconds,
-            ),
-            runtime_rtt_interval: Duration::from_secs(
-                config.session_health.runtime_rtt_interval_seconds,
-            ),
-            initial_peers: peers,
-        },
-    ));
+    let inbound_rx = match &config.route {
+        SessionRouteConfig::ExternalRelay(relay_route) => {
+            let (relay, peers) = RelayTransport::connect_session(
+                relay_route,
+                &config.steam_id64,
+                &config.display_name,
+            )
+            .await?;
+            let peer_count = peers.len();
+            send_event(event_tx, RuntimeEvent::RoomPeersUpdated(peers.clone()));
+            send_event(
+                event_tx,
+                RuntimeEvent::RelayLinkChanged(RelayLinkState::Connected),
+            );
+            send_event(
+                event_tx,
+                log_event(
+                    LogLevel::Info,
+                    format!("Joined relay room with {peer_count} peer(s)"),
+                ),
+            );
+            let (inbound_tx, inbound_rx) = tokio_mpsc::channel(PACKET_QUEUE_CAPACITY);
+            tasks.spawn(relay_transport_task(
+                relay,
+                outbound_rx,
+                inbound_tx,
+                RelayTransportTaskContext {
+                    event_tx: event_tx.clone(),
+                    cancellation: cancellation.clone(),
+                    health: health.clone(),
+                    health_snapshot_interval: Duration::from_secs(
+                        config.session_health.snapshot_interval_seconds,
+                    ),
+                    runtime_rtt_interval: Duration::from_secs(
+                        config.session_health.runtime_rtt_interval_seconds,
+                    ),
+                    initial_peers: peers,
+                },
+            ));
+            inbound_rx
+        }
+        SessionRouteConfig::LanDirect(lan_route) => {
+            let room = lan_route.room.clone().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "Direct LAN room is not active")
+            })?;
+            if !room.uses_credential(lan_route.session_credential) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Direct LAN room credential does not match the session",
+                ));
+            }
+            let inbound_rx = room.take_inbound().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "Direct LAN room data plane is already attached",
+                )
+            })?;
+            tasks.spawn(lan_route_task(
+                room,
+                outbound_rx,
+                event_tx.clone(),
+                cancellation.clone(),
+            ));
+            send_event(
+                event_tx,
+                log_event(LogLevel::Info, "Direct LAN route is attached"),
+            );
+            inbound_rx
+        }
+    };
     tasks.spawn(hook_out_task(
         to_hook,
         inbound_rx,

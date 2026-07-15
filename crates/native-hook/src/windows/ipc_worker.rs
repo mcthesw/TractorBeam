@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use interprocess::TryClone as _;
 use interprocess::local_socket::{GenericNamespaced, prelude::*};
 use tractor_beam_hook_ipc::{
     ClientToHook, ErrorCode, FrameDecoder, GamePacket, Handshake, HookToClient, InputDelayCommand,
@@ -57,8 +58,8 @@ fn run(
     session_id: SessionId,
     data_rx: &Receiver<GamePacket>,
     inbound: &Arc<Mutex<VecDeque<GamePacket>>>,
-    running: &AtomicBool,
-    counters: &WorkerCounters,
+    running: &Arc<AtomicBool>,
+    counters: &Arc<WorkerCounters>,
 ) -> io::Result<()> {
     let started = Instant::now();
     let mut disconnected_at = started;
@@ -175,54 +176,111 @@ fn run_connection(
     data_rx: &Receiver<GamePacket>,
     inbound: &Arc<Mutex<VecDeque<GamePacket>>>,
     running: &AtomicBool,
-    counters: &WorkerCounters,
+    counters: &Arc<WorkerCounters>,
 ) -> Result<ConnectionEnd, ConnectionError> {
-    let mut decoder = FrameDecoder::new();
+    let mut read_stream = stream.try_clone().map_err(ConnectionError::Io)?;
+    read_stream
+        .set_nonblocking(false)
+        .map_err(ConnectionError::Io)?;
+    let (reader_tx, reader_rx) = std::sync::mpsc::channel::<io::Result<ClientToHook>>();
+    let inbound_reader = Arc::clone(inbound);
+    let counters_reader = Arc::clone(counters);
+    thread::spawn(move || {
+        let mut decoder = FrameDecoder::new();
+        loop {
+            match read_messages::<ClientToHook>(&mut read_stream, &mut decoder) {
+                Ok(messages) => {
+                    for message in messages {
+                        if let ClientToHook::Game(packet) = message {
+                            enqueue_inbound(packet, &inbound_reader, &counters_reader);
+                        } else {
+                            let terminal = message == ClientToHook::Shutdown;
+                            if reader_tx.send(Ok(message)).is_err() || terminal {
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(error) if is_transient(&error) => {}
+                Err(error) => {
+                    let _ = reader_tx.send(Err(error));
+                    return;
+                }
+            }
+        }
+    });
+
+    let mut pending_write = None::<PendingWrite>;
+    let mut control_outbound = VecDeque::<HookToClient>::new();
     let mut next_health = Instant::now() + HEALTH_INTERVAL;
     while running.load(Ordering::Relaxed) {
+        for message in reader_rx.try_iter() {
+            match message {
+                Ok(message) => match message {
+                    ClientToHook::Handshake(_) => {
+                        return Err(ConnectionError::Protocol(
+                            ProtocolError::UnexpectedMessage("duplicate handshake").to_string(),
+                        ));
+                    }
+                    ClientToHook::Game(packet) => enqueue_inbound(packet, inbound, counters),
+                    ClientToHook::InputDelay { id, command } => {
+                        control_outbound.push_back(HookToClient::InputDelayResult {
+                            id,
+                            result: handle_input_delay(command),
+                        });
+                    }
+                    ClientToHook::Ping { id } => {
+                        control_outbound.push_back(HookToClient::Pong { id });
+                    }
+                    ClientToHook::Shutdown => return Ok(ConnectionEnd::Shutdown),
+                },
+                Err(error) if is_disconnect(&error) => return Ok(ConnectionEnd::Disconnected),
+                Err(error) if is_protocol_error(&error) => {
+                    return Err(ConnectionError::Protocol(error.to_string()));
+                }
+                Err(error) => return Err(ConnectionError::Io(error)),
+            }
+        }
+
+        if let Some(write) = &mut pending_write {
+            if write.try_flush(stream).map_err(ConnectionError::Io)? {
+                pending_write = None;
+            } else {
+                thread::sleep(IO_POLL_INTERVAL);
+                continue;
+            }
+        }
+
+        while let Some(message) = control_outbound.pop_front() {
+            pending_write = PendingWrite::start(stream, &message).map_err(ConnectionError::Io)?;
+            if pending_write.is_some() {
+                break;
+            }
+        }
+
+        if pending_write.is_some() {
+            continue;
+        }
+
         if Instant::now() >= next_health {
-            write_message(stream, &HookToClient::Health(health(counters)))
+            pending_write = PendingWrite::start(stream, &HookToClient::Health(health(counters)))
                 .map_err(ConnectionError::Io)?;
             next_health = Instant::now() + HEALTH_INTERVAL;
         }
 
-        match read_messages::<ClientToHook>(stream, &mut decoder) {
-            Ok(messages) => {
-                for message in messages {
-                    match message {
-                        ClientToHook::Handshake(_) => {
-                            return Err(ConnectionError::Protocol(
-                                ProtocolError::UnexpectedMessage("duplicate handshake").to_string(),
-                            ));
-                        }
-                        ClientToHook::Game(packet) => enqueue_inbound(packet, inbound, counters),
-                        ClientToHook::InputDelay { id, command } => {
-                            let response = HookToClient::InputDelayResult {
-                                id,
-                                result: handle_input_delay(command),
-                            };
-                            write_message(stream, &response).map_err(ConnectionError::Io)?;
-                        }
-                        ClientToHook::Ping { id } => {
-                            write_message(stream, &HookToClient::Pong { id })
-                                .map_err(ConnectionError::Io)?;
-                        }
-                        ClientToHook::Shutdown => return Ok(ConnectionEnd::Shutdown),
-                    }
-                }
-            }
-            Err(error) if is_disconnect(&error) => return Ok(ConnectionEnd::Disconnected),
-            Err(error) if is_transient(&error) => {}
-            Err(error) if is_protocol_error(&error) => {
-                return Err(ConnectionError::Protocol(error.to_string()));
-            }
-            Err(error) => return Err(ConnectionError::Io(error)),
+        if pending_write.is_some() {
+            continue;
         }
 
         for _ in 0..MAX_DATA_BURST {
             match data_rx.try_recv() {
-                Ok(packet) => write_message(stream, &HookToClient::Game(packet))
-                    .map_err(ConnectionError::Io)?,
+                Ok(packet) => {
+                    pending_write = PendingWrite::start(stream, &HookToClient::Game(packet))
+                        .map_err(ConnectionError::Io)?;
+                    if pending_write.is_some() {
+                        break;
+                    }
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => return Ok(ConnectionEnd::Shutdown),
             }
@@ -230,6 +288,46 @@ fn run_connection(
     }
     let _ = write_message(stream, &HookToClient::Goodbye);
     Ok(ConnectionEnd::Shutdown)
+}
+
+struct PendingWrite {
+    bytes: Vec<u8>,
+    written: usize,
+    stalled_since: Instant,
+}
+
+impl PendingWrite {
+    fn start(stream: &mut impl Write, message: &HookToClient) -> io::Result<Option<PendingWrite>> {
+        let bytes = tractor_beam_hook_ipc::encode(message).map_err(protocol_io)?;
+        let mut write = PendingWrite {
+            bytes,
+            written: 0,
+            stalled_since: Instant::now(),
+        };
+        if write.try_flush(stream)? {
+            Ok(None)
+        } else {
+            Ok(Some(write))
+        }
+    }
+
+    fn try_flush(&mut self, stream: &mut impl Write) -> io::Result<bool> {
+        match stream.write(&self.bytes[self.written..]) {
+            Ok(0) if self.stalled_since.elapsed() < WRITE_TIMEOUT => Ok(false),
+            Ok(0) => Err(write_timeout()),
+            Ok(size) => {
+                self.written = self.written.saturating_add(size);
+                self.stalled_since = Instant::now();
+                Ok(self.written >= self.bytes.len())
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => Ok(false),
+            Err(error) if is_transient(&error) && self.stalled_since.elapsed() < WRITE_TIMEOUT => {
+                Ok(false)
+            }
+            Err(error) if is_transient(&error) => Err(write_timeout()),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 fn enqueue_inbound(
@@ -284,32 +382,29 @@ fn write_message(stream: &mut LocalSocketStream, message: &HookToClient) -> io::
     write_all_bounded(stream, &encoded)
 }
 
-fn write_all_bounded(stream: &mut LocalSocketStream, bytes: &[u8]) -> io::Result<()> {
+fn write_all_bounded(stream: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
     let deadline = Instant::now() + WRITE_TIMEOUT;
     let mut written = 0;
     while written < bytes.len() {
         match stream.write(&bytes[written..]) {
-            Ok(0) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "local IPC stream stopped accepting bytes",
-                ));
-            }
+            Ok(0) if Instant::now() < deadline => thread::sleep(IO_POLL_INTERVAL),
+            Ok(0) => return Err(write_timeout()),
             Ok(size) => written += size,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) if is_transient(&error) && Instant::now() < deadline => {
                 thread::sleep(IO_POLL_INTERVAL);
             }
             Err(error) if is_transient(&error) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "local IPC write timed out",
-                ));
+                return Err(write_timeout());
             }
             Err(error) => return Err(error),
         }
     }
     Ok(())
+}
+
+fn write_timeout() -> io::Error {
+    io::Error::new(io::ErrorKind::TimedOut, "local IPC write timed out")
 }
 
 fn read_messages<T: tractor_beam_hook_ipc::WireMessage>(
@@ -362,4 +457,60 @@ fn saturating_increment_u32(counter: &AtomicU32) {
     let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         Some(value.saturating_add(1))
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct ZeroThenWrite {
+        returned_zero: bool,
+        bytes: Vec<u8>,
+    }
+
+    impl Write for ZeroThenWrite {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            if !self.returned_zero {
+                self.returned_zero = true;
+                return Ok(0);
+            }
+            self.bytes.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn retries_zero_progress_windows_named_pipe_write() {
+        let mut writer = ZeroThenWrite {
+            returned_zero: false,
+            bytes: Vec::new(),
+        };
+
+        write_all_bounded(&mut writer, b"game-packet").unwrap();
+
+        assert!(writer.returned_zero);
+        assert_eq!(writer.bytes, b"game-packet");
+    }
+
+    #[test]
+    fn pending_write_resumes_after_zero_progress() {
+        let mut writer = ZeroThenWrite {
+            returned_zero: false,
+            bytes: Vec::new(),
+        };
+        let mut pending = PendingWrite {
+            bytes: b"game-packet".to_vec(),
+            written: 0,
+            stalled_since: Instant::now(),
+        };
+
+        assert!(!pending.try_flush(&mut writer).unwrap());
+        assert!(pending.try_flush(&mut writer).unwrap());
+
+        assert_eq!(writer.bytes, b"game-packet");
+    }
 }

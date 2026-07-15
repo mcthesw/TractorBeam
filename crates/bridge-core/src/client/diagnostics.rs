@@ -136,6 +136,21 @@ impl BridgeClient {
             self.state.counters.reconnect_dropped_packets
         ));
         output.push_str(&format!("relay_link: {:?}\n\n", self.state.relay_link));
+        output.push_str("direct LAN:\n");
+        output.push_str(&format!("peers: {}\n", self.state.lan_peers.len()));
+        for peer in &self.state.lan_peers {
+            output.push_str(&format!(
+                "peer: steam_id64={} instance={:?} connection={:?}\n",
+                peer.peer.identity.steam_id64, peer.peer.identity.instance_id, peer.connection
+            ));
+        }
+        for path in &self.state.lan_paths {
+            output.push_str(&format!(
+                "path: peer={} status={:?} local={:?} remote={:?}\n",
+                path.peer.steam_id64, path.status, path.local_endpoint, path.remote_endpoint
+            ));
+        }
+        output.push('\n');
         output.push_str("client config:\n");
         if let Some(path) = &self.loaded_config.source {
             output.push_str(&format!("source: {}\n", path.display()));
@@ -420,6 +435,31 @@ mod tests {
 
     use super::*;
     use crate::client::{BridgeClient, LoadedClientConfig, LogLevel, state::log_entry};
+
+    #[test]
+    fn direct_lan_diagnostics_include_path_evidence_without_path_secrets() {
+        use crate::client::{LanPeerPathState, LanPeerPathStatus};
+        use tractor_beam_direct_protocol::{InstanceId, PeerIdentity};
+
+        let mut client = BridgeClient::with_config(LoadedClientConfig::default());
+        client.state.lan_paths.push(LanPeerPathState {
+            peer: PeerIdentity::new(7, InstanceId::from_bytes([7; 16])),
+            status: LanPeerPathStatus::Usable,
+            local_endpoint: Some("192.168.1.2:30000".parse().unwrap()),
+            remote_endpoint: Some("192.168.1.3:30001".parse().unwrap()),
+        });
+
+        let raw = client.diagnostics_text();
+        assert!(raw.contains("status=Usable"));
+        assert!(raw.contains("192.168.1.2:30000"));
+        assert!(!raw.contains("path_token"));
+        assert!(!raw.contains("path_id"));
+        assert!(!raw.contains("session_credential"));
+
+        let redacted = client.redacted_diagnostics_text();
+        assert!(!redacted.contains("192.168.1.2"));
+        assert!(!redacted.contains("192.168.1.3"));
+    }
 
     #[test]
     fn troubleshooting_package_is_a_redacted_bounded_zip() {

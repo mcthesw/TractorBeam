@@ -93,6 +93,38 @@ async fn real_local_socket_roundtrips_game_control_and_shutdown() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hook_goodbye_ends_worker_without_reconnect_timeout() {
+    let session = HookIpcSession::test();
+    let (_control_tx, control_rx) = control_channel();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
+    let cancellation = CancellationToken::new();
+    let observed_cancellation = cancellation.clone();
+    let (_from_hook, _to_hook, worker) =
+        start(session.clone(), control_rx, event_tx, cancellation).unwrap();
+    let worker = tokio::spawn(worker);
+    let fake = thread::spawn(move || {
+        let mut stream = connect_fake_hook(&session);
+        write_hook_message(&mut stream, &HookToClient::Goodbye).unwrap();
+    });
+
+    time::timeout(TEST_TIMEOUT, worker)
+        .await
+        .expect("Hook Goodbye should end the IPC worker immediately")
+        .unwrap()
+        .unwrap();
+    fake.join().unwrap();
+    assert!(observed_cancellation.is_cancelled());
+
+    while let Ok(event) = event_rx.try_recv() {
+        assert!(!matches!(
+            event,
+            RuntimeEvent::HookIpc(state)
+                if state.connection == HookIpcConnectionState::Failed
+        ));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_session_disconnect_reconnects_with_fresh_handshake() {
     let session = HookIpcSession::test();
     let (_control_tx, control_rx) = control_channel();

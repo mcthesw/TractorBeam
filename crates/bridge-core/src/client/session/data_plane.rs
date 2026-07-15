@@ -11,7 +11,6 @@ pub(super) struct RelayTransportTaskContext {
     pub(super) event_tx: RuntimeEventSender,
     pub(super) cancellation: CancellationToken,
     pub(super) health: Option<SharedSessionHealth>,
-    pub(super) health_snapshot_interval: Duration,
     pub(super) runtime_rtt_interval: Duration,
     pub(super) initial_peers: Vec<PeerPresenceInfo>,
 }
@@ -49,8 +48,6 @@ pub(super) async fn relay_transport_task(
     let mut observer = PacketObserver::default();
     let mut heartbeat = time::interval(HEARTBEAT_INTERVAL);
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    let mut health_snapshot = time::interval(context.health_snapshot_interval);
-    health_snapshot.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut runtime_rtt = time::interval(context.runtime_rtt_interval);
     runtime_rtt.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut room_path_tick = time::interval(Duration::from_secs(1));
@@ -87,7 +84,7 @@ pub(super) async fn relay_transport_task(
                     continue;
                 }
                 observe_health(&context.health, |health| {
-                    health.observe_relay_send_duration(started.elapsed());
+                    health.observe_network_send_duration(started.elapsed());
                 });
                 send_event(
                     &context.event_tx,
@@ -105,19 +102,9 @@ pub(super) async fn relay_transport_task(
                         continue;
                     }
                 };
-                observe_health(&context.health, |health| {
-                    health.observe_relay_recv(raw.len(), Instant::now());
-                });
                 match decode_inbound_relay_datagram(raw) {
                     Ok(Some(InboundRelayDatagram::Game(packet))) => {
-                        observe_health(&context.health, |health| {
-                            health.observe_source_sequence(
-                                packet.from_steam_id64,
-                                packet.source_sequence,
-                            );
-                        });
                         let accepted = inbound_tx.try_send(packet).is_ok();
-                        observe_health(&context.health, |health| health.observe_inbound_enqueue(accepted));
                         if !accepted {
                             send_error(&context.event_tx, "Hook inbound queue is full; dropping relay packet");
                         }
@@ -166,9 +153,6 @@ pub(super) async fn relay_transport_task(
                 if let Err(error) = send_control(&mut relay.sender, &ClientControl::ControlPing { id: 0 }).await {
                     recover_relay(&mut relay, &mut outbound_rx, &context, error).await?;
                 }
-            }
-            _ = health_snapshot.tick(), if context.health.is_some() => {
-                emit_health_snapshot(&context.event_tx, &context.health);
             }
             _ = runtime_rtt.tick(), if context.health.is_some() => {
                 if let Some(id) = next_health_ping(&context.health)
@@ -315,6 +299,7 @@ async fn recover_relay(
                 packet = outbound_rx.recv() => {
                     if packet.is_some() {
                         dropped = dropped.saturating_add(1);
+                        observe_health(&context.health, SessionHealth::observe_network_send_drop);
                         send_event(
                             &context.event_tx,
                             RuntimeEvent::CounterDelta(Counters {
@@ -368,12 +353,19 @@ pub(super) async fn hook_out_task(
         tokio::select! {
             () = cancellation.cancelled() => return Ok(()),
             Some(packet) = inbound_rx.recv() => {
+                let from_steam_id64 = packet.from_steam_id64;
+                let source_sequence = packet.source_sequence;
                 let (packet, summary, received_bytes) =
                     encode_inbound_hook_packet(packet, &mut local_sequence);
+                observe_health(&health, |health| {
+                    health.observe_network_recv(summary.payload_bytes, Instant::now());
+                    health.observe_source_sequence(from_steam_id64, source_sequence);
+                });
                 let started = Instant::now();
                 let accepted = to_hook.try_send(packet);
                 observe_health(&health, |health| {
                     health.observe_hook_out_send_duration(started.elapsed());
+                    health.observe_inbound_enqueue(accepted);
                 });
                 if accepted {
                     send_event(
@@ -392,7 +384,26 @@ pub(super) async fn hook_out_task(
     }
 }
 
-fn observe_health(health: &Option<SharedSessionHealth>, observe: impl FnOnce(&mut SessionHealth)) {
+pub(super) async fn health_snapshot_task(
+    event_tx: RuntimeEventSender,
+    cancellation: CancellationToken,
+    health: Option<SharedSessionHealth>,
+    interval: Duration,
+) -> io::Result<()> {
+    let mut tick = time::interval(interval);
+    tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            () = cancellation.cancelled() => return Ok(()),
+            _ = tick.tick() => emit_health_snapshot(&event_tx, &health),
+        }
+    }
+}
+
+pub(super) fn observe_health(
+    health: &Option<SharedSessionHealth>,
+    observe: impl FnOnce(&mut SessionHealth),
+) {
     let Some(health) = health else {
         return;
     };

@@ -104,6 +104,7 @@ pub enum QualityConfidence {
 #[serde(rename_all = "snake_case")]
 pub enum SessionQualityReason {
     LocalQueueDrop,
+    NetworkSendDrop,
     SequenceGap,
     SequenceReordered,
     HookSendStall,
@@ -115,7 +116,8 @@ pub enum SessionQualityReason {
 pub struct SessionHealthWindow {
     pub duration_seconds: u64,
     pub hook_in_packets: u64,
-    pub relay_recv_packets: u64,
+    pub network_recv_packets: u64,
+    pub network_send_dropped: u64,
     pub queue_drops: u64,
     pub sequence_gaps: u64,
     pub sequence_reordered: u64,
@@ -123,8 +125,8 @@ pub struct SessionHealthWindow {
     pub runtime_rtt_timeouts: u64,
     pub hook_send_over_500_ms: u64,
     pub hook_send_over_1000_ms: u64,
-    pub relay_gap_over_500_ms: u64,
-    pub relay_gap_over_1000_ms: u64,
+    pub network_gap_over_500_ms: u64,
+    pub network_gap_over_1000_ms: u64,
 }
 
 impl Display for SessionQuality {
@@ -146,8 +148,9 @@ pub struct SessionHealthSnapshot {
     pub reasons: Vec<SessionQualityReason>,
     pub window: SessionHealthWindow,
     pub hook_in_recv: PacketStageSnapshot,
-    pub relay_recv: PacketStageSnapshot,
-    pub relay_send_duration: LatencySummary,
+    pub network_recv: PacketStageSnapshot,
+    pub network_send_duration: LatencySummary,
+    pub network_send_dropped: u64,
     pub hook_out_send_duration: LatencySummary,
     pub queues: QueueHealthSnapshot,
     pub source_sequence: SequenceHealthSnapshot,
@@ -160,17 +163,18 @@ impl SessionHealthSnapshot {
     #[must_use]
     pub fn compact_log_line(&self, label: &str) -> String {
         format!(
-            "{label}: quality={} confidence={:?} reasons={:?} window={}s hook_in={} relay_recv={} rtt_p95={} queue_drops={} seq_gaps={} relay_gap_p95={} hook_out_p95={}",
+            "{label}: quality={} confidence={:?} reasons={:?} window={}s hook_in={} network_recv={} rtt_p95={} queue_drops={} network_drops={} seq_gaps={} network_gap_p95={} hook_out_p95={}",
             self.quality,
             self.confidence,
             self.reasons,
             self.window.duration_seconds,
             self.hook_in_recv.packets,
-            self.relay_recv.packets,
+            self.network_recv.packets,
             display_ms(self.runtime_rtt.latency.p95_ms),
             self.queues.total_dropped(),
+            self.network_send_dropped,
             self.source_sequence.gaps,
-            display_ms(self.relay_recv.gap.p95_ms),
+            display_ms(self.network_recv.gap.p95_ms),
             display_ms(self.hook_out_send_duration.p95_ms),
         )
     }
@@ -182,8 +186,9 @@ pub(super) struct SessionHealth {
     runtime_rtt_enabled: bool,
     runtime_rtt_timeout: Duration,
     hook_in_recv: PacketStageStats,
-    relay_recv: PacketStageStats,
-    relay_send_duration: LatencyAccumulator,
+    network_recv: PacketStageStats,
+    network_send_duration: LatencyAccumulator,
+    network_send_dropped: u64,
     hook_out_send_duration: LatencyAccumulator,
     queues: QueueStats,
     sequences: SequenceStats,
@@ -204,8 +209,9 @@ impl SessionHealth {
             runtime_rtt_enabled,
             runtime_rtt_timeout,
             hook_in_recv: PacketStageStats::default(),
-            relay_recv: PacketStageStats::default(),
-            relay_send_duration: LatencyAccumulator::default(),
+            network_recv: PacketStageStats::default(),
+            network_send_duration: LatencyAccumulator::default(),
+            network_send_dropped: 0,
             hook_out_send_duration: LatencyAccumulator::default(),
             queues: QueueStats::default(),
             sequences: SequenceStats::default(),
@@ -223,12 +229,16 @@ impl SessionHealth {
         self.queues.observe_outbound(accepted);
     }
 
-    pub(super) fn observe_relay_send_duration(&mut self, duration: Duration) {
-        self.relay_send_duration.observe(duration);
+    pub(super) fn observe_network_send_duration(&mut self, duration: Duration) {
+        self.network_send_duration.observe(duration);
     }
 
-    pub(super) fn observe_relay_recv(&mut self, bytes: usize, now: Instant) {
-        self.relay_recv.observe(bytes, now);
+    pub(super) fn observe_network_recv(&mut self, bytes: usize, now: Instant) {
+        self.network_recv.observe(bytes, now);
+    }
+
+    pub(super) fn observe_network_send_drop(&mut self) {
+        self.network_send_dropped = self.network_send_dropped.saturating_add(1);
     }
 
     pub(super) fn observe_inbound_enqueue(&mut self, accepted: bool) {
@@ -260,16 +270,17 @@ impl SessionHealth {
     pub(super) fn snapshot(&mut self, now: Instant) -> SessionHealthSnapshot {
         self.expire_runtime_rtt(now);
         let hook_in_recv = self.hook_in_recv.snapshot();
-        let relay_recv = self.relay_recv.snapshot();
+        let network_recv = self.network_recv.snapshot();
         let queues = self.queues.snapshot();
         let source_sequence = self.sequences.snapshot();
         let runtime_rtt = self.runtime_rtt.snapshot(self.runtime_rtt_enabled);
-        let relay_send_duration = self.relay_send_duration.summary();
+        let network_send_duration = self.network_send_duration.summary();
         let hook_out_send_duration = self.hook_out_send_duration.summary();
         let elapsed_seconds = now.duration_since(self.start).as_secs();
         let current = QualityBaseline::from_snapshots(
             hook_in_recv,
-            relay_recv,
+            network_recv,
+            self.network_send_dropped,
             queues,
             source_sequence,
             runtime_rtt,
@@ -290,8 +301,9 @@ impl SessionHealth {
             reasons: assessment.reasons,
             window,
             hook_in_recv,
-            relay_recv,
-            relay_send_duration,
+            network_recv,
+            network_send_duration,
+            network_send_dropped: self.network_send_dropped,
             hook_out_send_duration,
             queues,
             source_sequence,
@@ -313,7 +325,8 @@ use stats::*;
 #[derive(Clone, Copy, Debug, Default)]
 struct QualityBaseline {
     hook_in_packets: u64,
-    relay_recv_packets: u64,
+    network_recv_packets: u64,
+    network_send_dropped: u64,
     queue_drops: u64,
     sequence_gaps: u64,
     sequence_reordered: u64,
@@ -321,14 +334,15 @@ struct QualityBaseline {
     runtime_rtt_timeouts: u64,
     hook_send_over_500_ms: u64,
     hook_send_over_1000_ms: u64,
-    relay_gap_over_500_ms: u64,
-    relay_gap_over_1000_ms: u64,
+    network_gap_over_500_ms: u64,
+    network_gap_over_1000_ms: u64,
 }
 
 impl QualityBaseline {
     fn from_snapshots(
         hook_in: PacketStageSnapshot,
-        relay_recv: PacketStageSnapshot,
+        network_recv: PacketStageSnapshot,
+        network_send_dropped: u64,
         queues: QueueHealthSnapshot,
         sequence: SequenceHealthSnapshot,
         runtime_rtt: RuntimeRttSnapshot,
@@ -336,7 +350,8 @@ impl QualityBaseline {
     ) -> Self {
         Self {
             hook_in_packets: hook_in.packets,
-            relay_recv_packets: relay_recv.packets,
+            network_recv_packets: network_recv.packets,
+            network_send_dropped,
             queue_drops: queues.total_dropped(),
             sequence_gaps: sequence.gaps,
             sequence_reordered: sequence.duplicate_or_reordered,
@@ -344,8 +359,8 @@ impl QualityBaseline {
             runtime_rtt_timeouts: runtime_rtt.timed_out,
             hook_send_over_500_ms: hook_send.over_500_ms,
             hook_send_over_1000_ms: hook_send.over_1000_ms,
-            relay_gap_over_500_ms: relay_recv.gap.over_500_ms,
-            relay_gap_over_1000_ms: relay_recv.gap.over_1000_ms,
+            network_gap_over_500_ms: network_recv.gap.over_500_ms,
+            network_gap_over_1000_ms: network_recv.gap.over_1000_ms,
         }
     }
 
@@ -355,9 +370,12 @@ impl QualityBaseline {
             hook_in_packets: self
                 .hook_in_packets
                 .saturating_sub(previous.hook_in_packets),
-            relay_recv_packets: self
-                .relay_recv_packets
-                .saturating_sub(previous.relay_recv_packets),
+            network_recv_packets: self
+                .network_recv_packets
+                .saturating_sub(previous.network_recv_packets),
+            network_send_dropped: self
+                .network_send_dropped
+                .saturating_sub(previous.network_send_dropped),
             queue_drops: self.queue_drops.saturating_sub(previous.queue_drops),
             sequence_gaps: self.sequence_gaps.saturating_sub(previous.sequence_gaps),
             sequence_reordered: self
@@ -375,12 +393,12 @@ impl QualityBaseline {
             hook_send_over_1000_ms: self
                 .hook_send_over_1000_ms
                 .saturating_sub(previous.hook_send_over_1000_ms),
-            relay_gap_over_500_ms: self
-                .relay_gap_over_500_ms
-                .saturating_sub(previous.relay_gap_over_500_ms),
-            relay_gap_over_1000_ms: self
-                .relay_gap_over_1000_ms
-                .saturating_sub(previous.relay_gap_over_1000_ms),
+            network_gap_over_500_ms: self
+                .network_gap_over_500_ms
+                .saturating_sub(previous.network_gap_over_500_ms),
+            network_gap_over_1000_ms: self
+                .network_gap_over_1000_ms
+                .saturating_sub(previous.network_gap_over_1000_ms),
         }
     }
 }
@@ -392,8 +410,9 @@ struct QualityAssessment {
 }
 
 fn classify_quality(elapsed_seconds: u64, window: SessionHealthWindow) -> QualityAssessment {
-    let has_evidence =
-        window.hook_in_packets > 0 || window.relay_recv_packets > 0 || window.runtime_rtt_sent > 0;
+    let has_evidence = window.hook_in_packets > 0
+        || window.network_recv_packets > 0
+        || window.runtime_rtt_sent > 0;
     if elapsed_seconds < ACTIVE_TRAFFIC_STARTUP_GRACE_SECONDS || !has_evidence {
         return QualityAssessment {
             quality: SessionQuality::Unavailable,
@@ -406,6 +425,10 @@ fn classify_quality(elapsed_seconds: u64, window: SessionHealthWindow) -> Qualit
     let mut poor = false;
     if window.queue_drops > 0 {
         reasons.push(SessionQualityReason::LocalQueueDrop);
+        poor = true;
+    }
+    if window.network_send_dropped > 0 {
+        reasons.push(SessionQualityReason::NetworkSendDrop);
         poor = true;
     }
     if window.sequence_gaps >= WATCH_SEQUENCE_GAPS {
@@ -426,7 +449,8 @@ fn classify_quality(elapsed_seconds: u64, window: SessionHealthWindow) -> Qualit
     reasons.sort_unstable();
     let evidence_count = window
         .hook_in_packets
-        .saturating_add(window.relay_recv_packets)
+        .saturating_add(window.network_recv_packets)
+        .saturating_add(window.network_send_dropped)
         .saturating_add(window.runtime_rtt_sent);
     QualityAssessment {
         quality: if poor {

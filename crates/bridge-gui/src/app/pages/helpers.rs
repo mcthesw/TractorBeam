@@ -203,12 +203,16 @@ pub(super) fn session_health_summary(ui: &mut egui::Ui, state: &RuntimeState) {
             ui.monospace(snapshot.queues.total_dropped().to_string());
             ui.end_row();
 
+            ui.label(t!("health.network_drops"));
+            ui.monospace(snapshot.network_send_dropped.to_string());
+            ui.end_row();
+
             ui.label(t!("health.sequence_gaps"));
             ui.monospace(snapshot.source_sequence.gaps.to_string());
             ui.end_row();
 
             ui.label(t!("health.packet_gaps"));
-            ui.monospace(display_latency_ms(snapshot.relay_recv.gap.p95_ms));
+            ui.monospace(display_latency_ms(snapshot.network_recv.gap.p95_ms));
             ui.end_row();
         });
 }

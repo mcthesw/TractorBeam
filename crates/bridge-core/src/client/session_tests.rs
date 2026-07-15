@@ -141,10 +141,13 @@ async fn lan_mode_attaches_existing_room_without_relay() {
         mode: super::super::SessionMode::Pure,
         steam_id64: "76561198000000001".to_owned(),
         display_name: "Test".to_owned(),
-        session_health: super::super::SessionHealthConfig::default(),
+        session_health: super::super::SessionHealthConfig {
+            snapshot_interval_seconds: 1,
+            ..super::super::SessionHealthConfig::default()
+        },
     };
     let cancellation = CancellationToken::new();
-    let (event_tx, _event_rx) = tokio_mpsc::channel(EVENT_QUEUE_CAPACITY);
+    let (event_tx, mut event_rx) = tokio_mpsc::channel(EVENT_QUEUE_CAPACITY);
     let (_control, control_rx) = hook_ipc::control_channel();
     let tasks = start_runtime_tasks_inner(
         &config,
@@ -160,6 +163,16 @@ async fn lan_mode_attaches_existing_room_without_relay() {
     .unwrap();
 
     assert!(!tasks.route.is_empty());
+    let health_snapshot = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(RuntimeEvent::SessionHealthSnapshot(snapshot)) = event_rx.recv().await {
+                break snapshot;
+            }
+        }
+    })
+    .await
+    .expect("LAN sessions should emit periodic health snapshots");
+    assert!(!health_snapshot.runtime_rtt.enabled);
     cancellation.cancel();
     shutdown_tasks(tasks.route, &event_tx).await;
     shutdown_tasks(tasks.support, &event_tx).await;

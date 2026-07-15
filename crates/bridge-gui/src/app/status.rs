@@ -249,7 +249,7 @@ mod tests {
             set_language(Language::Chinese);
             assert_eq!(
                 message.localized_text(),
-                "配置文件有误，已使用可手动修改的默认值。"
+                "配置文件有误，已使用可手动修改的默认值"
             );
             set_language(Language::English);
             assert_eq!(

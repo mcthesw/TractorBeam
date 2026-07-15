@@ -216,6 +216,80 @@ async fn input_delay_control_is_not_starved_by_game_burst() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_local_socket_survives_temporary_write_backpressure() {
+    const PACKET_COUNT: u32 = 64;
+    const PAYLOAD_BYTES: usize = 4_096;
+    let session = HookIpcSession::test();
+    let (_control_tx, control_rx) = control_channel();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
+    let cancellation = CancellationToken::new();
+    let (_from_hook, to_hook, worker) =
+        start(session.clone(), control_rx, event_tx, cancellation.clone()).unwrap();
+    let worker = tokio::spawn(worker);
+    let (connected_tx, connected_rx) = mpsc::sync_channel(1);
+    let (progress_tx, progress_rx) = mpsc::channel();
+    let fake = thread::spawn(move || {
+        let mut stream = connect_fake_hook(&session);
+        connected_tx.send(()).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        stream.set_nonblocking(false).unwrap();
+        let mut decoder = FrameDecoder::new();
+        let mut received = 0_u32;
+        while received < PACKET_COUNT {
+            for message in read_client_messages(&mut stream, &mut decoder).unwrap() {
+                match message {
+                    ClientToHook::Game(packet) => {
+                        assert_eq!(packet.sequence, received);
+                        assert_eq!(packet.payload.len(), PAYLOAD_BYTES);
+                        received = received.saturating_add(1);
+                        progress_tx.send(received).unwrap();
+                    }
+                    ClientToHook::Ping { id } => {
+                        write_hook_message(&mut stream, &HookToClient::Pong { id }).unwrap();
+                    }
+                    ClientToHook::Handshake(_) => panic!("duplicate client handshake"),
+                    ClientToHook::InputDelay { .. } | ClientToHook::Shutdown => {}
+                }
+            }
+        }
+        wait_for_shutdown(&mut stream);
+    });
+
+    tokio::task::spawn_blocking(move || connected_rx.recv_timeout(TEST_TIMEOUT))
+        .await
+        .unwrap()
+        .unwrap();
+    for sequence in 0..PACKET_COUNT {
+        assert!(to_hook.try_send(packet(1, sequence, &[0x5a; PAYLOAD_BYTES])));
+    }
+    let received = tokio::task::spawn_blocking(move || {
+        let deadline = Instant::now() + TEST_TIMEOUT;
+        let mut received = 0;
+        while received < PACKET_COUNT {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            received = progress_rx.recv_timeout(remaining).map_err(|_| received)?;
+        }
+        Ok::<_, u32>(received)
+    })
+    .await
+    .unwrap();
+    assert_eq!(received, Ok(PACKET_COUNT));
+
+    while let Ok(event) = event_rx.try_recv() {
+        if let RuntimeEvent::HookIpc(state) = event {
+            assert_eq!(state.reconnects, 0, "local IPC unexpectedly reconnected");
+        }
+    }
+    cancellation.cancel();
+    time::timeout(TEST_TIMEOUT, worker)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    fake.join().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires TRACTOR_BEAM_I686_IPC_PEER built for i686-pc-windows-msvc"]
 async fn i686_peer_roundtrips_with_x64_client() {
     let peer_path = std::env::var_os("TRACTOR_BEAM_I686_IPC_PEER")

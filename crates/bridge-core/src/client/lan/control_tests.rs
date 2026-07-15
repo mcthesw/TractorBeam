@@ -1,6 +1,7 @@
 use tractor_beam_direct_protocol::InstanceId;
 
 use super::*;
+use crate::client::LanPeerPathStatus;
 
 fn loopback_adapter(id: u32) -> LanAdapterAddress {
     LanAdapterAddress {
@@ -27,7 +28,7 @@ async fn room(id: u8, credential: SessionCredential) -> LanControlPlane {
 }
 
 async fn wait_connected(room: &LanControlPlane, expected: usize) {
-    time::timeout(Duration::from_secs(5), async {
+    let result = time::timeout(Duration::from_secs(5), async {
         loop {
             let connected = room
                 .peer_states()
@@ -40,8 +41,26 @@ async fn wait_connected(room: &LanControlPlane, expected: usize) {
             time::sleep(Duration::from_millis(25)).await;
         }
     })
-    .await
-    .unwrap();
+    .await;
+    assert!(result.is_ok(), "path states: {:?}", room.path_states());
+}
+
+async fn wait_usable_paths(room: &LanControlPlane, expected: usize) {
+    let result = time::timeout(Duration::from_secs(5), async {
+        loop {
+            let usable = room
+                .path_states()
+                .iter()
+                .filter(|path| path.status == LanPeerPathStatus::Usable)
+                .count();
+            if usable == expected {
+                return;
+            }
+            time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await;
+    assert!(result.is_ok(), "path states: {:?}", room.path_states());
 }
 
 #[tokio::test]
@@ -138,6 +157,9 @@ async fn concurrent_joiners_converge_to_direct_membership_mesh() {
     wait_connected(&introducer, 2).await;
     wait_connected(&alice, 2).await;
     wait_connected(&bob, 2).await;
+    wait_usable_paths(&introducer, 2).await;
+    wait_usable_paths(&alice, 2).await;
+    wait_usable_paths(&bob, 2).await;
 
     introducer.shutdown().await;
     time::sleep(Duration::from_millis(100)).await;
@@ -167,6 +189,8 @@ async fn simultaneous_duplicate_dials_keep_one_link_per_peer() {
     right.unwrap();
     wait_connected(&alice, 1).await;
     wait_connected(&bob, 1).await;
+    wait_usable_paths(&alice, 1).await;
+    wait_usable_paths(&bob, 1).await;
     assert_eq!(
         alice
             .peer_states()

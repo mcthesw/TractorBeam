@@ -388,7 +388,10 @@ mod tests {
 
     #[test]
     fn readiness_matrix_declares_supported_connection_profiles() {
-        assert_eq!(READINESS_PROBE_PAYLOAD_BYTES, [512, 1024, 1800]);
+        assert_eq!(
+            READINESS_PROBE_PAYLOAD_BYTES,
+            [512, 1024, crate::protocol::MAX_DATA_PAYLOAD]
+        );
         assert_eq!(
             READINESS_PROBE_CONNECTION_PROFILES,
             [ConnectionProfile::Tcp, ConnectionProfile::Udp]

@@ -281,6 +281,9 @@ health.runtime_rtt:
 health.queue_drops:
   zh_CN: "队列丢包"
   en_US: "Queue drops"
+health.network_drops:
+  zh_CN: "链路丢包"
+  en_US: "Network drops"
 health.sequence_gaps:
   zh_CN: "序列跳变"
   en_US: "Sequence gaps"

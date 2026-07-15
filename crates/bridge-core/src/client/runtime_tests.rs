@@ -53,6 +53,7 @@ fn validates_lan_session_without_relay_fields() {
     let config = SessionConfig {
         route: SessionRouteConfig::LanDirect(LanDirectConfig {
             session_credential: crate::SessionCredential::generate(),
+            room: None,
         }),
         mode: SessionMode::Pure,
         steam_id64: "76561198000000001".to_owned(),
@@ -61,13 +62,6 @@ fn validates_lan_session_without_relay_fields() {
     };
 
     assert!(config.validate().is_ok());
-
-    let mut client = BridgeClient::new();
-    let error = client.start_session(&config).unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "Direct LAN sessions are not available in this build"
-    );
 }
 
 #[test]

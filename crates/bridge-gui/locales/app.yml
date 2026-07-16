@@ -240,14 +240,14 @@ logs.open_failed:
   zh_CN: "无法打开日志文件夹"
   en_US: "Could not open the log folder"
 diagnostics.export:
-  zh_CN: "导出排障包"
-  en_US: "Troubleshooting Package"
+  zh_CN: "导出诊断包"
+  en_US: "Diagnostics Bundle"
 diagnostics.exported:
-  zh_CN: "排障包已保存"
-  en_US: "Troubleshooting Package saved"
+  zh_CN: "诊断包已保存"
+  en_US: "Diagnostics Bundle saved"
 diagnostics.export_failed:
-  zh_CN: "无法保存排障包，可打开日志文件夹手动获取日志"
-  en_US: "Could not save the package; open the log folder to collect logs manually"
+  zh_CN: "无法保存诊断包，可打开日志文件夹手动获取日志"
+  en_US: "Could not save the Diagnostics Bundle; open the log folder to collect logs manually"
 diagnostics.reveal:
   zh_CN: "在文件夹中显示"
   en_US: "Reveal"

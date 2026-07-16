@@ -147,13 +147,6 @@ impl HookStartupState {
 }
 
 impl RuntimeState {
-    #[must_use]
-    pub fn hook_log_path_written(&self) -> Option<PathBuf> {
-        self.hook_launch_parameters_path_written
-            .as_ref()
-            .map(|path| path.with_file_name(crate::diagnostics::BRIDGE_HOOK_LOG))
-    }
-
     pub(super) fn record_session_health_incident(
         &mut self,
         health: &SessionHealthSnapshot,

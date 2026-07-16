@@ -146,7 +146,7 @@ pub struct BridgeApp {
     pending_lan_invitation: Option<LanJoinCode>,
     lan_probe_results: Vec<LanProbeResult>,
     selected_lan_probe: Option<usize>,
-    last_troubleshooting_package: Option<std::path::PathBuf>,
+    last_diagnostics_bundle: Option<std::path::PathBuf>,
     session_health: SessionHealthConfig,
 }
 
@@ -189,7 +189,7 @@ impl BridgeApp {
             pending_lan_invitation: None,
             lan_probe_results: Vec::new(),
             selected_lan_probe: None,
-            last_troubleshooting_package: None,
+            last_diagnostics_bundle: None,
             session_health: SessionHealthConfig::default(),
         }
     }
@@ -314,8 +314,8 @@ impl BridgeApp {
         }
     }
 
-    fn export_troubleshooting_package(&mut self) {
-        if !self.application.export_troubleshooting_package() {
+    fn export_diagnostics_bundle(&mut self) {
+        if !self.application.export_diagnostics_bundle() {
             self.show_busy_status();
         }
     }

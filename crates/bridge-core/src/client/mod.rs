@@ -39,8 +39,7 @@ pub use lan::{
     enumerate_lan_adapter_addresses, enumerate_lan_adapters, lan_candidate_addresses,
 };
 pub use logging::{
-    ClientLogSink, ClientSessionLog, ClientSessionLogContext, ClientSessionLogRoute,
-    emit_client_log_event,
+    ClientLogSink, ClientSessionLogContext, ClientSessionLogRoute, emit_client_log_event,
 };
 pub use probe::{
     DEFAULT_RELAY_PROBE_PAYLOAD_BYTES, HookReceiveProbeReport, LightPingReport, LightPingTarget,

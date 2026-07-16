@@ -11,12 +11,8 @@ impl BridgeClient {
 
     pub(super) fn push_log(&mut self, level: LogLevel, message: impl Into<String>) {
         let message = message.into();
-        let active_session = self.active_session_log.as_deref();
-        let session_context = active_session.map(ClientSessionLog::context);
-        self.log_sink.emit(session_context, level, &message);
-        if let Some(session) = active_session {
-            session.emit(level, &message);
-        }
+        self.log_sink
+            .emit(self.active_log_context.as_ref(), level, &message);
         self.state.logs.push(log_entry(level, message));
         trim_logs(&mut self.state.logs);
     }

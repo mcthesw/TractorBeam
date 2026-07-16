@@ -65,15 +65,15 @@ impl BridgeApp {
                     self.status_message = Some(StatusMessage::LogOpenFailed);
                 }
             },
-            ApplicationEvent::TroubleshootingPackageExported(result) => match result {
+            ApplicationEvent::DiagnosticsBundleExported(result) => match result {
                 Ok(Some(path)) => {
-                    tracing::info!(path = %path.display(), "Troubleshooting Package export completed");
-                    self.last_troubleshooting_package = Some(path);
+                    tracing::info!(path = %path.display(), "Diagnostics Bundle export completed");
+                    self.last_diagnostics_bundle = Some(path);
                     self.status_message = Some(StatusMessage::DiagnosticsExported);
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    tracing::warn!(error = %error, "Could not export Troubleshooting Package");
+                    tracing::warn!(error = %error, "Could not export Diagnostics Bundle");
                     self.status_message = Some(StatusMessage::DiagnosticsExportFailed);
                 }
             },

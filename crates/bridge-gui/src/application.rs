@@ -55,7 +55,7 @@ pub(crate) enum ApplicationOperation {
     ReadingInputDelay,
     WritingInputDelay,
     OpeningLogs,
-    ExportingTroubleshootingPackage,
+    ExportingDiagnosticsBundle,
     ReadingClipboard,
     ConfiguringLan,
     ShuttingDown,
@@ -107,7 +107,7 @@ pub(crate) enum ApplicationEvent {
     InputDelayReadFinished(Result<InputDelayReport, InputDelayError>),
     InputDelayWriteFinished(Result<InputDelayReport, InputDelayError>),
     LogDirectoryOpened(Result<PathBuf, String>),
-    TroubleshootingPackageExported(Result<Option<PathBuf>, String>),
+    DiagnosticsBundleExported(Result<Option<PathBuf>, String>),
     ClipboardReadFinished(Result<String, String>),
     LanAdaptersEnumerated(Result<Vec<LanAdapter>, String>),
     LanProbeFinished(Result<(LanJoinCode, Vec<LanProbeResult>), String>),
@@ -129,7 +129,7 @@ enum ApplicationCommand {
     ReadInputDelay,
     WriteInputDelay(i32),
     OpenLogDirectory,
-    ExportTroubleshootingPackage,
+    ExportDiagnosticsBundle,
     ClearLogs,
     ReadClipboard,
     EnumerateLanAdapters,
@@ -273,8 +273,8 @@ impl ApplicationHandle {
         self.submit(ApplicationCommand::OpenLogDirectory)
     }
 
-    pub(crate) fn export_troubleshooting_package(&self) -> bool {
-        self.submit(ApplicationCommand::ExportTroubleshootingPackage)
+    pub(crate) fn export_diagnostics_bundle(&self) -> bool {
+        self.submit(ApplicationCommand::ExportDiagnosticsBundle)
     }
 
     pub(crate) fn clear_logs(&self) -> bool {

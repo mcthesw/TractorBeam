@@ -61,12 +61,12 @@ impl BridgeApp {
                 )
                 .clicked()
             {
-                self.export_troubleshooting_package();
+                self.export_diagnostics_bundle();
             }
-            if self.last_troubleshooting_package.is_some()
+            if self.last_diagnostics_bundle.is_some()
                 && ui.button(t!("diagnostics.reveal")).clicked()
             {
-                self.reveal_troubleshooting_package();
+                self.reveal_diagnostics_bundle();
             }
         });
         ui.data_mut(|data| {

@@ -15,19 +15,21 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use windows_sys::Win32::{Foundation::HINSTANCE, System::LibraryLoader::GetModuleFileNameW};
+use windows_sys::Win32::{
+    Foundation::{HINSTANCE, SYSTEMTIME},
+    System::{LibraryLoader::GetModuleFileNameW, SystemInformation::GetLocalTime},
+};
 
 use tractor_beam_hook_ipc::{GamePacket, SessionId};
 
 use super::ipc_worker::{self, WorkerCounters};
 
-const CONFIG_FILE: &str = "isaac_bridge_config.txt";
-const LOG_FILE: &str = "tractor_beam_hook.log";
-const MAX_LOG_EVENTS: u32 = 20_000;
+const RUNTIME_FILE: &str = "hook-runtime.txt";
+const DAILY_LOG_RETAIN_COUNT: usize = 10;
 
 static STATE: Mutex<Option<BridgeState>> = Mutex::new(None);
 static LOG_LOCK: Mutex<()> = Mutex::new(());
-static LOG_EVENTS: AtomicU32 = AtomicU32::new(0);
+static LOG_DATE: Mutex<Option<String>> = Mutex::new(None);
 static NEXT_SEQUENCE: AtomicU32 = AtomicU32::new(1);
 static MODULE_HANDLE: AtomicUsize = AtomicUsize::new(0);
 
@@ -81,7 +83,7 @@ pub fn set_module_handle(module: HINSTANCE) {
 }
 
 pub fn initialize() {
-    let Some(config_path) = default_config_path() else {
+    let Some(config_path) = default_runtime_path() else {
         log_error("bridge_module_directory_unavailable");
         return;
     };
@@ -268,22 +270,31 @@ pub fn log_error(message: impl Display) {
 }
 
 pub fn log(level: HookLogLevel, message: impl Display) {
-    let event_index = LOG_EVENTS.fetch_add(1, Ordering::Relaxed);
-    if event_index >= MAX_LOG_EVENTS {
-        return;
-    }
     let Ok(_guard) = LOG_LOCK.lock() else {
         return;
     };
-    let Some(path) = default_config_path().map(|path| path.with_file_name(LOG_FILE)) else {
+    let Some(directory) = hook_log_directory() else {
         return;
     };
-    if let Some(directory) = path.parent() {
-        let _ = fs::create_dir_all(directory);
+    if fs::create_dir_all(&directory).is_err() {
+        return;
     }
-    let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) else {
+    let date = local_date();
+    let path = directory.join(format!("{date}.log"));
+    let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) else {
         return;
     };
+    let should_prune = LOG_DATE.lock().is_ok_and(|mut active_date| {
+        if active_date.as_deref() == Some(date.as_str()) {
+            false
+        } else {
+            *active_date = Some(date);
+            true
+        }
+    });
+    if should_prune {
+        prune_daily_logs(&directory);
+    }
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis());
@@ -330,8 +341,46 @@ fn read_config(path: &std::path::Path) -> io::Result<BridgeConfig> {
     })
 }
 
-fn default_config_path() -> Option<PathBuf> {
-    module_directory().map(|directory| directory.join(CONFIG_FILE))
+fn default_runtime_path() -> Option<PathBuf> {
+    hook_log_directory().map(|directory| directory.join(RUNTIME_FILE))
+}
+
+fn hook_log_directory() -> Option<PathBuf> {
+    module_directory().map(|directory| directory.join("logs").join("hook"))
+}
+
+fn local_date() -> String {
+    let mut time = SYSTEMTIME::default();
+    unsafe { GetLocalTime(&raw mut time) };
+    format!("{:04}-{:02}-{:02}", time.wYear, time.wMonth, time.wDay)
+}
+
+fn prune_daily_logs(directory: &std::path::Path) {
+    let mut files = fs::read_dir(directory)
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(is_daily_log_name)
+        })
+        .collect::<Vec<_>>();
+    files.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+    for path in files.into_iter().skip(DAILY_LOG_RETAIN_COUNT) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn is_daily_log_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    bytes.len() == 14
+        && bytes[0..4].iter().all(u8::is_ascii_digit)
+        && bytes[4] == b'-'
+        && bytes[5..7].iter().all(u8::is_ascii_digit)
+        && bytes[7] == b'-'
+        && bytes[8..10].iter().all(u8::is_ascii_digit)
+        && &bytes[10..] == b".log"
 }
 
 fn module_directory() -> Option<PathBuf> {

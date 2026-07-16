@@ -121,7 +121,7 @@ impl BridgeApp {
                 | ApplicationOperation::ReadingInputDelay
                 | ApplicationOperation::WritingInputDelay
                 | ApplicationOperation::OpeningLogs
-                | ApplicationOperation::ExportingTroubleshootingPackage
+                | ApplicationOperation::ExportingDiagnosticsBundle
                 | ApplicationOperation::ReadingClipboard
                 | ApplicationOperation::ConfiguringLan => t!("status.working"),
             };

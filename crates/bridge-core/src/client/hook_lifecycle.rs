@@ -304,7 +304,7 @@ mod tests {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(4);
         let paths = NativeHookPaths {
             injector: PathBuf::from("bundle/tractor-beam-isaac-injector.exe"),
-            hook: PathBuf::from("bundle/native-hook/tractor_beam_native_hook.dll"),
+            hook: PathBuf::from("bundle/tractor_beam_native_hook.dll"),
         };
 
         send_injector_launch_event(
@@ -334,7 +334,7 @@ mod tests {
     fn startup_state_carries_artifact_paths_and_endpoint() {
         let paths = NativeHookPaths {
             injector: PathBuf::from("bundle/tractor-beam-isaac-injector.exe"),
-            hook: PathBuf::from("bundle/native-hook/tractor_beam_native_hook.dll"),
+            hook: PathBuf::from("bundle/tractor_beam_native_hook.dll"),
         };
 
         let state = hook_startup_state(

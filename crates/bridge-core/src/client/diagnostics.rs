@@ -1,16 +1,12 @@
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{self, Read as _, Write as _},
+    fs::{self, File},
+    io,
     path::{Path, PathBuf},
 };
 
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 use super::{BridgeClient, PRODUCT_NAME, state::unix_seconds};
-
-const MAX_PACKAGE_FILES: usize = 16;
-const MAX_PACKAGE_ENTRY_BYTES: usize = 256 * 1024;
-const MAX_PACKAGE_TOTAL_BYTES: usize = 2 * 1024 * 1024;
 
 impl BridgeClient {
     pub fn open_log_directory(&mut self) -> io::Result<PathBuf> {
@@ -29,75 +25,49 @@ impl BridgeClient {
         Ok(directory)
     }
 
-    pub fn export_troubleshooting_package(&mut self, path: &Path) -> io::Result<PathBuf> {
+    pub fn export_diagnostics_bundle(&mut self, path: &Path) -> io::Result<PathBuf> {
         let parent = path.parent().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "package path has no parent")
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Diagnostics Bundle path has no parent",
+            )
         })?;
         fs::create_dir_all(parent)?;
-        let mut entries = Vec::new();
-        let mut warnings = Vec::new();
-        push_text_entry(
-            &mut entries,
-            "summary.txt",
-            self.redacted_diagnostics_text(),
-            &mut warnings,
-        );
-        collect_optional_file(
-            &mut entries,
-            "logs/bridge-client.log",
-            self.log_sink.process_log_path(),
-            &mut warnings,
-        );
-        for (index, session_path) in self
+        let mut sources = self
             .log_sink
-            .recent_session_logs()
+            .log_files()
             .into_iter()
-            .take(8)
-            .enumerate()
-        {
-            collect_optional_file(
-                &mut entries,
-                &format!("logs/sessions/session-{:02}.log", index + 1),
-                Some(session_path),
-                &mut warnings,
-            );
+            .filter_map(|path| package_source("logs/client", path, None))
+            .collect::<Vec<_>>();
+        if sources.is_empty() {
+            sources.push(missing_package_source("logs/client/*.log"));
         }
-        collect_optional_file(
-            &mut entries,
-            "logs/tractor-beam-hook.log",
-            self.state.hook_log_path_written(),
-            &mut warnings,
-        );
-        collect_optional_file(
-            &mut entries,
-            "logs/isaac-online-excerpt.log",
-            Some(
+        if let Some(root) = self.log_sink.root() {
+            let hook_sources = crate::diagnostics::daily_log_files(&root.join("hook"))
+                .into_iter()
+                .filter_map(|path| package_source("logs/hook", path, None))
+                .collect::<Vec<_>>();
+            if hook_sources.is_empty() {
+                sources.push(missing_package_source("logs/hook/*.log"));
+            } else {
+                sources.extend(hook_sources);
+            }
+        } else {
+            sources.push(missing_package_source("logs/hook/*.log"));
+        }
+        sources.push(PackageSource {
+            archive_name: "logs/isaac/online.log".to_owned(),
+            path: Some(
                 crate::diagnostics::isaac_online_logs_directory()
                     .join(crate::diagnostics::ONLINE_LOG),
             ),
-            &mut warnings,
-        );
-        let manifest = package_manifest(&entries, &warnings);
-        push_text_entry(&mut entries, "manifest.txt", manifest, &mut warnings);
-        enforce_total_bound(&mut entries, &mut warnings);
-
-        let temporary_path = temporary_package_path(path);
-        if temporary_path.exists() {
-            fs::remove_file(&temporary_path)?;
-        }
-        let result = write_package(&temporary_path, &entries).and_then(|()| {
-            if path.exists() {
-                fs::remove_file(path)?;
-            }
-            fs::rename(&temporary_path, path)
+            tail_bytes: Some(crate::diagnostics::MAX_ISAAC_EXCERPT_BYTES),
         });
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary_path);
-        }
-        result?;
+
+        write_diagnostics_bundle(path, &self.diagnostics_text(), &sources)?;
         self.log(
             super::LogLevel::Info,
-            format!("Troubleshooting Package saved to {}", path.display()),
+            format!("Diagnostics Bundle saved to {}", path.display()),
         );
         Ok(path.to_path_buf())
     }
@@ -340,84 +310,35 @@ impl BridgeClient {
             } else {
                 output.push_str("launch_parameters_cleanup: none\n");
             }
-            if let Some(hook_log_path) = self.state.hook_log_path_written() {
-                output.push_str(&format!(
-                    "hook_log_path_expected: {}\n",
-                    hook_log_path.display()
-                ));
-            }
-            if let Some(directory) = path.parent() {
-                for file in [
-                    crate::diagnostics::BRIDGE_CONFIG_FILE,
-                    crate::diagnostics::BRIDGE_HOOK_LOG,
-                ] {
-                    let path = directory.join(file);
-                    output.push_str("\n--- ");
-                    output.push_str(file);
-                    output.push_str(" ---\n");
-                    match read_text_excerpt(&path) {
-                        Ok(contents) => output.push_str(&contents),
-                        Err(error) => output.push_str(&format!("unavailable: {error}\n")),
-                    }
-                    if !output.ends_with('\n') {
-                        output.push('\n');
-                    }
-                }
-            }
+            output.push_str(&format!("runtime_file_present: {}\n", path.is_file()));
         } else {
             output.push_str("launch_parameters_path_written: none\n");
         }
-        output.push_str("\nIsaac online log excerpts:\n");
+        output.push_str("\nIsaac online log:\n");
         let log_directory = crate::diagnostics::isaac_online_logs_directory();
         output.push_str(&format!("directory: {}\n", log_directory.display()));
-        let file = crate::diagnostics::ONLINE_LOG;
-        let path = log_directory.join(file);
-        output.push_str("\n--- ");
-        output.push_str(file);
-        output.push_str(" ---\n");
-        match read_text_excerpt(&path) {
-            Ok(contents) => output.push_str(&contents),
-            Err(error) => output.push_str(&format!("unavailable: {error}\n")),
-        }
-        if !output.ends_with('\n') {
-            output.push('\n');
-        }
-        output.push_str("\nlogs:\n");
-        for entry in &self.state.logs {
-            output.push_str(&format!(
-                "[{}] {} {}\n",
-                format_evidence_timestamp(entry.timestamp_ms),
-                entry.level,
-                entry.message
-            ));
-        }
-        output.push_str("\nprocess log:\n");
-        if let Some(path) = self.log_sink.process_log_path() {
-            output.push_str(&format!("--- {} ---\n", path.display()));
-            match read_text_excerpt(&path) {
-                Ok(contents) => output.push_str(&contents),
-                Err(error) => output.push_str(&format!("unavailable: {error}\n")),
-            }
-        } else {
-            output.push_str("unavailable\n");
-        }
-        if !output.ends_with('\n') {
-            output.push('\n');
-        }
-        output.push_str("\nsession logs:\n");
-        for path in self.log_sink.recent_session_logs() {
-            output.push_str("\n--- ");
-            output.push_str(&path.display().to_string());
-            output.push_str(" ---\n");
-            match read_text_excerpt(&path) {
-                Ok(contents) => output.push_str(&contents),
-                Err(error) => output.push_str(&format!("unavailable: {error}\n")),
-            }
-            if !output.ends_with('\n') {
-                output.push('\n');
-            }
-        }
+        output.push_str(&format!(
+            "path: {}\n",
+            log_directory.join(crate::diagnostics::ONLINE_LOG).display()
+        ));
         output
+    }
+}
+
+fn package_source(prefix: &str, path: PathBuf, tail_bytes: Option<u64>) -> Option<PackageSource> {
+    let name = path.file_name()?.to_str()?;
+    Some(PackageSource {
+        archive_name: format!("{prefix}/{name}"),
+        path: Some(path),
+        tail_bytes,
+    })
+}
+
+fn missing_package_source(archive_name: &str) -> PackageSource {
+    PackageSource {
+        archive_name: archive_name.to_owned(),
+        path: None,
+        tail_bytes: None,
     }
 }
 
@@ -431,10 +352,26 @@ use package::*;
 
 #[cfg(test)]
 mod tests {
-    use std::io::Read as _;
+    use std::{collections::BTreeMap, io::Read as _};
 
     use super::*;
-    use crate::client::{BridgeClient, LoadedClientConfig, LogLevel, state::log_entry};
+    use crate::client::{BridgeClient, ClientLogSink, LoadedClientConfig};
+
+    #[derive(Debug)]
+    struct TestLogSink {
+        root: PathBuf,
+        client_logs: Vec<PathBuf>,
+    }
+
+    impl ClientLogSink for TestLogSink {
+        fn root(&self) -> Option<PathBuf> {
+            Some(self.root.clone())
+        }
+
+        fn log_files(&self) -> Vec<PathBuf> {
+            self.client_logs.clone()
+        }
+    }
 
     #[test]
     fn direct_lan_diagnostics_include_path_evidence_without_path_secrets() {
@@ -462,41 +399,65 @@ mod tests {
     }
 
     #[test]
-    fn troubleshooting_package_is_a_redacted_bounded_zip() {
-        let mut client = BridgeClient::with_config(LoadedClientConfig::default());
-        client.state.logs.push(log_entry(
-            LogLevel::Info,
-            "session_credential=secret-session resume_credential=secret-resume path_token=secret-path connection_id=42 C:\\Users\\alice\\save",
-        ));
+    fn diagnostics_bundle_streams_redacted_daily_logs_without_summary_duplication() {
         let directory = std::env::temp_dir().join(format!(
             "tractor-beam-package-test-{}-{}",
             std::process::id(),
             unix_seconds()
         ));
-        fs::create_dir_all(&directory).unwrap();
+        let log_root = directory.join("logs");
+        let client_dir = log_root.join("client");
+        let hook_dir = log_root.join("hook");
+        fs::create_dir_all(&client_dir).unwrap();
+        fs::create_dir_all(&hook_dir).unwrap();
+        let client_log = client_dir.join("2026-07-16.log");
+        let hook_log = hook_dir.join("2026-07-16.log");
+        fs::write(
+            &client_log,
+            "client-marker token=secret-token C:\\Users\\alice\\save\n",
+        )
+        .unwrap();
+        fs::write(&hook_log, "hook-marker ipc_session=0011223344556677\n").unwrap();
+        let mut client = BridgeClient::with_config_and_log_sink(
+            LoadedClientConfig::default(),
+            Box::new(TestLogSink {
+                root: log_root,
+                client_logs: vec![client_log],
+            }),
+        );
         let path = directory.join("support.zip");
+        fs::write(&path, "old bundle").unwrap();
 
-        assert_eq!(client.export_troubleshooting_package(&path).unwrap(), path);
+        assert_eq!(client.export_diagnostics_bundle(&path).unwrap(), path);
         assert!(path.exists());
-        assert!(!temporary_package_path(&path).exists());
 
         let file = File::open(&path).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();
-        assert!(archive.len() <= MAX_PACKAGE_FILES);
-        let mut combined = String::new();
+        let mut entries = BTreeMap::new();
+        let mut entry_order = Vec::new();
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index).unwrap();
-            assert!(entry.size() <= MAX_PACKAGE_ENTRY_BYTES as u64);
-            entry.read_to_string(&mut combined).unwrap();
+            let mut contents = String::new();
+            entry.read_to_string(&mut contents).unwrap();
+            entry_order.push(entry.name().to_owned());
+            entries.insert(entry.name().to_owned(), contents);
         }
-        assert!(combined.contains("Tractor Beam Troubleshooting Package"));
-        for secret in [
-            "secret-session",
-            "secret-resume",
-            "secret-path",
-            "connection_id=42",
-            "alice",
-        ] {
+        assert_eq!(entry_order.last().map(String::as_str), Some("manifest.txt"));
+        assert_eq!(
+            entries.keys().cloned().collect::<Vec<_>>(),
+            [
+                "logs/client/2026-07-16.log",
+                "logs/hook/2026-07-16.log",
+                "manifest.txt",
+                "summary.txt",
+            ]
+        );
+        assert!(!entries["summary.txt"].contains("client-marker"));
+        assert!(entries["logs/client/2026-07-16.log"].contains("client-marker"));
+        assert!(entries["logs/hook/2026-07-16.log"].contains("hook-marker"));
+        assert!(entries["manifest.txt"].contains("Tractor Beam Diagnostics Bundle"));
+        let combined = entries.values().cloned().collect::<String>();
+        for secret in ["secret-token", "alice", "0011223344556677"] {
             assert!(!combined.contains(secret), "package leaked {secret}");
         }
 

@@ -14,7 +14,6 @@ path = "src/main.rs"
 arboard = "3"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
 tractor-beam-core = { path = "../bridge-core" }
-directories = "6.0.0"
 # Runtime inspection is opt-in through EGUI_INSPECTION and stays off in normal builds/runs.
 eframe = { version = "0.35.0", default-features = false, features = [
     "accesskit",

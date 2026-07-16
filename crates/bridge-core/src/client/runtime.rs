@@ -4,8 +4,7 @@ use super::{
     ConfigError, InputDelayError, LoadedClientConfig, RelayEndpoint, SessionConfig, SessionMode,
     SessionRouteConfig, hook_config, hook_ipc,
     logging::{
-        ClientLogSink, ClientSessionLog, ClientSessionLogContext, ClientSessionLogRoute,
-        TracingClientLogSink,
+        ClientLogSink, ClientSessionLogContext, ClientSessionLogRoute, TracingClientLogSink,
     },
     probe, session,
     state::{self, log_entry, trim_logs},
@@ -20,7 +19,7 @@ pub struct BridgeClient {
     pub(super) session: Option<session::SessionHandle>,
     pub(super) loaded_config: LoadedClientConfig,
     pub(super) log_sink: Box<dyn ClientLogSink>,
-    active_session_log: Option<Box<dyn ClientSessionLog>>,
+    active_log_context: Option<ClientSessionLogContext>,
     readiness_probe: Option<probe::ProbeHandle>,
     hook_receive_probe: Option<probe::ProbeHandle>,
     light_ping_probe: Option<probe::LightPingHandle>,
@@ -47,7 +46,7 @@ impl BridgeClient {
             session: None,
             loaded_config,
             log_sink,
-            active_session_log: None,
+            active_log_context: None,
             readiness_probe: None,
             hook_receive_probe: None,
             light_ping_probe: None,
@@ -205,7 +204,7 @@ impl BridgeClient {
                 state::RuntimeEvent::Stopped => {
                     self.state.status = state::SessionStatus::Idle;
                     self.state.active_session_mode = None;
-                    self.active_session_log = None;
+                    self.active_log_context = None;
                     should_clear = true;
                 }
                 state::RuntimeEvent::LightPingFinished(report) => {
@@ -291,13 +290,10 @@ impl BridgeClient {
         self.state.room_peers.clear();
         self.state.room_path_quality.clear();
         self.state.relay_link = state::RelayLinkState::Inactive;
-        self.active_session_log = self
-            .log_sink
-            .start_session(ClientSessionLogContext {
-                route: log_route,
-                mode: config.mode,
-            })
-            .ok();
+        self.active_log_context = Some(ClientSessionLogContext {
+            route: log_route,
+            mode: config.mode,
+        });
 
         let native_hook = if config.mode != SessionMode::Official {
             let native_hook_paths = match tractor_beam_isaac_injector::resolve_native_hook_paths() {
@@ -305,7 +301,7 @@ impl BridgeClient {
                 Err(error) => {
                     let message = format!("Native Hook artifact resolution failed: {error}");
                     self.record_hook_startup_failure(None, message.clone());
-                    self.active_session_log = None;
+                    self.active_log_context = None;
                     return Err(io::Error::other(message).into());
                 }
             };
@@ -315,7 +311,7 @@ impl BridgeClient {
                 Err(error) => {
                     let message = format!("Native Hook launch parameter write failed: {error}");
                     self.record_hook_startup_failure(Some(&native_hook_paths), message.clone());
-                    self.active_session_log = None;
+                    self.active_log_context = None;
                     return Err(io::Error::new(error.kind(), message).into());
                 }
             };
@@ -350,7 +346,7 @@ impl BridgeClient {
         if let Err(error) = crate::steam::launch_isaac() {
             self.apply_stopped_session_events(session.stop());
             self.cleanup_hook_launch_parameters("Steam launch failed");
-            self.active_session_log = None;
+            self.active_log_context = None;
             return Err(error.into());
         }
 
@@ -389,7 +385,7 @@ impl BridgeClient {
         }
         self.state.status = state::SessionStatus::Idle;
         self.state.active_session_mode = None;
-        self.active_session_log = None;
+        self.active_log_context = None;
         self.log(LogLevel::Info, "Session stopped");
     }
 

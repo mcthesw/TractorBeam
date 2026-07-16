@@ -104,20 +104,17 @@ fn diagnostics_include_session_health_evidence() {
 fn diagnostics_include_native_hook_startup_evidence() {
     let mut client = BridgeClient::new();
     client.state.hook_launch_parameters_path_written =
-        Some(PathBuf::from("bundle/native-hook/isaac_bridge_config.txt"));
+        Some(PathBuf::from("bundle/logs/hook/hook-runtime.txt"));
     client.state.hook_launch_parameters_cleanup = Some(
-        "removed path=bundle/native-hook/isaac_bridge_config.txt reason=user stopped session"
-            .to_owned(),
+        "removed path=bundle/logs/hook/hook-runtime.txt reason=user stopped session".to_owned(),
     );
     client.state.hook_startup = state::HookStartupState {
         phase: state::HookStartupPhase::WaitingForHookEndpoint,
         process_name: Some("isaac-ng.exe".to_owned()),
         pid: Some(42),
         injector_path: Some(PathBuf::from("bundle/tractor-beam-isaac-injector.exe")),
-        hook_path: Some(PathBuf::from(
-            "bundle/native-hook/tractor_beam_native_hook.dll",
-        )),
-        launch_parameters_path: Some(PathBuf::from("bundle/native-hook/isaac_bridge_config.txt")),
+        hook_path: Some(PathBuf::from("bundle/tractor_beam_native_hook.dll")),
+        launch_parameters_path: Some(PathBuf::from("bundle/logs/hook/hook-runtime.txt")),
         endpoint: Some("local IPC".to_owned()),
         injected: true,
         endpoint_ready: false,
@@ -132,15 +129,15 @@ fn diagnostics_include_native_hook_startup_evidence() {
     assert!(text.contains("phase: waiting_for_hook_endpoint"));
     assert!(text.contains("process_name: isaac-ng.exe"));
     assert!(text.contains("injector_path: bundle/tractor-beam-isaac-injector.exe"));
-    assert!(text.contains("hook_path: bundle/native-hook/tractor_beam_native_hook.dll"));
-    assert!(text.contains("launch_parameters_path: bundle/native-hook/isaac_bridge_config.txt"));
+    assert!(text.contains("hook_path: bundle/tractor_beam_native_hook.dll"));
+    assert!(text.contains("launch_parameters_path: bundle/logs/hook/hook-runtime.txt"));
     assert!(text.contains("launch_parameters_cleanup: removed path="));
 }
 
 #[test]
 fn cleanup_hook_launch_parameters_keeps_first_successful_result() {
     let directory = unique_test_dir("hook-launch-cleanup");
-    let path = directory.join("isaac_bridge_config.txt");
+    let path = directory.join("hook-runtime.txt");
     fs::write(&path, "sidecar=127.0.0.1:25900\n").expect("write launch parameters");
     let mut client = BridgeClient::new();
     client.state.hook_launch_parameters_path_written = Some(path.clone());
@@ -168,7 +165,7 @@ fn cleanup_hook_launch_parameters_keeps_first_successful_result() {
 #[test]
 fn cleanup_hook_launch_parameters_records_already_missing() {
     let directory = unique_test_dir("hook-launch-cleanup-missing");
-    let path = directory.join("isaac_bridge_config.txt");
+    let path = directory.join("hook-runtime.txt");
     let mut client = BridgeClient::new();
     client.state.hook_launch_parameters_path_written = Some(path);
 
@@ -189,10 +186,10 @@ fn startup_failure_record_keeps_artifact_and_launch_parameter_paths() {
     let mut client = BridgeClient::new();
     let paths = tractor_beam_isaac_injector::NativeHookPaths {
         injector: PathBuf::from("bundle/tractor-beam-isaac-injector.exe"),
-        hook: PathBuf::from("bundle/native-hook/tractor_beam_native_hook.dll"),
+        hook: PathBuf::from("bundle/tractor_beam_native_hook.dll"),
     };
     client.state.hook_launch_parameters_path_written =
-        Some(PathBuf::from("bundle/native-hook/isaac_bridge_config.txt"));
+        Some(PathBuf::from("bundle/logs/hook/hook-runtime.txt"));
 
     client.record_hook_startup_failure(Some(&paths), "Bridge worker startup failed");
 
@@ -210,7 +207,7 @@ fn startup_failure_record_keeps_artifact_and_launch_parameter_paths() {
     );
     assert_eq!(
         client.state.hook_startup.launch_parameters_path.as_deref(),
-        Some(PathBuf::from("bundle/native-hook/isaac_bridge_config.txt").as_path())
+        Some(PathBuf::from("bundle/logs/hook/hook-runtime.txt").as_path())
     );
 }
 

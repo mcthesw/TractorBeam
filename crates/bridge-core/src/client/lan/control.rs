@@ -145,7 +145,6 @@ impl LanControlPlane {
                 .map_or_else(|| "unknown error".to_owned(), ToString::to_string);
             emit_client_log_event(
                 None,
-                None,
                 LogLevel::Info,
                 &format!(
                     "Ignored {skipped_bind_count} unavailable LAN adapter address(es); bound {}: {last_error}",

@@ -250,13 +250,13 @@ impl BridgeApp {
         self.lan_create_dialog_open = open;
     }
 
-    pub(super) fn reveal_troubleshooting_package(&mut self) {
-        let Some(path) = self.last_troubleshooting_package.as_ref() else {
+    pub(super) fn reveal_diagnostics_bundle(&mut self) {
+        let Some(path) = self.last_diagnostics_bundle.as_ref() else {
             return;
         };
         let target = path.parent().unwrap_or(path);
         if let Err(error) = open::that_detached(target) {
-            tracing::warn!(error = %error, path = %path.display(), "Could not reveal Troubleshooting Package");
+            tracing::warn!(error = %error, path = %path.display(), "Could not reveal Diagnostics Bundle");
             self.status_message = Some(StatusMessage::LogOpenFailed);
         }
     }

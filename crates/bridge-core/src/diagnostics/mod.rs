@@ -1,18 +1,52 @@
 //! Diagnostics redaction and known Isaac log paths.
 
-use std::path::PathBuf;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use directories::UserDirs;
 use regex::Regex;
 
 pub const ONLINE_LOG: &str = "online.log";
-pub const BRIDGE_CONFIG_FILE: &str = "isaac_bridge_config.txt";
-pub const BRIDGE_HOOK_LOG: &str = "tractor_beam_hook.log";
-const MAX_FILE_EXCERPT_BYTES: usize = 64 * 1024;
+pub const HOOK_RUNTIME_FILE: &str = "hook-runtime.txt";
+pub const DAILY_LOG_RETAIN_COUNT: usize = 10;
+pub const MAX_ISAAC_EXCERPT_BYTES: u64 = 64 * 1024;
 
 #[must_use]
-pub fn primary_diagnostic_files() -> &'static [&'static str] {
-    &[ONLINE_LOG, BRIDGE_CONFIG_FILE, BRIDGE_HOOK_LOG]
+pub fn daily_log_files(directory: &Path) -> Vec<PathBuf> {
+    let mut files = all_daily_log_files(directory);
+    files.truncate(DAILY_LOG_RETAIN_COUNT);
+    files
+}
+
+pub fn prune_daily_logs(directory: &Path) -> std::io::Result<()> {
+    for path in all_daily_log_files(directory)
+        .into_iter()
+        .skip(DAILY_LOG_RETAIN_COUNT)
+    {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn all_daily_log_files(directory: &Path) -> Vec<PathBuf> {
+    let mut files = fs::read_dir(directory)
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(is_daily_log_name)
+        })
+        .collect::<Vec<_>>();
+    files.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+    files
 }
 
 #[must_use]
@@ -29,25 +63,23 @@ pub fn isaac_online_logs_directory() -> PathBuf {
 }
 
 #[must_use]
-pub fn file_excerpt(input: &str) -> &str {
-    if input.len() <= MAX_FILE_EXCERPT_BYTES {
-        return input;
-    }
-
-    let mut start = input.len() - MAX_FILE_EXCERPT_BYTES;
-    while start < input.len() && !input.is_char_boundary(start) {
-        start += 1;
-    }
-    &input[start..]
-}
-
-#[must_use]
 pub fn redact_text(input: &str) -> String {
     let mut output = input.to_owned();
     for pattern in sensitive_patterns() {
         output = pattern.replace_all(&output, "[redacted]").into_owned();
     }
     output
+}
+
+fn is_daily_log_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    bytes.len() == 14
+        && bytes[0..4].iter().all(u8::is_ascii_digit)
+        && bytes[4] == b'-'
+        && bytes[5..7].iter().all(u8::is_ascii_digit)
+        && bytes[7] == b'-'
+        && bytes[8..10].iter().all(u8::is_ascii_digit)
+        && &bytes[10..] == b".log"
 }
 
 fn sensitive_patterns() -> Vec<Regex> {
@@ -70,14 +102,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exposes_primary_diagnostics() {
-        assert_eq!(
-            primary_diagnostic_files(),
-            &[ONLINE_LOG, BRIDGE_CONFIG_FILE, BRIDGE_HOOK_LOG]
-        );
-    }
-
-    #[test]
     fn redacts_known_sensitive_fields() {
         let text = "room=abc token=secret ipc_session=00112233445566778899aabbccddeeff ipc_endpoint=tractor-beam-00112233445566778899aabbccddeeff 76561198000000001 203.0.113.10:25910";
         let redacted = redact_text(text);
@@ -96,5 +120,26 @@ mod tests {
 
         assert!(!redacted.contains("alice"));
         assert!(!redacted.contains("bob"));
+    }
+
+    #[test]
+    fn daily_logs_ignore_unrelated_files_and_keep_newest_ten() {
+        let directory =
+            std::env::temp_dir().join(format!("tractor-beam-daily-logs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        for day in 1..=12 {
+            fs::write(directory.join(format!("2026-07-{day:02}.log")), []).unwrap();
+        }
+        fs::write(directory.join("hook-runtime.txt"), []).unwrap();
+
+        prune_daily_logs(&directory).unwrap();
+        let logs = all_daily_log_files(&directory);
+
+        assert_eq!(logs.len(), 10);
+        assert_eq!(logs[0].file_name().unwrap(), "2026-07-12.log");
+        assert_eq!(logs[9].file_name().unwrap(), "2026-07-03.log");
+        assert!(directory.join("hook-runtime.txt").exists());
+        let _ = fs::remove_dir_all(directory);
     }
 }

@@ -113,16 +113,16 @@ pub(super) fn handle_command(
                 ApplicationEvent::LogDirectoryOpened(result),
             );
         }
-        ApplicationCommand::ExportTroubleshootingPackage => {
+        ApplicationCommand::ExportDiagnosticsBundle => {
             set_operation(
                 snapshot,
                 client,
-                Some(ApplicationOperation::ExportingTroubleshootingPackage),
+                Some(ApplicationOperation::ExportingDiagnosticsBundle),
             );
-            let result = choose_troubleshooting_package_path()
+            let result = choose_diagnostics_bundle_path()
                 .map(|path| {
                     client
-                        .export_troubleshooting_package(&path)
+                        .export_diagnostics_bundle(&path)
                         .map(Some)
                         .map_err(|error| error.to_string())
                 })
@@ -131,7 +131,7 @@ pub(super) fn handle_command(
             send_application_event(
                 event_tx,
                 snapshot,
-                ApplicationEvent::TroubleshootingPackageExported(result),
+                ApplicationEvent::DiagnosticsBundleExported(result),
             );
         }
         ApplicationCommand::ClearLogs => {
@@ -240,20 +240,20 @@ pub(super) fn handle_command(
 }
 
 #[cfg(windows)]
-fn choose_troubleshooting_package_path() -> Option<PathBuf> {
+fn choose_diagnostics_bundle_path() -> Option<PathBuf> {
     let filename = format!(
-        "tractor-beam-troubleshooting-{}.zip",
+        "tractor-beam-diagnostics-{}.zip",
         chrono::Local::now().format("%Y%m%d-%H%M%S")
     );
     rfd::FileDialog::new()
-        .set_title("Save Tractor Beam Troubleshooting Package")
+        .set_title("Save Tractor Beam Diagnostics Bundle")
         .set_file_name(filename)
         .add_filter("ZIP archive", &["zip"])
         .save_file()
 }
 
 #[cfg(not(windows))]
-fn choose_troubleshooting_package_path() -> Option<PathBuf> {
+fn choose_diagnostics_bundle_path() -> Option<PathBuf> {
     None
 }
 

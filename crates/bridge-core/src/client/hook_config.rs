@@ -44,7 +44,10 @@ fn hook_config_path(hook: &Path) -> io::Result<PathBuf> {
             ),
         ));
     };
-    Ok(directory.join(crate::diagnostics::BRIDGE_CONFIG_FILE))
+    Ok(directory
+        .join("logs")
+        .join("hook")
+        .join(crate::diagnostics::HOOK_RUNTIME_FILE))
 }
 
 #[cfg(test)]
@@ -53,17 +56,16 @@ mod tests {
 
     #[test]
     fn hook_config_path_uses_native_hook_directory() {
-        let hook = Path::new("bundle")
-            .join("native-hook")
-            .join("tractor_beam_native_hook.dll");
+        let hook = Path::new("bundle").join("tractor_beam_native_hook.dll");
 
         let path = hook_config_path(&hook).unwrap();
 
         assert_eq!(
             path,
             Path::new("bundle")
-                .join("native-hook")
-                .join(crate::diagnostics::BRIDGE_CONFIG_FILE)
+                .join("logs")
+                .join("hook")
+                .join(crate::diagnostics::HOOK_RUNTIME_FILE)
         );
     }
 

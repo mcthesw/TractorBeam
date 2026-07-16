@@ -122,7 +122,6 @@ fn bundle_search_dirs() -> Vec<PathBuf> {
         && let Some(directory) = exe.parent()
     {
         directories.push(directory.to_path_buf());
-        directories.push(directory.join("native-hook"));
     }
     if let Ok(directory) = env::current_dir() {
         directories.push(directory.join("target").join("debug"));

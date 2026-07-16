@@ -399,8 +399,10 @@ async fn packaged_i686_hook_handshakes_with_x64_client() {
     std::fs::copy(packaged_hook, &hook).unwrap();
 
     let session = HookIpcSession::test();
+    let hook_logs = temp.join("logs").join("hook");
+    std::fs::create_dir_all(&hook_logs).unwrap();
     std::fs::write(
-        temp.join("isaac_bridge_config.txt"),
+        hook_logs.join("hook-runtime.txt"),
         format!(
             "mode=replace\nfallback_to_steam=1\nipc_endpoint={}\nipc_session={}\n",
             session.endpoint,

@@ -63,7 +63,7 @@ fn save_selection_writes_keys_without_clobbering_others() {
     let config_path = dir.join(CLIENT_CONFIG_FILE);
     std::fs::write(
         &config_path,
-        "default_transport = \"tcp\"\nroom = \"legacy-room-value\"\n[[relays]]\nid = \"r1\"\nname = \"Relay 1\"\nhost = \"relay.example.test\"\nport = 25910\n",
+        "# keep this comment\ndefault_transport = \"tcp\"\nroom = \"legacy-room-value\"\n[[relays]]\nid = \"r1\"\nname = \"Relay 1\"\nhost = \"relay.example.test\"\nport = 25910\n",
     )
     .unwrap();
     save_client_config_selection_to(
@@ -77,8 +77,25 @@ fn save_selection_writes_keys_without_clobbering_others() {
     let content = std::fs::read_to_string(&config_path).unwrap();
     assert!(content.contains("selected_relay = \"r1\""));
     assert!(content.contains("selected_steam_id64 = \"76561198000000001\""));
+    assert!(content.contains("# keep this comment"));
     assert!(content.contains("room = \"legacy-room-value\""));
     assert!(content.contains("[[relays]]"));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn save_selection_reports_the_main_config_write_error() {
+    let dir = std::env::temp_dir().join(format!(
+        "bb-config-error-test-{}-{}",
+        std::process::id(),
+        unix_seconds()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let error = save_client_config_selection_to(&dir, &ClientConfigSelection::default())
+        .expect_err("a directory cannot be replaced as config.toml");
+
+    assert!(matches!(error, ClientConfigError::Io { .. }));
     std::fs::remove_dir_all(&dir).ok();
 }
 

@@ -1,16 +1,14 @@
 use std::{
     collections::HashSet,
     env, fs,
+    io::Write as _,
     path::{Path, PathBuf},
 };
 
-use directories::ProjectDirs;
+use atomic_write_file::AtomicWriteFile;
 use serde::Deserialize;
 
-use super::{
-    PRODUCT_NAME,
-    session_config::{RelayEndpoint, SessionHealthConfig, SessionMode, TransportChoice},
-};
+use super::session_config::{RelayEndpoint, SessionHealthConfig, SessionMode, TransportChoice};
 
 pub const CLIENT_CONFIG_FILE: &str = "config.toml";
 
@@ -160,6 +158,17 @@ pub enum ClientConfigError {
     UnknownSelectedRelay(String),
     #[error("invalid session health config: {0}")]
     InvalidSessionHealth(String),
+    #[error("Bundle config path is unavailable")]
+    ConfigPathUnavailable,
+    #[error("invalid editable config document: {0}")]
+    InvalidDocument(String),
+    #[error("could not {operation} config at {path}: {source}")]
+    Io {
+        operation: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -254,38 +263,35 @@ impl TryFrom<RawRelayPreset> for RelayPreset {
 }
 
 pub fn load_client_config() -> LoadedClientConfig {
-    let bundle_path = bundle_config_path();
-    let app_path = app_data_config_path();
-    let mut warnings = Vec::new();
-
-    for path in [bundle_path, app_path] {
-        let Some(path) = path else {
-            continue;
+    let Some(path) = bundle_config_path() else {
+        return LoadedClientConfig {
+            config: ClientConfig::default(),
+            source: None,
+            warnings: vec!["Bundle config path is unavailable".to_owned()],
         };
-        if !path.exists() {
-            continue;
-        }
-        return match load_config_file(&path) {
-            Ok(config) => LoadedClientConfig {
-                config,
-                source: Some(path),
-                warnings,
-            },
-            Err(error) => {
-                warnings.push(format!("Invalid config at {}: {error}", path.display()));
-                LoadedClientConfig {
-                    config: ClientConfig::default(),
-                    source: Some(path),
-                    warnings,
-                }
-            }
+    };
+    let mut warnings = Vec::new();
+    if !path.exists() {
+        return LoadedClientConfig {
+            config: ClientConfig::default(),
+            source: None,
+            warnings,
         };
     }
-
-    LoadedClientConfig {
-        config: ClientConfig::default(),
-        source: None,
-        warnings,
+    match load_config_file(&path) {
+        Ok(config) => LoadedClientConfig {
+            config,
+            source: Some(path),
+            warnings,
+        },
+        Err(error) => {
+            warnings.push(format!("Invalid config at {}: {error}", path.display()));
+            LoadedClientConfig {
+                config: ClientConfig::default(),
+                source: Some(path),
+                warnings,
+            }
+        }
     }
 }
 
@@ -298,13 +304,7 @@ pub struct ClientConfigSelection {
 pub fn save_client_config_selection(
     selection: &ClientConfigSelection,
 ) -> Result<PathBuf, ClientConfigError> {
-    let path = app_data_config_path()
-        .ok_or_else(|| ClientConfigError::InvalidRelay("no app-data config path".to_owned()))?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            ClientConfigError::InvalidRelay(format!("create app-data dir: {error}"))
-        })?;
-    }
+    let path = bundle_config_path().ok_or(ClientConfigError::ConfigPathUnavailable)?;
     save_selection_to(&path, selection)?;
     Ok(path)
 }
@@ -313,13 +313,20 @@ fn save_selection_to(
     path: &Path,
     selection: &ClientConfigSelection,
 ) -> Result<(), ClientConfigError> {
-    let existing = fs::read_to_string(path).unwrap_or_default();
-    let mut doc: toml_edit::DocumentMut =
-        existing
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|error| {
-                ClientConfigError::InvalidRelay(format!("parse app-data config: {error}"))
-            })?;
+    let existing = match fs::read_to_string(path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(source) => {
+            return Err(ClientConfigError::Io {
+                operation: "read",
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let mut doc: toml_edit::DocumentMut = existing
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| ClientConfigError::InvalidDocument(error.to_string()))?;
     set_optional_key(
         &mut doc,
         "selected_relay",
@@ -330,8 +337,21 @@ fn save_selection_to(
         "selected_steam_id64",
         selection.selected_steam_id64.as_deref(),
     );
-    fs::write(path, doc.to_string()).map_err(|error| {
-        ClientConfigError::InvalidRelay(format!("write app-data config: {error}"))
+    let mut file = AtomicWriteFile::open(path).map_err(|source| ClientConfigError::Io {
+        operation: "open for atomic write",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    file.write_all(doc.to_string().as_bytes())
+        .map_err(|source| ClientConfigError::Io {
+            operation: "write",
+            path: path.to_path_buf(),
+            source,
+        })?;
+    file.commit().map_err(|source| ClientConfigError::Io {
+        operation: "replace",
+        path: path.to_path_buf(),
+        source,
     })?;
     Ok(())
 }
@@ -358,11 +378,6 @@ fn set_optional_key(doc: &mut toml_edit::DocumentMut, key: &str, value: Option<&
 
 pub fn bundle_config_path() -> Option<PathBuf> {
     bundle_directory().map(|directory| directory.join(CLIENT_CONFIG_FILE))
-}
-
-pub fn app_data_config_path() -> Option<PathBuf> {
-    ProjectDirs::from("io.github", "mcthesw", PRODUCT_NAME)
-        .map(|project| project.data_local_dir().join(CLIENT_CONFIG_FILE))
 }
 
 pub fn bundle_directory() -> Option<PathBuf> {

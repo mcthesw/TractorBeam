@@ -25,7 +25,7 @@ mod test_relay;
 
 pub use config::{
     CLIENT_CONFIG_FILE, ClientConfig, ClientConfigSelection, LoadedClientConfig, RelayPreset,
-    app_data_config_path, bundle_config_path, load_client_config, save_client_config_selection,
+    bundle_config_path, load_client_config, save_client_config_selection,
 };
 pub use input_delay::{
     InputDelayError, InputDelayEvidence, InputDelayEvidenceBlocker, InputDelayOperation,

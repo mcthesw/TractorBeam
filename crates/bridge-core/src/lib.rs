@@ -27,7 +27,7 @@ pub use client::{
     SessionHealthConfig, SessionHealthSnapshot, SessionHealthSummary, SessionHealthWindow,
     SessionMode, SessionQuality, SessionQualityReason, SessionRouteConfig, SessionStatus,
     SessionStopReason, SmoothnessReason, SmoothnessSnapshot, SteamIdentity, TransportChoice,
-    app_data_config_path, bundle_config_path, default_lan_adapters, emit_client_log_event,
+    bundle_config_path, default_lan_adapters, emit_client_log_event,
     enumerate_lan_adapter_addresses, enumerate_lan_adapters, lan_candidate_addresses,
     load_client_config, runtime_name, save_client_config_selection,
 };

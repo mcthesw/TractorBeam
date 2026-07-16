@@ -7,6 +7,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+atomic-write-file = "0.3.0"
 tractor-beam-hook-ipc = { path = "../hook-ipc" }
 tractor-beam-isaac-injector = { path = "../isaac-injector" }
 tractor-beam-direct-protocol = { path = "../direct-protocol" }

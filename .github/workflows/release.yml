@@ -87,8 +87,6 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ needs.setup.outputs.version }}"
-          $tag = "${{ needs.setup.outputs.tag }}"
-          $commit = (git rev-parse HEAD).Trim()
           $bundle = "TractorBeamClient-$version"
           $bundleDir = Join-Path "dist" $bundle
           New-Item -ItemType Directory -Force $bundleDir | Out-Null
@@ -96,18 +94,16 @@ jobs:
           Copy-Item "target/i686-pc-windows-msvc/release/tractor-beam-isaac-injector.exe" $bundleDir
           Copy-Item "target/i686-pc-windows-msvc/release/tractor_beam_native_hook.dll" $bundleDir
           Copy-Item "deploy/client.config.toml" (Join-Path $bundleDir "config.toml")
-          @{
-            name = "Tractor Beam Client Bundle"
-            version = $version
-            tag = $tag
-            git_hash = $commit
-            files = @(
-              "tractor-beam.exe",
-              "tractor-beam-isaac-injector.exe",
-              "tractor_beam_native_hook.dll",
-              "config.toml"
-            )
-          } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 (Join-Path $bundleDir "bundle-manifest.json")
+          $expected = @(
+            "config.toml",
+            "tractor-beam-isaac-injector.exe",
+            "tractor-beam.exe",
+            "tractor_beam_native_hook.dll"
+          )
+          $actual = @(Get-ChildItem -LiteralPath $bundleDir -File | Sort-Object Name | ForEach-Object Name)
+          if (Compare-Object $expected $actual) {
+            throw "Client Bundle root files differ from the required four-file layout: $($actual -join ', ')"
+          }
           Compress-Archive -Path "$bundleDir/*" -DestinationPath "dist/tractor-beam-client-bundle-windows-x86_64.zip"
 
       - uses: actions/upload-artifact@v7.0.1
@@ -369,3 +365,10 @@ jobs:
             jq -e --arg name "${name}" '.assets[] | select(.name == $name)' manifest.json >/dev/null
           done
           jq -e '.relay_image.image and .relay_image.digest' manifest.json >/dev/null
+          diff -u \
+            <(printf '%s\n' \
+              config.toml \
+              tractor-beam-isaac-injector.exe \
+              tractor-beam.exe \
+              tractor_beam_native_hook.dll | sort) \
+            <(unzip -Z1 tractor-beam-client-bundle-windows-x86_64.zip | sort)

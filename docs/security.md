@@ -44,7 +44,7 @@ Who Tractor Beam trusts, and how much:
   counters, and error text, but never Session Credentials or recovery/path
   tokens.
 - Session, resume, and path-validation credentials must never be written to
-  normal logs, metrics, or Troubleshooting Packages.
+  normal logs, metrics, or Diagnostics Bundles.
 - Only use trusted Relay Servers.
 
 ## Phase 1 Requirements
@@ -79,7 +79,7 @@ Who Tractor Beam trusts, and how much:
 ## Abuse Controls
 
 - Phase 1 uses protocol magic, packet size limits, room membership checks, timeouts, and basic rate limits.
-- Phase 2 adds Relay Server local IP/CIDR blocklists, Room limits, Peer limits, and Room name length limits for obvious abuse during closed testing.
+- Phase 2 adds Relay Server local IP/CIDR blocklists, Room limits, Peer limits, and Room name length limits for obvious abuse during testing.
 - Public release should support Directory Service relay revocation, but should avoid a global player IP blacklist unless there is a clear privacy and governance policy.
 - Proof-of-work is a public-release hardening option, not a Phase 1 requirement.
 
@@ -87,7 +87,7 @@ Who Tractor Beam trusts, and how much:
 
 Exported Diagnostics Bundles redact SteamID64-like values, Relay Server
 endpoints, Room fields, and local user profile paths. This is a guardrail, not a
-promise that every possible sensitive string has been removed. Closed-test logs
+promise that every possible sensitive string has been removed. Test logs
 should still be shared privately.
 
 ## Direct LAN boundary

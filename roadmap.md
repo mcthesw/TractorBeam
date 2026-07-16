@@ -36,11 +36,11 @@ Deferred from Phase 1:
 - [ ] Directory Service.
 - [ ] Optional bounded UDP duplication/deduplication or FEC profiles.
 
-## Phase 2: Closed Testing
+## Phase 2: Testing
 
 Goal: make the Windows baseline reliable across real player machines.
 
-- [x] Prepare closed test instructions and a feedback template.
+- [x] Prepare test instructions and a feedback template.
 - [ ] Deploy a public test Relay Server.
 - [x] Document Relay Server self-deployment.
 - [x] Improve Windows Steam and Isaac path detection.

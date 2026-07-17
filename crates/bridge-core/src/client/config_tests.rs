@@ -54,12 +54,8 @@ fn defaults_transport_to_tcp_when_omitted() {
 
 #[test]
 fn save_selection_writes_keys_without_clobbering_others() {
-    let dir = std::env::temp_dir().join(format!(
-        "bb-config-test-{}-{}",
-        std::process::id(),
-        unix_seconds()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
     let config_path = dir.join(CLIENT_CONFIG_FILE);
     std::fs::write(
         &config_path,
@@ -80,28 +76,16 @@ fn save_selection_writes_keys_without_clobbering_others() {
     assert!(content.contains("# keep this comment"));
     assert!(content.contains("room = \"legacy-room-value\""));
     assert!(content.contains("[[relays]]"));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn save_selection_reports_the_main_config_write_error() {
-    let dir = std::env::temp_dir().join(format!(
-        "bb-config-error-test-{}-{}",
-        std::process::id(),
-        unix_seconds()
-    ));
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("config.toml");
     std::fs::create_dir_all(&dir).unwrap();
 
     let error = save_client_config_selection_to(&dir, &ClientConfigSelection::default())
         .expect_err("a directory cannot be replaced as config.toml");
 
     assert!(matches!(error, ClientConfigError::Io { .. }));
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-fn unix_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }

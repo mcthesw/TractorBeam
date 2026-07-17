@@ -68,8 +68,7 @@ pub(super) fn write_hook_message(
     stream: &mut LocalSocketStream,
     message: &HookToClient,
 ) -> io::Result<()> {
-    let encoded = tractor_beam_hook_ipc::encode(message).map_err(protocol_io)?;
-    write_all_bounded(stream, &encoded)
+    tractor_beam_hook_ipc::sync_io::write_message(stream, message, WRITE_TIMEOUT, IO_POLL_INTERVAL)
 }
 
 pub(super) fn wait_for_shutdown(stream: &mut LocalSocketStream) {

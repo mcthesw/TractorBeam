@@ -1,18 +1,12 @@
-use std::{
-    collections::HashMap,
-    time::{Duration, Instant},
-};
+use std::collections::HashMap;
 
 use rand::RngExt as _;
 use sha2::{Digest as _, Sha256};
 use tractor_beam_relay_protocol::CAP_ROOM_PATH_PROBE;
 
 use super::{Peer, PendingJoin, Room};
-use crate::{
-    config::RelayConfig,
-    domain::{
-        DataDestination, DataProfile, DataSource, PeerView, Presence, SessionKey, StateError,
-    },
+use crate::domain::{
+    DataDestination, DataProfile, DataSource, PeerView, Presence, SessionKey, StateError,
 };
 
 pub(super) fn room_views(room: &Room) -> Vec<PeerView> {
@@ -46,31 +40,6 @@ pub(super) fn validate_source(
         (DataProfile::Udp, DataSource::Udp(_)) => Err(StateError::PathNotValidated),
         _ => Err(StateError::ProfileMismatch),
     }
-}
-
-pub(super) fn apply_traffic_budget(
-    sender: &mut Peer,
-    config: &RelayConfig,
-    frame_bytes: usize,
-    now: Instant,
-) -> Result<(), StateError> {
-    if now.duration_since(sender.rate_window_started) >= Duration::from_secs(1) {
-        sender.rate_window_started = now;
-        sender.rate_window_packets = 0;
-        sender.rate_window_bytes = 0;
-    }
-    let next_packets = sender.rate_window_packets.saturating_add(1);
-    let next_bytes = sender.rate_window_bytes.saturating_add(frame_bytes);
-    if next_packets > config.rate_limit_per_second
-        || next_bytes > config.byte_rate_limit_burst
-        || (sender.rate_window_bytes > 0 && next_bytes > config.byte_rate_limit_per_second)
-    {
-        return Err(StateError::RateLimited);
-    }
-    sender.rate_window_packets = next_packets;
-    sender.rate_window_bytes = next_bytes;
-    sender.last_seen = now;
-    Ok(())
 }
 
 pub(super) fn target_destination(

@@ -40,7 +40,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use rust_i18n::t;
-    use serde_yaml::Value;
+    use serde_yaml_ng::Value;
 
     use super::{Language, set_language, with_locale_lock};
 
@@ -48,7 +48,7 @@ mod tests {
 
     fn locale_keys() -> BTreeSet<String> {
         let Value::Mapping(document) =
-            serde_yaml::from_str(include_str!("../locales/app.yml")).expect("valid locale YAML")
+            serde_yaml_ng::from_str(include_str!("../locales/app.yml")).expect("valid locale YAML")
         else {
             panic!("locale YAML must be a mapping");
         };

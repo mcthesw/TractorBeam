@@ -18,14 +18,7 @@ fn fixture_hex(path: &str) -> Vec<u8> {
     };
     let compact = text.trim();
     assert_eq!(compact.len() % 2, 0);
-    compact
-        .as_bytes()
-        .chunks_exact(2)
-        .map(|pair| {
-            let pair = std::str::from_utf8(pair).unwrap();
-            u8::from_str_radix(pair, 16).unwrap()
-        })
-        .collect()
+    hex::decode(compact).unwrap()
 }
 
 fn client_hello() -> BootstrapMessage {

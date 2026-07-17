@@ -31,7 +31,8 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 rfd = { version = "0.17.2", default-features = false }
 
 [dev-dependencies]
-serde_yaml = "0.9.34"
+serde_yaml_ng = "0.10.0"
+tempfile = "3.23.0"
 
 [package.metadata.i18n]
 available-locales = ["zh_CN", "en_US"]

@@ -36,10 +36,8 @@ pub(super) fn decode_hex_16(value: &str) -> io::Result<[u8; 16]> {
         ));
     }
     let mut bytes = [0_u8; 16];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
-        let pair = std::str::from_utf8(pair).map_err(io::Error::other)?;
-        bytes[index] = u8::from_str_radix(pair, 16).map_err(io::Error::other)?;
-    }
+    hex::decode_to_slice(value, &mut bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     Ok(bytes)
 }
 

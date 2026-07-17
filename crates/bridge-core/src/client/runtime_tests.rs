@@ -1,9 +1,4 @@
-use std::{
-    env, fs,
-    path::PathBuf,
-    process,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{fs, path::PathBuf};
 
 use crate::client::{
     ExternalRelayConfig, LanDirectConfig, QualityConfidence, SessionHealthConfig,
@@ -136,8 +131,8 @@ fn diagnostics_include_native_hook_startup_evidence() {
 
 #[test]
 fn cleanup_hook_launch_parameters_keeps_first_successful_result() {
-    let directory = unique_test_dir("hook-launch-cleanup");
-    let path = directory.join("hook-runtime.txt");
+    let directory = tempfile::tempdir().expect("create test directory");
+    let path = directory.path().join("hook-runtime.txt");
     fs::write(&path, "sidecar=127.0.0.1:25900\n").expect("write launch parameters");
     let mut client = BridgeClient::new();
     client.state.hook_launch_parameters_path_written = Some(path.clone());
@@ -159,13 +154,12 @@ fn cleanup_hook_launch_parameters_keeps_first_successful_result() {
         client.state.hook_launch_parameters_cleanup.as_deref(),
         Some(cleanup.as_str())
     );
-    let _ = fs::remove_dir_all(directory);
 }
 
 #[test]
 fn cleanup_hook_launch_parameters_records_already_missing() {
-    let directory = unique_test_dir("hook-launch-cleanup-missing");
-    let path = directory.join("hook-runtime.txt");
+    let directory = tempfile::tempdir().expect("create test directory");
+    let path = directory.path().join("hook-runtime.txt");
     let mut client = BridgeClient::new();
     client.state.hook_launch_parameters_path_written = Some(path);
 
@@ -178,7 +172,6 @@ fn cleanup_hook_launch_parameters_records_already_missing() {
         .expect("cleanup result should be recorded");
     assert!(cleanup.starts_with("already_missing "));
     assert!(cleanup.contains("reason=session ended"));
-    let _ = fs::remove_dir_all(directory);
 }
 
 #[test]
@@ -264,14 +257,4 @@ fn stop_does_not_overwrite_a_terminal_reason_that_already_arrived() {
             pid: 42,
         })
     );
-}
-
-fn unique_test_dir(name: &str) -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after unix epoch")
-        .as_nanos();
-    let path = env::temp_dir().join(format!("tractor-beam-{name}-{}-{nonce}", process::id()));
-    fs::create_dir_all(&path).expect("create test directory");
-    path
 }

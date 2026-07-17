@@ -17,14 +17,14 @@ use crate::{
 };
 
 mod routing;
+mod traffic_budget;
 
 use routing::{
-    apply_traffic_budget, random_bytes, random_nonzero_u64, room_views, target_destination,
-    validate_source, verify_pow,
+    random_bytes, random_nonzero_u64, room_views, target_destination, validate_source, verify_pow,
 };
+use traffic_budget::TrafficBudget;
 
 const RECOVERY_GRACE: Duration = Duration::from_secs(120);
-const PROBE_RATE_LIMIT_PER_SECOND: u32 = 10;
 
 #[derive(Clone, Debug)]
 struct PendingJoin {
@@ -53,11 +53,7 @@ struct Peer {
     detached_until: Option<Instant>,
     frames: FrameIdWindow,
     last_seen: Instant,
-    rate_window_started: Instant,
-    rate_window_packets: u32,
-    rate_window_bytes: usize,
-    probe_window_started: Instant,
-    probe_window_frames: u32,
+    traffic_budget: TrafficBudget,
 }
 
 #[derive(Debug)]
@@ -156,11 +152,7 @@ impl RelayState {
                 detached_until: None,
                 frames: FrameIdWindow::new(),
                 last_seen: now,
-                rate_window_started: now,
-                rate_window_packets: 0,
-                rate_window_bytes: 0,
-                probe_window_started: now,
-                probe_window_frames: 0,
+                traffic_budget: TrafficBudget::new(&self.config, now),
             },
         );
         self.connection_rooms.insert(connection_id, pending.session);
@@ -289,7 +281,8 @@ impl RelayState {
                 DuplicateDecision::Duplicate => return Err(StateError::DuplicateFrame),
                 DuplicateDecision::TooOld => return Err(StateError::FrameTooOld),
             }
-            apply_traffic_budget(sender, &self.config, frame_bytes, now)?;
+            sender.traffic_budget.check_traffic(frame_bytes, now)?;
+            sender.last_seen = now;
         }
         room.last_seen = now;
         target_destination(room, to_steam_id64, false)
@@ -324,16 +317,9 @@ impl RelayState {
             if sender.capabilities & CAP_ROOM_PATH_PROBE == 0 {
                 return Err(StateError::ProbeUnsupported);
             }
-            apply_traffic_budget(sender, &self.config, frame_bytes, now)?;
-            if now.duration_since(sender.probe_window_started) >= Duration::from_secs(1) {
-                sender.probe_window_started = now;
-                sender.probe_window_frames = 0;
-            }
-            let next = sender.probe_window_frames.saturating_add(1);
-            if next > PROBE_RATE_LIMIT_PER_SECOND {
-                return Err(StateError::ProbeRateLimited);
-            }
-            sender.probe_window_frames = next;
+            sender.traffic_budget.check_traffic(frame_bytes, now)?;
+            sender.traffic_budget.check_probe(now)?;
+            sender.last_seen = now;
         }
         room.last_seen = now;
         target_destination(room, to_steam_id64, true)

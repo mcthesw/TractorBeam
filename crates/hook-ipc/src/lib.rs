@@ -5,6 +5,7 @@ use std::{fmt, str::FromStr};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 mod codec;
+pub mod sync_io;
 
 pub use codec::{FrameDecoder, decode, encode};
 
@@ -38,12 +39,7 @@ impl SessionId {
 
     #[must_use]
     pub fn to_hex(self) -> String {
-        let mut output = String::with_capacity(32);
-        for byte in self.0 {
-            use fmt::Write as _;
-            let _ = write!(output, "{byte:02x}");
-        }
-        output
+        hex::encode(self.0)
     }
 }
 
@@ -55,11 +51,7 @@ impl FromStr for SessionId {
             return Err(ProtocolError::InvalidSessionId);
         }
         let mut bytes = [0_u8; 16];
-        for (index, slot) in bytes.iter_mut().enumerate() {
-            let offset = index * 2;
-            *slot = u8::from_str_radix(&value[offset..offset + 2], 16)
-                .map_err(|_| ProtocolError::InvalidSessionId)?;
-        }
+        hex::decode_to_slice(value, &mut bytes).map_err(|_| ProtocolError::InvalidSessionId)?;
         Ok(Self(bytes))
     }
 }

@@ -18,7 +18,9 @@ bytes = "1.11.1"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
 directories = "6.0.0"
 futures-util = { version = "0.3.31", features = ["sink"] }
+hex = "0.4.3"
 interprocess = "2.4.2"
+keyvalues-serde = "0.2.4"
 network-interface = "2.0.5"
 open = { version = "5.3.5", features = ["shellexecute-on-windows"] }
 rand = "0.10.1"
@@ -26,6 +28,7 @@ regex = "1.12.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2 = "0.10.9"
+steamlocate = "2.1.0"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "0.7.17", features = ["codec"] }
@@ -33,6 +36,9 @@ toml = "1.1.2"
 toml_edit = "0.22.24"
 tracing = "0.1.44"
 zip = { version = "=8.2.0", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tempfile = "3.23.0"
 
 [target."cfg(windows)".dependencies]
 winreg = "0.56.0"

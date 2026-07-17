@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    io::{self, Read, Write},
+    io::{self, Write},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -314,7 +314,7 @@ impl PendingWrite {
     fn try_flush(&mut self, stream: &mut impl Write) -> io::Result<bool> {
         match stream.write(&self.bytes[self.written..]) {
             Ok(0) if self.stalled_since.elapsed() < WRITE_TIMEOUT => Ok(false),
-            Ok(0) => Err(write_timeout()),
+            Ok(0) => Err(tractor_beam_hook_ipc::sync_io::write_timeout()),
             Ok(size) => {
                 self.written = self.written.saturating_add(size);
                 self.stalled_since = Instant::now();
@@ -324,7 +324,9 @@ impl PendingWrite {
             Err(error) if is_transient(&error) && self.stalled_since.elapsed() < WRITE_TIMEOUT => {
                 Ok(false)
             }
-            Err(error) if is_transient(&error) => Err(write_timeout()),
+            Err(error) if is_transient(&error) => {
+                Err(tractor_beam_hook_ipc::sync_io::write_timeout())
+            }
             Err(error) => Err(error),
         }
     }
@@ -378,48 +380,14 @@ fn health(counters: &WorkerCounters) -> IpcHealth {
 }
 
 fn write_message(stream: &mut LocalSocketStream, message: &HookToClient) -> io::Result<()> {
-    let encoded = tractor_beam_hook_ipc::encode(message).map_err(protocol_io)?;
-    write_all_bounded(stream, &encoded)
-}
-
-fn write_all_bounded(stream: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
-    let deadline = Instant::now() + WRITE_TIMEOUT;
-    let mut written = 0;
-    while written < bytes.len() {
-        match stream.write(&bytes[written..]) {
-            Ok(0) if Instant::now() < deadline => thread::sleep(IO_POLL_INTERVAL),
-            Ok(0) => return Err(write_timeout()),
-            Ok(size) => written += size,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) if is_transient(&error) && Instant::now() < deadline => {
-                thread::sleep(IO_POLL_INTERVAL);
-            }
-            Err(error) if is_transient(&error) => {
-                return Err(write_timeout());
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(())
-}
-
-fn write_timeout() -> io::Error {
-    io::Error::new(io::ErrorKind::TimedOut, "local IPC write timed out")
+    tractor_beam_hook_ipc::sync_io::write_message(stream, message, WRITE_TIMEOUT, IO_POLL_INTERVAL)
 }
 
 fn read_messages<T: tractor_beam_hook_ipc::WireMessage>(
     stream: &mut LocalSocketStream,
     decoder: &mut FrameDecoder,
 ) -> io::Result<Vec<T>> {
-    let mut buffer = [0_u8; 4_096];
-    match stream.read(&mut buffer) {
-        Ok(0) => Err(io::Error::new(
-            io::ErrorKind::WouldBlock,
-            "local IPC named pipe has no bytes available",
-        )),
-        Ok(size) => decoder.push(&buffer[..size]).map_err(protocol_io),
-        Err(error) => Err(error),
-    }
+    tractor_beam_hook_ipc::sync_io::read_messages(stream, decoder)
 }
 
 fn protocol_io(error: impl ToString) -> io::Error {
@@ -431,10 +399,7 @@ fn is_protocol_error(error: &io::Error) -> bool {
 }
 
 fn is_transient(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-    )
+    tractor_beam_hook_ipc::sync_io::is_transient(error)
 }
 
 fn is_disconnect(error: &io::Error) -> bool {
@@ -481,19 +446,6 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
-    }
-
-    #[test]
-    fn retries_zero_progress_windows_named_pipe_write() {
-        let mut writer = ZeroThenWrite {
-            returned_zero: false,
-            bytes: Vec::new(),
-        };
-
-        write_all_bounded(&mut writer, b"game-packet").unwrap();
-
-        assert!(writer.returned_zero);
-        assert_eq!(writer.bytes, b"game-packet");
     }
 
     #[test]

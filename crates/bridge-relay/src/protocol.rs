@@ -36,12 +36,7 @@ pub(crate) fn secret(bytes: [u8; 16]) -> SecretString {
 }
 
 pub(crate) fn hex(bytes: [u8; 16]) -> String {
-    use std::fmt::Write as _;
-    let mut value = String::with_capacity(32);
-    for byte in bytes {
-        write!(&mut value, "{byte:02x}").expect("writing to String cannot fail");
-    }
-    value
+    hex::encode(bytes)
 }
 
 pub(crate) fn decode_hex_16(value: &str) -> Result<[u8; 16], StateError> {
@@ -49,10 +44,7 @@ pub(crate) fn decode_hex_16(value: &str) -> Result<[u8; 16], StateError> {
         return Err(StateError::InvalidChallenge);
     }
     let mut bytes = [0_u8; 16];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
-        let pair = std::str::from_utf8(pair).map_err(|_| StateError::InvalidChallenge)?;
-        bytes[index] = u8::from_str_radix(pair, 16).map_err(|_| StateError::InvalidChallenge)?;
-    }
+    hex::decode_to_slice(value, &mut bytes).map_err(|_| StateError::InvalidChallenge)?;
     Ok(bytes)
 }
 

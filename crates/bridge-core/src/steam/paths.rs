@@ -5,10 +5,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use steamlocate::SteamDir;
+
 use super::{
     SteamAccount,
-    registry::registry_steam_dirs,
-    vdf::{dedup_paths, parse_appmanifest_install_dir, parse_libraryfolders, parse_loginusers},
+    vdf::{dedup_paths, parse_loginusers},
 };
 
 /// Steam app id for The Binding of Isaac: Rebirth.
@@ -44,7 +45,16 @@ pub fn steam_install_candidates() -> Vec<PathBuf> {
     if let Some(path) = env::var_os("STEAM_DIR") {
         paths.push(PathBuf::from(path));
     }
-    paths.extend(registry_steam_dirs());
+    if let Some(path) = current_user_steam_dir() {
+        paths.push(path);
+    }
+    if let Ok(steam_dirs) = steamlocate::locate_all() {
+        paths.extend(
+            steam_dirs
+                .into_iter()
+                .map(|steam_dir| steam_dir.path().to_path_buf()),
+        );
+    }
     if let Some(path) = env::var_os("ProgramFiles(x86)") {
         paths.push(PathBuf::from(path).join("Steam"));
     }
@@ -60,7 +70,11 @@ pub fn steam_library_candidates() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for steam_dir in steam_install_candidates() {
         paths.push(steam_dir.clone());
-        paths.extend(read_libraryfolders(&steam_dir));
+        if let Ok(steam_dir) = SteamDir::from_dir(&steam_dir)
+            && let Ok(libraries) = steam_dir.library_paths()
+        {
+            paths.extend(libraries);
+        }
     }
     dedup_paths(paths)
 }
@@ -69,13 +83,15 @@ pub fn steam_library_candidates() -> Vec<PathBuf> {
 #[must_use]
 pub fn isaac_install_candidates() -> Vec<PathBuf> {
     let mut paths = Vec::new();
+    for steam_path in steam_install_candidates() {
+        if let Ok(steam_dir) = SteamDir::from_dir(&steam_path)
+            && let Ok(Some((app, library))) = steam_dir.find_app(ISAAC_APP_ID)
+        {
+            paths.push(library.resolve_app_dir(&app));
+        }
+    }
     for library in steam_library_candidates() {
         let steamapps = library.join("steamapps");
-        if let Some(install_dir) =
-            read_appmanifest_install_dir(&steamapps.join(format!("appmanifest_{ISAAC_APP_ID}.acf")))
-        {
-            paths.push(steamapps.join("common").join(install_dir));
-        }
         paths.push(steamapps.join("common").join(ISAAC_DEFAULT_INSTALL_DIR));
     }
     dedup_paths(paths)
@@ -101,14 +117,20 @@ fn read_loginusers(path: &Path) -> Vec<SteamAccount> {
         .unwrap_or_default()
 }
 
-fn read_libraryfolders(steam_dir: &Path) -> Vec<PathBuf> {
-    fs::read_to_string(steam_dir.join("steamapps").join("libraryfolders.vdf"))
-        .map(|contents| parse_libraryfolders(&contents))
-        .unwrap_or_default()
+#[cfg(windows)]
+fn current_user_steam_dir() -> Option<PathBuf> {
+    use winreg::{RegKey, enums::HKEY_CURRENT_USER};
+
+    let key = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey("Software\\Valve\\Steam")
+        .ok()?;
+    let path = key.get_value::<String, _>("SteamPath").ok()?;
+    (!path.trim().is_empty()).then(|| PathBuf::from(path))
 }
 
-fn read_appmanifest_install_dir(path: &Path) -> Option<String> {
-    parse_appmanifest_install_dir(&fs::read_to_string(path).ok()?)
+#[cfg(not(windows))]
+fn current_user_steam_dir() -> Option<PathBuf> {
+    None
 }
 
 #[cfg(test)]

@@ -389,12 +389,8 @@ async fn packaged_i686_hook_handshakes_with_x64_client() {
     let steam_api = std::env::var_os("TRACTOR_BEAM_STEAM_API").expect("set TRACTOR_BEAM_STEAM_API");
     let packaged_hook =
         std::env::var_os("TRACTOR_BEAM_PACKAGED_HOOK").expect("set TRACTOR_BEAM_PACKAGED_HOOK");
-    let temp = std::env::temp_dir().join(format!(
-        "tractor-beam-packaged-hook-smoke-{}-{}",
-        std::process::id(),
-        unix_seconds()
-    ));
-    std::fs::create_dir_all(&temp).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let temp = directory.path();
     let hook = temp.join("tractor_beam_native_hook.dll");
     std::fs::copy(packaged_hook, &hook).unwrap();
 
@@ -452,7 +448,6 @@ async fn packaged_i686_hook_handshakes_with_x64_client() {
         .unwrap()
         .unwrap();
     assert!(status.success());
-    std::fs::remove_dir_all(temp).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

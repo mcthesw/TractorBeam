@@ -2,7 +2,6 @@
 
 mod account;
 mod paths;
-mod registry;
 mod vdf;
 
 pub use account::SteamAccount;
@@ -11,4 +10,4 @@ pub use paths::{
     isaac_launch_uri, launch_isaac, loginusers_candidates, steam_install_candidates,
     steam_library_candidates,
 };
-pub use vdf::{parse_appmanifest_install_dir, parse_libraryfolders, parse_loginusers};
+pub use vdf::parse_loginusers;

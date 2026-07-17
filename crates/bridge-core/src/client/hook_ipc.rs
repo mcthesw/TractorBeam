@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     future::Future,
-    io::{self, Read, Write},
+    io::{self, Write},
     mem,
     sync::{
         Arc,

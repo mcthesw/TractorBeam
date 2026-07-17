@@ -400,11 +400,8 @@ mod tests {
 
     #[test]
     fn diagnostics_bundle_streams_redacted_daily_logs_without_summary_duplication() {
-        let directory = std::env::temp_dir().join(format!(
-            "tractor-beam-package-test-{}-{}",
-            std::process::id(),
-            unix_seconds()
-        ));
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path();
         let log_root = directory.join("logs");
         let client_dir = log_root.join("client");
         let hook_dir = log_root.join("hook");
@@ -460,7 +457,5 @@ mod tests {
         for secret in ["secret-token", "alice", "0011223344556677"] {
             assert!(!combined.contains(secret), "package leaked {secret}");
         }
-
-        fs::remove_dir_all(directory).ok();
     }
 }

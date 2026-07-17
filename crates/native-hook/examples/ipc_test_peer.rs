@@ -1,6 +1,5 @@
 use std::{
-    io::{self, Read, Write},
-    thread,
+    io, thread,
     time::{Duration, Instant},
 };
 
@@ -138,50 +137,19 @@ fn handshake(stream: &mut LocalSocketStream, session_id: SessionId) -> io::Resul
 }
 
 fn write_message(stream: &mut LocalSocketStream, message: &HookToClient) -> io::Result<()> {
-    let encoded = tractor_beam_hook_ipc::encode(message).map_err(protocol_io)?;
-    let deadline = Instant::now() + WRITE_TIMEOUT;
-    let mut written = 0;
-    while written < encoded.len() {
-        match stream.write(&encoded[written..]) {
-            Ok(0) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "local IPC stream stopped accepting bytes",
-                ));
-            }
-            Ok(size) => written += size,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) if is_transient(&error) && Instant::now() < deadline => {
-                thread::sleep(POLL_INTERVAL);
-            }
-            Err(error) if is_transient(&error) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "local IPC write timed out",
-                ));
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(())
+    tractor_beam_hook_ipc::sync_io::write_message(stream, message, WRITE_TIMEOUT, POLL_INTERVAL)
 }
 
 fn read_messages<T: WireMessage>(
     stream: &mut LocalSocketStream,
     decoder: &mut FrameDecoder,
 ) -> io::Result<Vec<T>> {
-    let mut buffer = [0_u8; 4_096];
-    match stream.read(&mut buffer) {
-        Ok(0) => {
-            thread::sleep(POLL_INTERVAL);
-            Ok(Vec::new())
-        }
-        Ok(size) => decoder.push(&buffer[..size]).map_err(protocol_io),
+    match tractor_beam_hook_ipc::sync_io::read_messages(stream, decoder) {
         Err(error) if is_transient(&error) => {
             thread::sleep(POLL_INTERVAL);
             Ok(Vec::new())
         }
-        Err(error) => Err(error),
+        result => result,
     }
 }
 
@@ -190,8 +158,5 @@ fn protocol_io(error: impl ToString) -> io::Error {
 }
 
 fn is_transient(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-    )
+    tractor_beam_hook_ipc::sync_io::is_transient(error)
 }

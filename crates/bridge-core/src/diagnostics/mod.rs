@@ -124,22 +124,19 @@ mod tests {
 
     #[test]
     fn daily_logs_ignore_unrelated_files_and_keep_newest_ten() {
-        let directory =
-            std::env::temp_dir().join(format!("tractor-beam-daily-logs-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&directory);
-        fs::create_dir_all(&directory).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path();
         for day in 1..=12 {
             fs::write(directory.join(format!("2026-07-{day:02}.log")), []).unwrap();
         }
         fs::write(directory.join("hook-runtime.txt"), []).unwrap();
 
-        prune_daily_logs(&directory).unwrap();
-        let logs = all_daily_log_files(&directory);
+        prune_daily_logs(directory).unwrap();
+        let logs = all_daily_log_files(directory);
 
         assert_eq!(logs.len(), 10);
         assert_eq!(logs[0].file_name().unwrap(), "2026-07-12.log");
         assert_eq!(logs[9].file_name().unwrap(), "2026-07-03.log");
         assert!(directory.join("hook-runtime.txt").exists());
-        let _ = fs::remove_dir_all(directory);
     }
 }

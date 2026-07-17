@@ -12,6 +12,7 @@ bytes = "1.11.1"
 bs58 = "0.1"
 argh = "0.1.19"
 futures-util = { version = "0.3.31", features = ["sink"] }
+hex = "0.4.3"
 ipnet = { version = "2.12.0", features = ["serde"] }
 opentelemetry = { version = "0.31.0", default-features = false, features = ["metrics", "trace"] }
 opentelemetry-otlp = { version = "0.31.0", default-features = false, features = ["grpc-tonic", "metrics", "trace"] }

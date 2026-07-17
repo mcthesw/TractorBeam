@@ -153,21 +153,18 @@ mod tests {
 
     #[test]
     fn daily_log_discovery_ignores_unrelated_files_and_keeps_newest_ten() {
-        let root =
-            std::env::temp_dir().join(format!("tractor-beam-log-retention-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
         for day in 1..=12 {
             fs::write(root.join(format!("2026-07-{day:02}.log")), "log").unwrap();
         }
         fs::write(root.join("bridge-client.log"), "legacy").unwrap();
         fs::write(root.join("notes.txt"), "keep").unwrap();
 
-        let files = tractor_beam_core::diagnostics::daily_log_files(&root);
+        let files = tractor_beam_core::diagnostics::daily_log_files(root);
 
         assert_eq!(files.len(), 10);
         assert_eq!(files[0].file_name().unwrap(), "2026-07-12.log");
         assert_eq!(files[9].file_name().unwrap(), "2026-07-03.log");
-        let _ = fs::remove_dir_all(root);
     }
 }

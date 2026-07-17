@@ -153,10 +153,7 @@ fn find_file(directories: &[PathBuf], name: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs, process,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::fs;
 
     use super::*;
 
@@ -195,28 +192,29 @@ mod tests {
 
     #[test]
     fn resolve_native_hook_paths_ignores_legacy_file_names() {
-        let directory = TempTestDir::new("legacy-native-names");
-        fs::write(directory.path.join("eos_probe_injector.exe"), [])
+        let directory = tempfile::tempdir().expect("create test directory");
+        let directory_path = directory.path().to_path_buf();
+        fs::write(directory_path.join("eos_probe_injector.exe"), [])
             .expect("write legacy injector fixture");
-        fs::write(directory.path.join("isaac_eos_probe.dll"), [])
+        fs::write(directory_path.join("isaac_eos_probe.dll"), [])
             .expect("write legacy hook fixture");
 
         assert!(matches!(
-            resolve_native_hook_paths_in(std::slice::from_ref(&directory.path)),
+            resolve_native_hook_paths_in(std::slice::from_ref(&directory_path)),
             Err(InjectorError::MissingInjector)
         ));
 
-        let injector = directory.path.join(NATIVE_INJECTOR_EXE);
+        let injector = directory_path.join(NATIVE_INJECTOR_EXE);
         fs::write(&injector, []).expect("write injector fixture");
         assert!(matches!(
-            resolve_native_hook_paths_in(std::slice::from_ref(&directory.path)),
+            resolve_native_hook_paths_in(std::slice::from_ref(&directory_path)),
             Err(InjectorError::MissingNativeHook)
         ));
 
-        let hook = directory.path.join(NATIVE_HOOK_DLL);
+        let hook = directory_path.join(NATIVE_HOOK_DLL);
         fs::write(&hook, []).expect("write native hook fixture");
         assert_eq!(
-            resolve_native_hook_paths_in(std::slice::from_ref(&directory.path))
+            resolve_native_hook_paths_in(std::slice::from_ref(&directory_path))
                 .expect("new native hook paths should resolve"),
             NativeHookPaths { injector, hook }
         );
@@ -286,31 +284,6 @@ mod tests {
             result,
             Err(InjectorError::AdminPermissionCancelled)
         ));
-    }
-
-    struct TempTestDir {
-        path: PathBuf,
-    }
-
-    impl TempTestDir {
-        fn new(name: &str) -> Self {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock should be after unix epoch")
-                .as_nanos();
-            let path = env::temp_dir().join(format!(
-                "tractor-beam-isaac-injector-{name}-{}-{nonce}",
-                process::id()
-            ));
-            fs::create_dir_all(&path).expect("create test directory");
-            Self { path }
-        }
-    }
-
-    impl Drop for TempTestDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
     }
 
     #[cfg(windows)]

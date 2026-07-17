@@ -1,95 +1,42 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
+use serde::Deserialize;
+
 use super::SteamAccount;
 
-/// Parses Steam's `loginusers.vdf` KeyValues file.
+#[derive(Deserialize)]
+#[serde(rename = "users")]
+struct LoginUsers(BTreeMap<String, RawSteamAccount>);
+
+#[derive(Deserialize)]
+struct RawSteamAccount {
+    #[serde(rename = "AccountName")]
+    account_name: Option<String>,
+    #[serde(rename = "PersonaName")]
+    persona_name: Option<String>,
+    #[serde(rename = "MostRecent", default)]
+    most_recent: bool,
+}
+
+/// Parses Steam's `loginusers.vdf` KeyValues document.
 #[must_use]
 pub fn parse_loginusers(contents: &str) -> Vec<SteamAccount> {
-    let mut accounts = Vec::new();
-    let mut current = None;
-
-    for line in contents.lines().map(str::trim) {
-        let tokens = quoted_tokens(line);
-        if tokens.len() == 1 && is_steam_id64(&tokens[0]) {
-            if let Some(account) = current.take() {
-                accounts.push(account);
-            }
-            current = Some(SteamAccount {
-                steam_id64: tokens[0].clone(),
-                account_name: None,
-                persona_name: None,
-                most_recent: false,
-            });
-            continue;
-        }
-
-        if line.starts_with('}') {
-            if let Some(account) = current.take() {
-                accounts.push(account);
-            }
-            continue;
-        }
-
-        if tokens.len() >= 2
-            && let Some(account) = current.as_mut()
-        {
-            match tokens[0].as_str() {
-                "AccountName" => account.account_name = Some(tokens[1].clone()),
-                "PersonaName" => account.persona_name = Some(tokens[1].clone()),
-                "MostRecent" => account.most_recent = tokens[1] == "1",
-                _ => {}
-            }
-        }
-    }
-
-    if let Some(account) = current {
-        accounts.push(account);
-    }
+    let Ok(LoginUsers(accounts)) = keyvalues_serde::from_str(contents) else {
+        return Vec::new();
+    };
     accounts
-}
-
-/// Parses Steam's `libraryfolders.vdf` and returns configured library roots.
-#[must_use]
-pub fn parse_libraryfolders(contents: &str) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-
-    for line in contents.lines().map(str::trim) {
-        let tokens = quoted_tokens(line);
-        if tokens.len() < 2 {
-            continue;
-        }
-        if tokens[0] == "path" || tokens[0].bytes().all(|byte| byte.is_ascii_digit()) {
-            paths.push(PathBuf::from(tokens[1].replace("\\\\", "\\")));
-        }
-    }
-
-    dedup_paths(paths)
-}
-
-/// Parses Steam's app manifest and returns the install directory if present.
-#[must_use]
-pub fn parse_appmanifest_install_dir(contents: &str) -> Option<String> {
-    contents.lines().map(str::trim).find_map(|line| {
-        let tokens = quoted_tokens(line);
-        (tokens.len() >= 2 && tokens[0] == "installdir").then(|| tokens[1].clone())
-    })
-}
-
-fn quoted_tokens(line: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut rest = line;
-    while let Some(start) = rest.find('"') {
-        let after_start = &rest[start + 1..];
-        let Some(end) = after_start.find('"') else {
-            break;
-        };
-        tokens.push(after_start[..end].to_owned());
-        rest = &after_start[end + 1..];
-    }
-    tokens
+        .into_iter()
+        .filter(|(steam_id64, _)| is_steam_id64(steam_id64))
+        .map(|(steam_id64, account)| SteamAccount {
+            steam_id64,
+            account_name: account.account_name,
+            persona_name: account.persona_name,
+            most_recent: account.most_recent,
+        })
+        .collect()
 }
 
 fn is_steam_id64(value: &str) -> bool {
@@ -117,7 +64,6 @@ fn path_key(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::paths::ISAAC_DEFAULT_INSTALL_DIR;
     use super::*;
 
     #[test]
@@ -150,41 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_libraryfolders() {
-        let paths = parse_libraryfolders(
-            r#"
-            "libraryfolders"
-            {
-                "0"
-                {
-                    "path" "D:\\SteamLibrary"
-                }
-                "1" "E:\\Games\\Steam"
-            }
-            "#,
-        );
-
-        assert_eq!(
-            paths,
-            [
-                PathBuf::from(r"D:\SteamLibrary"),
-                PathBuf::from(r"E:\Games\Steam")
-            ]
-        );
-    }
-
-    #[test]
-    fn parses_appmanifest_install_dir() {
-        let install_dir = parse_appmanifest_install_dir(
-            r#"
-            "AppState"
-            {
-                "appid" "250900"
-                "installdir" "The Binding of Isaac Rebirth"
-            }
-            "#,
-        );
-
-        assert_eq!(install_dir.as_deref(), Some(ISAAC_DEFAULT_INSTALL_DIR));
+    fn malformed_loginusers_is_ignored() {
+        assert!(parse_loginusers("not valid VDF").is_empty());
     }
 }

@@ -20,9 +20,10 @@ use tractor_beam_hook_ipc::{
 use super::{bridge, input_delay::InputDelayMemoryError};
 
 const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(50);
-const INITIAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(35);
+const INITIAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(40);
 const RECONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
+const IDLE_WAIT_INTERVAL: Duration = Duration::from_millis(1);
 const IO_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 const HEALTH_INTERVAL: Duration = Duration::from_secs(1);
@@ -141,20 +142,17 @@ fn connect(endpoint: &str, session_id: SessionId) -> io::Result<LocalSocketStrea
             return Err(protocol_io("local IPC handshake timed out"));
         }
         match read_messages::<ClientToHook>(&mut stream, &mut decoder) {
-            Ok(messages) => {
-                for message in messages {
-                    match message {
-                        ClientToHook::Handshake(handshake) => {
-                            handshake
-                                .validate(PeerRole::BridgeClient, session_id)
-                                .map_err(protocol_io)?;
-                            write_message(&mut stream, &HookToClient::Ready)?;
-                            return Ok(stream);
-                        }
-                        _ => return Err(protocol_io("expected Bridge Client handshake")),
-                    }
+            Ok(messages) => match messages.as_slice() {
+                [ClientToHook::Handshake(handshake)] => {
+                    (*handshake)
+                        .validate(PeerRole::BridgeClient, session_id)
+                        .map_err(protocol_io)?;
+                    write_message(&mut stream, &HookToClient::Ready)?;
+                    return Ok(stream);
                 }
-            }
+                [] => {}
+                _ => return Err(protocol_io("expected one Bridge Client handshake")),
+            },
             Err(error) if is_transient(&error) => thread::sleep(IO_POLL_INTERVAL),
             Err(error) => return Err(error),
         }
@@ -201,7 +199,9 @@ fn run_connection(
                         }
                     }
                 }
-                Err(error) if is_transient(&error) => {}
+                Err(error) if is_transient(&error) => {
+                    thread::sleep(IDLE_WAIT_INTERVAL);
+                }
                 Err(error) => {
                     let _ = reader_tx.send(Err(error));
                     return;
@@ -285,6 +285,7 @@ fn run_connection(
                 Err(TryRecvError::Disconnected) => return Ok(ConnectionEnd::Shutdown),
             }
         }
+        thread::sleep(IDLE_WAIT_INTERVAL);
     }
     let _ = write_message(stream, &HookToClient::Goodbye);
     Ok(ConnectionEnd::Shutdown)

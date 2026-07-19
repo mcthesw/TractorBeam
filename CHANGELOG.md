@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.1](https://github.com/mcthesw/TractorBeam/compare/v0.3.0...v0.3.1) (2026-07-19)
+
+
+### Code Refactoring
+
+* **config:** use a single portable client config ([84c0033](https://github.com/mcthesw/TractorBeam/commit/84c0033416d6972c1f3fc385da874265f2618e2f))
+* **logging:** unify portable logs and diagnostics ([afd435c](https://github.com/mcthesw/TractorBeam/commit/afd435c01e35fd7ce3b02957700673fb9a33d816))
+* reduce infrastructure maintenance surface ([df7e5f2](https://github.com/mcthesw/TractorBeam/commit/df7e5f2bd38829b508841a9cb4cd48590f3b991a))
+
+
+### Documentation
+
+* unify diagnostics and testing terminology ([7d4dfda](https://github.com/mcthesw/TractorBeam/commit/7d4dfdac845489df3b6f6799ded9944e78961c3d))
+
 ## [0.3.0](https://github.com/mcthesw/TractorBeam/compare/v0.2.1...v0.3.0) (2026-07-15)
 
 

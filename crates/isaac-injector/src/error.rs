@@ -6,6 +6,7 @@ use thiserror::Error;
 pub enum InjectionStep {
     ResolvePaths,
     HelperProcess,
+    InspectModules,
     OpenProcess,
     AllocateRemoteMemory,
     WriteDllPath,
@@ -20,6 +21,7 @@ impl fmt::Display for InjectionStep {
         let step = match self {
             Self::ResolvePaths => "resolve paths",
             Self::HelperProcess => "injector helper",
+            Self::InspectModules => "inspect loaded modules",
             Self::OpenProcess => "open Isaac process",
             Self::AllocateRemoteMemory => "allocate remote memory",
             Self::WriteDllPath => "write DLL path",
@@ -44,6 +46,8 @@ pub enum InjectorError {
     UnsupportedPlatform,
     #[error("Admin permission was cancelled")]
     AdminPermissionCancelled,
+    #[error("Native Hook is already loaded in the Isaac process")]
+    NativeHookAlreadyLoaded,
     #[error("{0}")]
     Io(#[from] io::Error),
     #[error("Native Hook injection failed at {step}: {source}")]
@@ -101,6 +105,14 @@ impl InjectorError {
     pub fn is_admin_permission_cancelled(&self) -> bool {
         matches!(self, Self::AdminPermissionCancelled)
     }
+
+    #[must_use]
+    pub fn is_native_hook_already_loaded(&self) -> bool {
+        matches!(self, Self::NativeHookAlreadyLoaded)
+            || self
+                .to_string()
+                .contains("Native Hook is already loaded in the Isaac process")
+    }
 }
 
 #[cfg(test)]
@@ -137,5 +149,15 @@ mod tests {
         assert!(error.is_admin_permission_cancelled());
         assert!(error.is_access_denied());
         assert_eq!(error.to_string(), "Admin permission was cancelled");
+    }
+
+    #[test]
+    fn classifies_stale_hook_reported_by_injector_helper() {
+        let error = InjectorError::injection(
+            InjectionStep::HelperProcess,
+            "Native Hook is already loaded in the Isaac process",
+        );
+
+        assert!(error.is_native_hook_already_loaded());
     }
 }

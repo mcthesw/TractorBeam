@@ -18,6 +18,8 @@ const INJECTOR_HELPER_TIMEOUT: Duration = Duration::from_secs(60);
 const ADMIN_PERMISSION_REQUEST_MESSAGE: &str = "Requesting admin permission...";
 const ADMIN_PERMISSION_CANCELLED_MESSAGE: &str = "Admin permission was cancelled";
 const ELEVATED_INJECTOR_RETRY_SUCCEEDED_MESSAGE: &str = "Elevated Injector retry succeeded";
+const STALE_NATIVE_HOOK_MESSAGE: &str =
+    "Native Hook is already loaded from an earlier session. Fully exit Isaac, then start it again.";
 
 pub(super) async fn inject_process(
     paths: tractor_beam_isaac_injector::NativeHookPaths,
@@ -205,6 +207,9 @@ pub(super) fn report_isaac_wait_failure(
 }
 
 fn injection_support_message(error: &tractor_beam_isaac_injector::InjectorError) -> String {
+    if error.is_native_hook_already_loaded() {
+        return STALE_NATIVE_HOOK_MESSAGE.to_owned();
+    }
     if error.is_admin_permission_cancelled() {
         return ADMIN_PERMISSION_CANCELLED_MESSAGE.to_owned();
     }
@@ -297,6 +302,14 @@ mod tests {
         let message = injection_support_message(&InjectorError::AdminPermissionCancelled);
 
         assert_eq!(message, ADMIN_PERMISSION_CANCELLED_MESSAGE);
+    }
+
+    #[test]
+    fn stale_native_hook_support_message_requires_full_isaac_restart() {
+        let message = injection_support_message(&InjectorError::NativeHookAlreadyLoaded);
+
+        assert_eq!(message, STALE_NATIVE_HOOK_MESSAGE);
+        assert!(message.contains("Fully exit Isaac"));
     }
 
     #[test]

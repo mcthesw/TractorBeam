@@ -8,14 +8,26 @@ pub fn inject(pid: u32, hook: &Path) -> Result<(), InjectorError> {
 
 #[cfg(windows)]
 fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
-    use std::{ffi::OsStr, io, iter, os::windows::ffi::OsStrExt, ptr};
+    use std::{
+        ffi::{OsStr, OsString},
+        io, iter,
+        os::windows::ffi::{OsStrExt, OsStringExt},
+        path::PathBuf,
+        ptr,
+    };
 
     use crate::InjectionStep;
 
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, WAIT_OBJECT_0},
+        Foundation::{CloseHandle, ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE, WAIT_OBJECT_0},
         System::{
-            Diagnostics::Debug::WriteProcessMemory,
+            Diagnostics::{
+                Debug::WriteProcessMemory,
+                ToolHelp::{
+                    CreateToolhelp32Snapshot, MODULEENTRY32W, Module32FirstW, Module32NextW,
+                    TH32CS_SNAPMODULE, TH32CS_SNAPMODULE32,
+                },
+            },
             LibraryLoader::{GetModuleHandleW, GetProcAddress},
             Memory::{MEM_COMMIT, MEM_RELEASE, PAGE_READWRITE, VirtualAllocEx, VirtualFreeEx},
             Threading::{
@@ -31,6 +43,9 @@ fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
     }
 
     let hook = std::fs::canonicalize(hook)?;
+    if process_has_module(pid, &hook)? {
+        return Err(InjectorError::NativeHookAlreadyLoaded);
+    }
     let hook_wide = wide_null(hook.as_os_str());
     let remote_bytes = hook_wide.len() * size_of::<u16>();
 
@@ -159,6 +174,70 @@ fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
 
     fn wide_null(value: &OsStr) -> Vec<u16> {
         value.encode_wide().chain(iter::once(0)).collect()
+    }
+
+    fn process_has_module(pid: u32, hook: &Path) -> Result<bool, InjectorError> {
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+            if snapshot == INVALID_HANDLE_VALUE {
+                return Err(InjectorError::step_io(
+                    InjectionStep::InspectModules,
+                    io::Error::last_os_error(),
+                ));
+            }
+
+            let mut entry: MODULEENTRY32W = std::mem::zeroed();
+            entry.dwSize = size_of::<MODULEENTRY32W>() as u32;
+            if Module32FirstW(snapshot, &mut entry) == 0 {
+                let error = io::Error::last_os_error();
+                CloseHandle(snapshot);
+                if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
+                    return Ok(false);
+                }
+                return Err(InjectorError::step_io(InjectionStep::InspectModules, error));
+            }
+
+            let expected = normalized_path(hook);
+            let expected_name = normalized_file_name(hook);
+            loop {
+                let length = entry
+                    .szExePath
+                    .iter()
+                    .position(|character| *character == 0)
+                    .unwrap_or(entry.szExePath.len());
+                let loaded = PathBuf::from(OsString::from_wide(&entry.szExePath[..length]));
+                if normalized_path(&loaded) == expected
+                    || normalized_file_name(&loaded) == expected_name
+                {
+                    CloseHandle(snapshot);
+                    return Ok(true);
+                }
+                if Module32NextW(snapshot, &mut entry) == 0 {
+                    let error = io::Error::last_os_error();
+                    CloseHandle(snapshot);
+                    if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
+                        return Ok(false);
+                    }
+                    return Err(InjectorError::step_io(InjectionStep::InspectModules, error));
+                }
+            }
+        }
+    }
+
+    fn normalized_path(path: &Path) -> String {
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        canonical
+            .as_os_str()
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .to_lowercase()
+    }
+
+    fn normalized_file_name(path: &Path) -> String {
+        path.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase()
     }
 
     Ok(())

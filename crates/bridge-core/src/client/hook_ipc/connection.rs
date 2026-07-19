@@ -88,7 +88,9 @@ pub(super) fn run_connection(
                         }
                     }
                 }
-                Err(error) if is_transient(&error) => {}
+                Err(error) if is_transient(&error) => {
+                    thread::sleep(IDLE_WAIT_INTERVAL);
+                }
                 Err(error) => {
                     let _ = reader_tx.send(Err(error));
                     return;
@@ -235,6 +237,7 @@ pub(super) fn run_connection(
                 }
             }
         }
+        thread::sleep(IDLE_WAIT_INTERVAL);
     }
 }
 

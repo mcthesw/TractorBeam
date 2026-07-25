@@ -15,23 +15,23 @@ fn latency_summary_reports_percentiles_and_thresholds() {
 }
 
 #[test]
-fn queue_and_sequence_windows_use_deltas() {
+fn queue_and_delivery_windows_use_deltas() {
     let previous = QualityBaseline {
         queue_drops: 2,
-        sequence_gaps: 3,
-        sequence_reordered: 4,
+        delivery_gaps: 3,
+        delivery_reordered: 4,
         ..QualityBaseline::default()
     };
     let current = QualityBaseline {
         queue_drops: 2,
-        sequence_gaps: 4,
-        sequence_reordered: 9,
+        delivery_gaps: 4,
+        delivery_reordered: 9,
         ..QualityBaseline::default()
     };
     let window = current.delta(previous, Duration::from_secs(5));
     assert_eq!(window.queue_drops, 0);
-    assert_eq!(window.sequence_gaps, 1);
-    assert_eq!(window.sequence_reordered, 5);
+    assert_eq!(window.delivery_gaps, 1);
+    assert_eq!(window.delivery_reordered, 5);
 }
 
 #[test]
@@ -49,7 +49,7 @@ fn current_anomalies_have_deterministic_reasons_and_severity() {
     let watch = classify_quality(
         60,
         SessionHealthWindow {
-            sequence_gaps: 1,
+            delivery_gaps: 1,
             runtime_rtt_timeouts: 1,
             ..active_window()
         },
@@ -58,7 +58,7 @@ fn current_anomalies_have_deterministic_reasons_and_severity() {
     assert_eq!(
         watch.reasons,
         [
-            SessionQualityReason::SequenceGap,
+            SessionQualityReason::DeliveryGap,
             SessionQualityReason::RuntimeRttTimeout,
         ]
     );
@@ -105,22 +105,25 @@ fn recovered_window_is_not_degraded_by_lifetime_anomaly() {
 }
 
 #[test]
-fn route_neutral_network_evidence_reports_sequence_and_send_drops() {
+fn route_neutral_network_evidence_reports_confirmed_delivery_and_send_drops() {
     let start = Instant::now();
     let active = start + Duration::from_secs(ACTIVE_TRAFFIC_STARTUP_GRACE_SECONDS);
     let mut health = SessionHealth::new(false, Duration::from_secs(1), start);
 
     health.observe_hook_in_recv(8, active);
     health.observe_network_recv(8, active);
-    health.observe_source_sequence(42, 10);
+    let stream = DeliveryStreamId::from_bytes([1; 16]);
+    health.observe_delivery(42, stream, 10);
     health.observe_network_recv(8, active + Duration::from_millis(1));
-    health.observe_source_sequence(42, 12);
+    health.observe_delivery(42, stream, 12);
+    health.observe_network_recv(8, active + Duration::from_millis(2));
+    health.observe_delivery(42, stream, 140);
     health.observe_network_send_drop();
 
-    let snapshot = health.snapshot(active + Duration::from_millis(2));
+    let snapshot = health.snapshot(active + Duration::from_millis(3));
 
-    assert_eq!(snapshot.network_recv.packets, 2);
-    assert_eq!(snapshot.source_sequence.gaps, 1);
+    assert_eq!(snapshot.network_recv.packets, 3);
+    assert_eq!(snapshot.delivery.confirmed_gaps, 1);
     assert_eq!(snapshot.network_send_dropped, 1);
     assert_eq!(snapshot.window.network_send_dropped, 1);
     assert_eq!(snapshot.quality, SessionQuality::Poor);
@@ -128,9 +131,45 @@ fn route_neutral_network_evidence_reports_sequence_and_send_drops() {
         snapshot.reasons,
         [
             SessionQualityReason::NetworkSendDrop,
-            SessionQualityReason::SequenceGap,
+            SessionQualityReason::DeliveryGap,
         ]
     );
+}
+
+#[test]
+fn delivery_tracker_baselines_reorders_and_confirms_only_aged_gaps() {
+    let stream = DeliveryStreamId::from_bytes([1; 16]);
+    let mut stats = DeliveryStats::default();
+
+    stats.observe(42, stream, 4_812);
+    assert_eq!(stats.snapshot().confirmed_gaps, 0);
+    stats.observe(42, stream, 4_814);
+    assert_eq!(stats.snapshot().open_gaps, 1);
+    stats.observe(42, stream, 4_813);
+    let reordered = stats.snapshot();
+    assert_eq!(reordered.open_gaps, 0);
+    assert_eq!(reordered.reordered, 1);
+
+    stats.observe(42, stream, 4_816);
+    stats.observe(42, stream, 4_944);
+    let confirmed = stats.snapshot();
+    assert_eq!(confirmed.confirmed_gaps, 1);
+}
+
+#[test]
+fn retired_delivery_stream_cannot_reactivate() {
+    let first = DeliveryStreamId::from_bytes([1; 16]);
+    let second = DeliveryStreamId::from_bytes([2; 16]);
+    let mut stats = DeliveryStats::default();
+
+    stats.observe(42, first, 1);
+    stats.observe(42, second, 1);
+    stats.observe(42, first, 2);
+
+    let snapshot = stats.snapshot();
+    assert_eq!(snapshot.first_packets, 2);
+    assert_eq!(snapshot.in_order, 0);
+    assert_eq!(snapshot.tracked_peers, 1);
 }
 
 const fn active_window() -> SessionHealthWindow {
@@ -140,8 +179,8 @@ const fn active_window() -> SessionHealthWindow {
         network_recv_packets: 20,
         network_send_dropped: 0,
         queue_drops: 0,
-        sequence_gaps: 0,
-        sequence_reordered: 0,
+        delivery_gaps: 0,
+        delivery_reordered: 0,
         runtime_rtt_sent: 0,
         runtime_rtt_timeouts: 0,
         hook_send_over_500_ms: 0,

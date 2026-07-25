@@ -59,8 +59,8 @@ pub(super) async fn lan_route_task(
                 let peer = packet.to_steam_id64;
                 let summary = PacketSummary {
                     peer,
-                    sequence: packet.source_sequence,
-                    source_sequence: packet.source_sequence,
+                    hook_sequence: packet.hook_sequence,
+                    delivery_sequence: packet.delivery_sequence,
                     channel: packet.channel,
                     send_type: packet.send_type,
                     payload_bytes: packet.payload.len(),

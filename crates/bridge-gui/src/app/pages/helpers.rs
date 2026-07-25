@@ -207,8 +207,8 @@ pub(super) fn session_health_summary(ui: &mut egui::Ui, state: &RuntimeState) {
             ui.monospace(snapshot.network_send_dropped.to_string());
             ui.end_row();
 
-            ui.label(t!("health.sequence_gaps"));
-            ui.monospace(snapshot.source_sequence.gaps.to_string());
+            ui.label(t!("health.delivery_gaps"));
+            ui.monospace(snapshot.delivery.confirmed_gaps.to_string());
             ui.end_row();
 
             ui.label(t!("health.packet_gaps"));

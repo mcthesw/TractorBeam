@@ -47,6 +47,7 @@ macro_rules! opaque_bytes {
 }
 
 opaque_bytes!(InstanceId, 16);
+opaque_bytes!(DeliveryStreamId, 16);
 opaque_bytes!(LinkId, 16);
 opaque_bytes!(PathId, 16);
 opaque_bytes!(PathToken, 16);
@@ -345,6 +346,7 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
     use super::*;
+    use crate::PROTOCOL_MAJOR;
 
     #[test]
     fn candidate_validation_rejects_invalid_unicast_boundaries() {
@@ -387,18 +389,30 @@ mod tests {
     #[test]
     fn protocol_selection_chooses_newest_common_version() {
         let local = [ProtocolRange {
-            major: 1,
+            major: PROTOCOL_MAJOR,
             min_minor: 0,
             max_minor: 2,
         }];
         let remote = [ProtocolRange {
-            major: 1,
+            major: PROTOCOL_MAJOR,
             min_minor: 1,
             max_minor: 1,
         }];
         assert_eq!(
             select_protocol(&local, &remote).unwrap(),
-            ProtocolVersion { major: 1, minor: 1 }
+            ProtocolVersion {
+                major: PROTOCOL_MAJOR,
+                minor: 1,
+            }
+        );
+        let old = [ProtocolRange {
+            major: PROTOCOL_MAJOR - 1,
+            min_minor: 0,
+            max_minor: 0,
+        }];
+        assert_eq!(
+            select_protocol(&local, &old).unwrap_err(),
+            ProtocolSelectionError::NoCommonProtocol
         );
     }
 

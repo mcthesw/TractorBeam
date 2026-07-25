@@ -53,7 +53,10 @@ impl PathManager {
                     to_steam_id64: remote.steam_id64,
                 },
                 frame_id,
-                source_sequence: packet.source_sequence,
+                delivery_stream_id: tractor_beam_direct_protocol::DeliveryStreamId::from_bytes(
+                    packet.delivery_stream_id.as_bytes(),
+                ),
+                delivery_sequence: packet.delivery_sequence,
                 channel: packet.channel,
                 send_type: packet.send_type,
                 payload: packet.payload,
@@ -92,18 +95,16 @@ impl PathManager {
                 path.material,
                 &frame,
             ) || frame.frame_id <= path.last_received_frame_id
-                || (frame.source_sequence != 0
-                    && frame.source_sequence <= path.last_source_sequence)
             {
                 return;
             }
             path.last_received_frame_id = frame.frame_id;
-            if frame.source_sequence != 0 {
-                path.last_source_sequence = frame.source_sequence;
-            }
             InboundGamePacket {
                 from_steam_id64: frame.path.from.steam_id64,
-                source_sequence: frame.source_sequence,
+                delivery_stream_id: crate::client::packet_flow::DeliveryStreamId::from_bytes(
+                    frame.delivery_stream_id.as_bytes().to_owned(),
+                ),
+                delivery_sequence: frame.delivery_sequence,
                 channel: frame.channel,
                 send_type: frame.send_type,
                 payload: frame.payload,
@@ -144,7 +145,9 @@ fn valid_data_path(
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use tractor_beam_direct_protocol::{InstanceId, PathId, PathToken, PeerIdentity};
+    use tractor_beam_direct_protocol::{
+        DeliveryStreamId, InstanceId, PathId, PathToken, PeerIdentity,
+    };
 
     use super::*;
 
@@ -171,7 +174,8 @@ mod tests {
                 to_steam_id64: local.steam_id64,
             },
             frame_id: 1,
-            source_sequence: 1,
+            delivery_stream_id: DeliveryStreamId::from_bytes([1; 16]),
+            delivery_sequence: 1,
             channel: 0,
             send_type: 0,
             payload: Bytes::new(),

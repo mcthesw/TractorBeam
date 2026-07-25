@@ -104,7 +104,10 @@ async fn serve_connection(mut stream: TcpStream, peers: Peers) -> io::Result<()>
     };
     let response = BootstrapMessage::ServerHello {
         bootstrap_schema: BOOTSTRAP_SCHEMA,
-        selected_protocol: ProtocolVersion { major: 2, minor: 0 },
+        selected_protocol: ProtocolVersion {
+            major: crate::protocol::PROTOCOL_MAJOR,
+            minor: crate::protocol::PROTOCOL_MINOR,
+        },
         enabled_capabilities: crate::protocol::CAP_TCP_DATA
             | crate::protocol::CAP_RESUME
             | crate::protocol::CAP_ROOM_PATH_PROBE,

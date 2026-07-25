@@ -18,14 +18,15 @@ pub use control::{
 };
 pub use duplicate::{DuplicateDecision, FrameIdWindow};
 pub use frame::{
-    COMMON_HEADER_LEN, DATA_FRAME_HEADER_LEN, DATA_FRAME_OVERHEAD, DataFrame, Frame,
-    FrameDecodeError, FrameEncodeError, FrameKind, IPV4_SAFE_DATA_PAYLOAD, MAX_CONTROL_PAYLOAD,
-    MAX_DATA_PAYLOAD, MAX_FRAME_LEN, PROBE_FRAME_HEADER_LEN, ProbeFrame, ProbePhase, decode_frame,
+    COMMON_HEADER_LEN, DATA_FRAME_HEADER_LEN, DATA_FRAME_OVERHEAD, DataFrame, DeliveryStreamId,
+    Frame, FrameDecodeError, FrameEncodeError, FrameKind, IPV4_SAFE_DATA_PAYLOAD,
+    MAX_CONTROL_PAYLOAD, MAX_DATA_PAYLOAD, MAX_FRAME_LEN, PROBE_FRAME_HEADER_LEN, ProbeFrame,
+    ProbePhase, decode_frame,
 };
 
-pub const PROTOCOL_MAJOR: u8 = 2;
+pub const PROTOCOL_MAJOR: u8 = 3;
 pub const PROTOCOL_MINOR: u8 = 0;
-pub const FRAME_MAGIC: &[u8; 4] = b"TBR2";
+pub const FRAME_MAGIC: &[u8; 4] = b"TBR3";
 pub const IPV4_UDP_DATAGRAM_BUDGET: usize = 1_472;
 
 pub const CAP_TCP_DATA: u64 = 1 << 0;

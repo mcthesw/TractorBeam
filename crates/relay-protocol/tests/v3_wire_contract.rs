@@ -2,18 +2,18 @@ use bytes::Bytes;
 use tractor_beam_relay_protocol::{
     BOOTSTRAP_SCHEMA, BootstrapDecodeError, BootstrapMessage, BuildMetadata, CAP_RESUME,
     CAP_TCP_DATA, CAP_UDP_DATA, COMMON_HEADER_LEN, CapabilityError, ClientControl,
-    DATA_FRAME_HEADER_LEN, DATA_FRAME_OVERHEAD, DataFrame, DataProfile, DuplicateDecision, Frame,
-    FrameDecodeError, FrameIdWindow, IPV4_SAFE_DATA_PAYLOAD, MAX_BOOTSTRAP_PAYLOAD,
-    MAX_CONTROL_PAYLOAD, PROBE_FRAME_HEADER_LEN, ProbeFrame, ProbePhase, ProtocolRange,
-    SecretString, decode_bootstrap, decode_client_control, decode_frame, decode_server_control,
-    encode_bootstrap, encode_client_control, encode_server_control, select_capabilities,
-    select_protocol,
+    DATA_FRAME_HEADER_LEN, DATA_FRAME_OVERHEAD, DataFrame, DataProfile, DeliveryStreamId,
+    DuplicateDecision, Frame, FrameDecodeError, FrameIdWindow, IPV4_SAFE_DATA_PAYLOAD,
+    MAX_BOOTSTRAP_PAYLOAD, MAX_CONTROL_PAYLOAD, PROBE_FRAME_HEADER_LEN, ProbeFrame, ProbePhase,
+    ProtocolRange, SecretString, decode_bootstrap, decode_client_control, decode_frame,
+    decode_server_control, encode_bootstrap, encode_client_control, encode_server_control,
+    select_capabilities, select_protocol,
 };
 
 fn fixture_hex(path: &str) -> Vec<u8> {
     let text = match path {
-        "bootstrap-client-hello" => include_str!("fixtures/v2/bootstrap-client-hello.hex"),
-        "data-16" => include_str!("fixtures/v2/data-16.hex"),
+        "bootstrap-client-hello" => include_str!("fixtures/v3/bootstrap-client-hello.hex"),
+        "data-16" => include_str!("fixtures/v3/data-16.hex"),
         _ => panic!("unknown fixture {path}"),
     };
     let compact = text.trim();
@@ -25,7 +25,7 @@ fn client_hello() -> BootstrapMessage {
     BootstrapMessage::ClientHello {
         bootstrap_schema: BOOTSTRAP_SCHEMA,
         supported_protocol_ranges: vec![ProtocolRange {
-            major: 2,
+            major: 3,
             min_minor: 0,
             max_minor: 0,
         }],
@@ -49,7 +49,7 @@ fn bootstrap_client_hello_matches_golden_fixture() {
 
 #[test]
 fn bootstrap_ignores_unknown_optional_json_fields() {
-    let json = br#"{"type":"server_hello","bootstrap_schema":1,"selected_protocol":{"major":2,"minor":0},"enabled_capabilities":5,"relay":{"version":"0.2.1"},"future_optional":{"enabled":true}}"#;
+    let json = br#"{"type":"server_hello","bootstrap_schema":1,"selected_protocol":{"major":3,"minor":0},"enabled_capabilities":5,"relay":{"version":"0.2.1"},"future_optional":{"enabled":true}}"#;
     let mut framed = Vec::from(u32::try_from(json.len()).unwrap().to_be_bytes());
     framed.extend_from_slice(json);
 
@@ -131,18 +131,18 @@ fn direction_specific_control_json_matches_golden_fixtures() {
         display_name: Some("Alice".to_owned()),
         data_profile: DataProfile::Udp,
     };
-    let client_json = include_bytes!("fixtures/v2/client-join.json")
+    let client_json = include_bytes!("fixtures/v3/client-join.json")
         .strip_suffix(b"\n")
-        .unwrap_or(include_bytes!("fixtures/v2/client-join.json"));
+        .unwrap_or(include_bytes!("fixtures/v3/client-join.json"));
     assert_eq!(
         encode_client_control(&client).unwrap().as_ref(),
         client_json
     );
     assert_eq!(decode_client_control(client_json).unwrap(), client);
 
-    let server_json = include_bytes!("fixtures/v2/server-ready.json")
+    let server_json = include_bytes!("fixtures/v3/server-ready.json")
         .strip_suffix(b"\n")
-        .unwrap_or(include_bytes!("fixtures/v2/server-ready.json"));
+        .unwrap_or(include_bytes!("fixtures/v3/server-ready.json"));
     let server = decode_server_control(server_json).unwrap();
     assert_eq!(
         encode_server_control(&server).unwrap().as_ref(),
@@ -172,7 +172,11 @@ fn data_frame() -> DataFrame {
         frame_id: 0x1112_1314_1516_1718,
         from_steam_id64: 0x2122_2324_2526_2728,
         to_steam_id64: 0x3132_3334_3536_3738,
-        source_sequence: 0xa1a2_a3a4,
+        delivery_stream_id: DeliveryStreamId::from_bytes([
+            0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e,
+            0x4f, 0x50,
+        ]),
+        delivery_sequence: 0xa1a2_a3a4_a5a6_a7a8,
         channel: -2,
         send_type: 3,
         payload: Bytes::from_static(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
@@ -180,13 +184,13 @@ fn data_frame() -> DataFrame {
 }
 
 #[test]
-fn data_frame_matches_golden_fixture_and_has_sixty_byte_overhead() {
+fn data_frame_matches_golden_fixture_and_has_eighty_byte_overhead() {
     let expected = fixture_hex("data-16");
     let encoded = data_frame().encode().unwrap();
 
     assert_eq!(COMMON_HEADER_LEN, 16);
-    assert_eq!(DATA_FRAME_HEADER_LEN, 60);
-    assert_eq!(DATA_FRAME_OVERHEAD, 60);
+    assert_eq!(DATA_FRAME_HEADER_LEN, 80);
+    assert_eq!(DATA_FRAME_OVERHEAD, 80);
     assert_eq!(encoded.len(), DATA_FRAME_OVERHEAD + 16);
     assert_eq!(encoded.as_ref(), expected);
     assert_eq!(
@@ -205,6 +209,37 @@ fn data_frame_accepts_maximum_payload_and_rejects_one_byte_more() {
 
     frame.payload = Bytes::from(vec![0; IPV4_SAFE_DATA_PAYLOAD + 1]);
     assert!(frame.encode().is_err());
+}
+
+#[test]
+fn data_frame_rejects_zero_delivery_identity_and_sequence() {
+    let mut frame = data_frame();
+    frame.delivery_stream_id = DeliveryStreamId::from_bytes([0; 16]);
+    assert_eq!(
+        frame.encode().unwrap_err(),
+        tractor_beam_relay_protocol::FrameEncodeError::ZeroDeliveryStreamId
+    );
+
+    frame.delivery_stream_id = DeliveryStreamId::from_bytes([1; 16]);
+    frame.delivery_sequence = 0;
+    assert_eq!(
+        frame.encode().unwrap_err(),
+        tractor_beam_relay_protocol::FrameEncodeError::ZeroDeliverySequence
+    );
+
+    let mut encoded = data_frame().encode().unwrap().to_vec();
+    encoded[48..64].fill(0);
+    assert_eq!(
+        decode_frame(Bytes::from(encoded)).unwrap_err(),
+        FrameDecodeError::ZeroDeliveryStreamId
+    );
+
+    let mut encoded = data_frame().encode().unwrap().to_vec();
+    encoded[64..72].fill(0);
+    assert_eq!(
+        decode_frame(Bytes::from(encoded)).unwrap_err(),
+        FrameDecodeError::ZeroDeliverySequence
+    );
 }
 
 #[test]
@@ -256,10 +291,10 @@ fn frame_rejects_bad_wire_boundaries() {
     );
 
     let mut bad_major = good.to_vec();
-    bad_major[4] = 3;
+    bad_major[4] = 2;
     assert_eq!(
         decode_frame(Bytes::from(bad_major)).unwrap_err(),
-        FrameDecodeError::UnsupportedMajor(3)
+        FrameDecodeError::UnsupportedMajor(2)
     );
 
     let mut flags = good.to_vec();

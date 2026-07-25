@@ -27,7 +27,7 @@ Who Tractor Beam trusts, and how much:
 
 ## Accepted Network Boundary
 
-- Relay Protocol v2 uses plaintext TCP control and TCP/UDP data. It does not use
+- Relay Protocol v3 uses plaintext TCP control and TCP/UDP data. It does not use
   TLS, PAKE, AEAD, or a payload MAC.
 - A Relay Server and an on-path observer can see control messages, Session
   Credentials, Steam identities, member state, packet payloads, sizes,

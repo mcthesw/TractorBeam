@@ -177,7 +177,7 @@ pub enum ClientIncidentKind {
     DataPlaneStall,
     QueueDrop,
     RuntimeRttTimeout,
-    SequenceGap,
+    DeliveryGap,
 }
 
 impl Display for ClientIncidentKind {
@@ -186,7 +186,7 @@ impl Display for ClientIncidentKind {
             Self::DataPlaneStall => formatter.write_str("data_plane_stall"),
             Self::QueueDrop => formatter.write_str("queue_drop"),
             Self::RuntimeRttTimeout => formatter.write_str("runtime_rtt_timeout"),
-            Self::SequenceGap => formatter.write_str("sequence_gap"),
+            Self::DeliveryGap => formatter.write_str("delivery_gap"),
         }
     }
 }
@@ -205,8 +205,8 @@ impl ClientIncidentSnapshot {
             ClientIncidentKind::QueueDrop
         } else if health.runtime_rtt.timed_out > 0 {
             ClientIncidentKind::RuntimeRttTimeout
-        } else if health.source_sequence.gaps > 0 {
-            ClientIncidentKind::SequenceGap
+        } else if health.delivery.confirmed_gaps > 0 {
+            ClientIncidentKind::DeliveryGap
         } else if data_plane_stalled(health) {
             ClientIncidentKind::DataPlaneStall
         } else {
@@ -231,7 +231,7 @@ fn data_plane_stalled(health: &SessionHealthSnapshot) -> bool {
 
 fn incident_summary(kind: ClientIncidentKind, health: &SessionHealthSnapshot) -> String {
     let base = format!(
-        "elapsed={}s hook_in={} network_recv={} hook_out_sends={} rtt_sent={} rtt_recv={} rtt_timeout={} queue_drops={} seq_gaps={}",
+        "elapsed={}s hook_in={} network_recv={} hook_out_sends={} rtt_sent={} rtt_recv={} rtt_timeout={} queue_drops={} delivery_gaps={}",
         health.elapsed_seconds,
         health.hook_in_recv.packets,
         health.network_recv.packets,
@@ -240,7 +240,7 @@ fn incident_summary(kind: ClientIncidentKind, health: &SessionHealthSnapshot) ->
         health.runtime_rtt.received,
         health.runtime_rtt.timed_out,
         health.queues.total_dropped(),
-        health.source_sequence.gaps,
+        health.delivery.confirmed_gaps,
     );
     match kind {
         ClientIncidentKind::DataPlaneStall => {
@@ -248,7 +248,9 @@ fn incident_summary(kind: ClientIncidentKind, health: &SessionHealthSnapshot) ->
         }
         ClientIncidentKind::QueueDrop => format!("{base}; local queue dropped packets"),
         ClientIncidentKind::RuntimeRttTimeout => format!("{base}; runtime RTT timed out"),
-        ClientIncidentKind::SequenceGap => format!("{base}; inbound sequence gaps observed"),
+        ClientIncidentKind::DeliveryGap => {
+            format!("{base}; confirmed gameplay delivery gaps observed")
+        }
     }
 }
 

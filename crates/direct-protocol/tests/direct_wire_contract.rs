@@ -4,18 +4,18 @@ use bytes::Bytes;
 use tractor_beam_direct_protocol::{
     CAP_DIRECT_UDP, CAP_HOST_CANDIDATES, CAP_MEMBERSHIP_SNAPSHOT, CHECK_FRAME_HEADER_LEN,
     CheckFrame, CheckPhase, ControlDecodeError, ControlMessage, ControlValidationError,
-    DATA_FRAME_HEADER_LEN, DataFrame, DirectFrame, HEARTBEAT_FRAME_HEADER_LEN, HeartbeatFrame,
-    HeartbeatPhase, HostCandidate, IPV4_SAFE_DATA_PAYLOAD, InstanceId, MAX_CANDIDATES,
-    MAX_CONTROL_PAYLOAD, MAX_DATA_PAYLOAD, MAX_FRAME_LEN, MAX_PEERS, PathContext, PathId,
-    PathToken, PeerDescriptor, PeerIdentity, ProtocolVersion, TransactionId, decode_control,
-    decode_frame, encode_control,
+    DATA_FRAME_HEADER_LEN, DataFrame, DeliveryStreamId, DirectFrame, HEARTBEAT_FRAME_HEADER_LEN,
+    HeartbeatFrame, HeartbeatPhase, HostCandidate, IPV4_SAFE_DATA_PAYLOAD, InstanceId,
+    MAX_CANDIDATES, MAX_CONTROL_PAYLOAD, MAX_DATA_PAYLOAD, MAX_FRAME_LEN, MAX_PEERS, PathContext,
+    PathId, PathToken, PeerDescriptor, PeerIdentity, ProtocolVersion, TransactionId,
+    decode_control, decode_frame, encode_control,
 };
 
 fn fixture_hex(name: &str) -> Vec<u8> {
     let text = match name {
-        "check" => include_str!("fixtures/v1/check.hex"),
-        "heartbeat" => include_str!("fixtures/v1/heartbeat.hex"),
-        "data-4" => include_str!("fixtures/v1/data-4.hex"),
+        "check" => include_str!("fixtures/v2/check.hex"),
+        "heartbeat" => include_str!("fixtures/v2/heartbeat.hex"),
+        "data-4" => include_str!("fixtures/v2/data-4.hex"),
         _ => panic!("unknown fixture {name}"),
     };
     let compact = text.trim();
@@ -57,9 +57,9 @@ fn descriptor(index: usize) -> PeerDescriptor {
 
 #[test]
 fn control_family_matches_golden_fixture() {
-    let expected = include_bytes!("fixtures/v1/control-ping.json")
+    let expected = include_bytes!("fixtures/v2/control-ping.json")
         .strip_suffix(b"\n")
-        .unwrap_or(include_bytes!("fixtures/v1/control-ping.json"));
+        .unwrap_or(include_bytes!("fixtures/v2/control-ping.json"));
     let message = ControlMessage::ControlPing {
         id: 0x0102_0304_0506_0708,
     };
@@ -91,7 +91,8 @@ fn fixed_udp_frame_families_match_golden_fixtures() {
             DirectFrame::Data(DataFrame {
                 path: path(),
                 frame_id: 8,
-                source_sequence: 9,
+                delivery_stream_id: DeliveryStreamId::from_bytes([9; 16]),
+                delivery_sequence: 10,
                 channel: -2,
                 send_type: 3,
                 payload: Bytes::from_static(&[0, 1, 2, 3]),
@@ -106,7 +107,7 @@ fn fixed_udp_frame_families_match_golden_fixtures() {
     }
     assert_eq!(CHECK_FRAME_HEADER_LEN, 104);
     assert_eq!(HEARTBEAT_FRAME_HEADER_LEN, 96);
-    assert_eq!(DATA_FRAME_HEADER_LEN, 100);
+    assert_eq!(DATA_FRAME_HEADER_LEN, 120);
 }
 
 #[test]
@@ -163,7 +164,8 @@ fn data_payload_boundaries_preserve_safe_datagram_budget() {
         let frame = DataFrame {
             path: path(),
             frame_id: 1,
-            source_sequence: 1,
+            delivery_stream_id: DeliveryStreamId::from_bytes([1; 16]),
+            delivery_sequence: 1,
             channel: 0,
             send_type: 0,
             payload: Bytes::from(vec![0; size]),
@@ -176,7 +178,8 @@ fn data_payload_boundaries_preserve_safe_datagram_budget() {
     let oversized = DataFrame {
         path: path(),
         frame_id: 1,
-        source_sequence: 1,
+        delivery_stream_id: DeliveryStreamId::from_bytes([1; 16]),
+        delivery_sequence: 1,
         channel: 0,
         send_type: 0,
         payload: Bytes::from(vec![0; MAX_DATA_PAYLOAD + 1]),
@@ -185,8 +188,55 @@ fn data_payload_boundaries_preserve_safe_datagram_budget() {
 }
 
 #[test]
+fn data_frame_rejects_zero_delivery_identity_and_sequence() {
+    let mut frame = DataFrame {
+        path: path(),
+        frame_id: 1,
+        delivery_stream_id: DeliveryStreamId::from_bytes([0; 16]),
+        delivery_sequence: 1,
+        channel: 0,
+        send_type: 0,
+        payload: Bytes::new(),
+    };
+    assert_eq!(
+        frame.encode().unwrap_err(),
+        tractor_beam_direct_protocol::FrameEncodeError::ZeroDeliveryStreamId
+    );
+
+    frame.delivery_stream_id = DeliveryStreamId::from_bytes([1; 16]);
+    frame.delivery_sequence = 0;
+    assert_eq!(
+        frame.encode().unwrap_err(),
+        tractor_beam_direct_protocol::FrameEncodeError::ZeroDeliverySequence
+    );
+
+    let mut valid = frame;
+    valid.delivery_sequence = 1;
+    let mut encoded = valid.encode().unwrap().to_vec();
+    encoded[88..104].fill(0);
+    assert_eq!(
+        decode_frame(Bytes::from(encoded)).unwrap_err(),
+        tractor_beam_direct_protocol::FrameDecodeError::ZeroDeliveryStreamId
+    );
+
+    let mut encoded = valid.encode().unwrap().to_vec();
+    encoded[104..112].fill(0);
+    assert_eq!(
+        decode_frame(Bytes::from(encoded)).unwrap_err(),
+        tractor_beam_direct_protocol::FrameDecodeError::ZeroDeliverySequence
+    );
+
+    let mut old_major = valid.encode().unwrap().to_vec();
+    old_major[4] = 1;
+    assert_eq!(
+        decode_frame(Bytes::from(old_major)).unwrap_err(),
+        tractor_beam_direct_protocol::FrameDecodeError::UnsupportedMajor(1)
+    );
+}
+
+#[test]
 fn protocol_version_remains_explicit_at_wire_boundary() {
-    let version = ProtocolVersion { major: 1, minor: 0 };
+    let version = ProtocolVersion { major: 2, minor: 0 };
     assert_eq!(version.major, tractor_beam_direct_protocol::PROTOCOL_MAJOR);
     assert_eq!(version.minor, tractor_beam_direct_protocol::PROTOCOL_MINOR);
 }

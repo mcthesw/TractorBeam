@@ -76,7 +76,6 @@ struct PeerPath {
     checking_since: Instant,
     next_frame_id: u64,
     last_received_frame_id: u64,
-    last_source_sequence: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -173,7 +172,6 @@ impl PathManager {
                 checking_since: Instant::now(),
                 next_frame_id: 1,
                 last_received_frame_id: 0,
-                last_source_sequence: 0,
             };
             state.peers.insert(remote, path);
             if self.local < remote {

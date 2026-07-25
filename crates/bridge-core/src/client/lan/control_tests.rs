@@ -1,7 +1,10 @@
 use tractor_beam_direct_protocol::InstanceId;
 
 use super::*;
-use crate::client::{LanPeerPathStatus, packet_flow::OutboundGamePacket};
+use crate::client::{
+    LanPeerPathStatus,
+    packet_flow::{DeliveryStreamId, OutboundGamePacket},
+};
 
 fn loopback_adapter(id: u32) -> LanAdapterAddress {
     LanAdapterAddress {
@@ -66,7 +69,9 @@ async fn wait_usable_paths(room: &LanControlPlane, expected: usize) {
 fn game_packet(target: u64, sequence: u32, payload: &'static [u8]) -> OutboundGamePacket {
     OutboundGamePacket {
         to_steam_id64: target,
-        source_sequence: sequence,
+        hook_sequence: sequence,
+        delivery_stream_id: DeliveryStreamId::from_bytes([1; 16]),
+        delivery_sequence: u64::from(sequence),
         channel: 3,
         send_type: 1,
         payload: bytes::Bytes::from_static(payload),
@@ -309,7 +314,7 @@ async fn abrupt_pair_loss_recovers_without_restarting_room() {
 }
 
 #[tokio::test]
-async fn direct_gameplay_is_targeted_bounded_and_drops_stale_sequence() {
+async fn direct_gameplay_is_targeted_bounded_and_accepts_delivery_reordering() {
     let credential = SessionCredential::from_bytes([12; 16]);
     let alice = room(1, credential).await;
     let bob = room(2, credential).await;
@@ -338,7 +343,7 @@ async fn direct_gameplay_is_targeted_bounded_and_drops_stale_sequence() {
         .unwrap()
         .unwrap();
     assert_eq!(received.from_steam_id64, identity(1).steam_id64);
-    assert_eq!(received.source_sequence, 7);
+    assert_eq!(received.delivery_sequence, 7);
     assert_eq!(received.channel, 3);
     assert_eq!(received.send_type, 1);
     assert_eq!(received.payload, bytes::Bytes::from_static(b"hello"));
@@ -348,8 +353,12 @@ async fn direct_gameplay_is_targeted_bounded_and_drops_stale_sequence() {
         .send_game(game_packet(identity(2).steam_id64, 7, b"stale"))
         .await
         .unwrap();
-    time::sleep(Duration::from_millis(100)).await;
-    assert!(bob_inbound.try_recv().is_err());
+    let reordered = time::timeout(Duration::from_secs(2), bob_inbound.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reordered.delivery_sequence, 7);
+    assert_eq!(reordered.payload, bytes::Bytes::from_static(b"stale"));
     assert!(
         alice
             .send_game(game_packet(99, 8, b"missing"))

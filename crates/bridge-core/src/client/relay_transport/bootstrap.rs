@@ -7,7 +7,8 @@ use tokio::{
 
 use crate::protocol::{
     BOOTSTRAP_SCHEMA, BootstrapMessage, BuildMetadata, CAP_RESUME, CAP_ROOM_PATH_PROBE,
-    CAP_TCP_DATA, CAP_UDP_DATA, ProtocolRange, decode_bootstrap, encode_bootstrap,
+    CAP_TCP_DATA, CAP_UDP_DATA, PROTOCOL_MAJOR, PROTOCOL_MINOR, ProtocolRange, decode_bootstrap,
+    encode_bootstrap,
 };
 
 use super::TransportChoice;
@@ -25,9 +26,9 @@ pub(super) async fn negotiate(
     let hello = BootstrapMessage::ClientHello {
         bootstrap_schema: BOOTSTRAP_SCHEMA,
         supported_protocol_ranges: vec![ProtocolRange {
-            major: 2,
+            major: PROTOCOL_MAJOR,
             min_minor: 0,
-            max_minor: 0,
+            max_minor: PROTOCOL_MINOR,
         }],
         required_capabilities: CAP_RESUME | profile_capability,
         optional_capabilities: CAP_TCP_DATA | CAP_UDP_DATA | CAP_ROOM_PATH_PROBE,
@@ -45,7 +46,8 @@ pub(super) async fn negotiate(
             selected_protocol,
             enabled_capabilities,
             ..
-        } if selected_protocol.major == 2
+        } if selected_protocol.major == PROTOCOL_MAJOR
+            && selected_protocol.minor == PROTOCOL_MINOR
             && enabled_capabilities & (CAP_RESUME | profile_capability)
                 == CAP_RESUME | profile_capability =>
         {

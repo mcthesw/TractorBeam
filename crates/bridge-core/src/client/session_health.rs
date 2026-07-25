@@ -1,16 +1,18 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fmt::{self, Display},
     time::{Duration, Instant},
 };
 
 use serde::Serialize;
 
+use super::packet_flow::DeliveryStreamId;
+
 const LATENCY_SAMPLE_CAPACITY: usize = 2_048;
 const ACTIVE_TRAFFIC_STARTUP_GRACE_SECONDS: u64 = 15;
-const WATCH_SEQUENCE_GAPS: u64 = 1;
-const POOR_SEQUENCE_GAPS: u64 = 10;
-const WATCH_DUPLICATE_OR_REORDERED: u64 = 10;
+const WATCH_DELIVERY_GAPS: u64 = 1;
+const POOR_DELIVERY_GAPS: u64 = 10;
+const WATCH_DELIVERY_REORDERED: u64 = 10;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct LatencySummary {
@@ -49,11 +51,13 @@ impl QueueHealthSnapshot {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
-pub struct SequenceHealthSnapshot {
+pub struct DeliveryHealthSnapshot {
     pub first_packets: u64,
     pub in_order: u64,
-    pub gaps: u64,
-    pub duplicate_or_reordered: u64,
+    pub open_gaps: u64,
+    pub confirmed_gaps: u64,
+    pub duplicates: u64,
+    pub reordered: u64,
     pub tracked_peers: usize,
 }
 
@@ -105,8 +109,8 @@ pub enum QualityConfidence {
 pub enum SessionQualityReason {
     LocalQueueDrop,
     NetworkSendDrop,
-    SequenceGap,
-    SequenceReordered,
+    DeliveryGap,
+    DeliveryReordered,
     HookSendStall,
     RuntimeRttTimeout,
     StartupOrIdle,
@@ -119,8 +123,8 @@ pub struct SessionHealthWindow {
     pub network_recv_packets: u64,
     pub network_send_dropped: u64,
     pub queue_drops: u64,
-    pub sequence_gaps: u64,
-    pub sequence_reordered: u64,
+    pub delivery_gaps: u64,
+    pub delivery_reordered: u64,
     pub runtime_rtt_sent: u64,
     pub runtime_rtt_timeouts: u64,
     pub hook_send_over_500_ms: u64,
@@ -153,7 +157,7 @@ pub struct SessionHealthSnapshot {
     pub network_send_dropped: u64,
     pub hook_out_send_duration: LatencySummary,
     pub queues: QueueHealthSnapshot,
-    pub source_sequence: SequenceHealthSnapshot,
+    pub delivery: DeliveryHealthSnapshot,
     pub runtime_rtt: RuntimeRttSnapshot,
 }
 
@@ -163,7 +167,7 @@ impl SessionHealthSnapshot {
     #[must_use]
     pub fn compact_log_line(&self, label: &str) -> String {
         format!(
-            "{label}: quality={} confidence={:?} reasons={:?} window={}s hook_in={} network_recv={} rtt_p95={} queue_drops={} network_drops={} seq_gaps={} network_gap_p95={} hook_out_p95={}",
+            "{label}: quality={} confidence={:?} reasons={:?} window={}s hook_in={} network_recv={} rtt_p95={} queue_drops={} network_drops={} delivery_gaps={} network_gap_p95={} hook_out_p95={}",
             self.quality,
             self.confidence,
             self.reasons,
@@ -173,7 +177,7 @@ impl SessionHealthSnapshot {
             display_ms(self.runtime_rtt.latency.p95_ms),
             self.queues.total_dropped(),
             self.network_send_dropped,
-            self.source_sequence.gaps,
+            self.delivery.confirmed_gaps,
             display_ms(self.network_recv.gap.p95_ms),
             display_ms(self.hook_out_send_duration.p95_ms),
         )
@@ -191,7 +195,7 @@ pub(super) struct SessionHealth {
     network_send_dropped: u64,
     hook_out_send_duration: LatencyAccumulator,
     queues: QueueStats,
-    sequences: SequenceStats,
+    delivery: DeliveryStats,
     runtime_rtt: RuntimeRttStats,
     quality_baseline: QualityBaseline,
     last_snapshot: Instant,
@@ -214,7 +218,7 @@ impl SessionHealth {
             network_send_dropped: 0,
             hook_out_send_duration: LatencyAccumulator::default(),
             queues: QueueStats::default(),
-            sequences: SequenceStats::default(),
+            delivery: DeliveryStats::default(),
             runtime_rtt: RuntimeRttStats::default(),
             quality_baseline: QualityBaseline::default(),
             last_snapshot: now,
@@ -249,8 +253,13 @@ impl SessionHealth {
         self.hook_out_send_duration.observe(duration);
     }
 
-    pub(super) fn observe_source_sequence(&mut self, peer: u64, source_sequence: u32) {
-        self.sequences.observe(peer, source_sequence);
+    pub(super) fn observe_delivery(
+        &mut self,
+        peer: u64,
+        stream_id: DeliveryStreamId,
+        sequence: u64,
+    ) {
+        self.delivery.observe(peer, stream_id, sequence);
     }
 
     pub(super) fn next_health_ping(&mut self, now: Instant) -> Option<u64> {
@@ -272,7 +281,7 @@ impl SessionHealth {
         let hook_in_recv = self.hook_in_recv.snapshot();
         let network_recv = self.network_recv.snapshot();
         let queues = self.queues.snapshot();
-        let source_sequence = self.sequences.snapshot();
+        let delivery = self.delivery.snapshot();
         let runtime_rtt = self.runtime_rtt.snapshot(self.runtime_rtt_enabled);
         let network_send_duration = self.network_send_duration.summary();
         let hook_out_send_duration = self.hook_out_send_duration.summary();
@@ -282,7 +291,7 @@ impl SessionHealth {
             network_recv,
             self.network_send_dropped,
             queues,
-            source_sequence,
+            delivery,
             runtime_rtt,
             hook_out_send_duration,
         );
@@ -306,7 +315,7 @@ impl SessionHealth {
             network_send_dropped: self.network_send_dropped,
             hook_out_send_duration,
             queues,
-            source_sequence,
+            delivery,
             runtime_rtt,
         }
     }
@@ -328,8 +337,8 @@ struct QualityBaseline {
     network_recv_packets: u64,
     network_send_dropped: u64,
     queue_drops: u64,
-    sequence_gaps: u64,
-    sequence_reordered: u64,
+    delivery_gaps: u64,
+    delivery_reordered: u64,
     runtime_rtt_sent: u64,
     runtime_rtt_timeouts: u64,
     hook_send_over_500_ms: u64,
@@ -344,7 +353,7 @@ impl QualityBaseline {
         network_recv: PacketStageSnapshot,
         network_send_dropped: u64,
         queues: QueueHealthSnapshot,
-        sequence: SequenceHealthSnapshot,
+        delivery: DeliveryHealthSnapshot,
         runtime_rtt: RuntimeRttSnapshot,
         hook_send: LatencySummary,
     ) -> Self {
@@ -353,8 +362,8 @@ impl QualityBaseline {
             network_recv_packets: network_recv.packets,
             network_send_dropped,
             queue_drops: queues.total_dropped(),
-            sequence_gaps: sequence.gaps,
-            sequence_reordered: sequence.duplicate_or_reordered,
+            delivery_gaps: delivery.confirmed_gaps,
+            delivery_reordered: delivery.reordered,
             runtime_rtt_sent: runtime_rtt.sent,
             runtime_rtt_timeouts: runtime_rtt.timed_out,
             hook_send_over_500_ms: hook_send.over_500_ms,
@@ -377,10 +386,10 @@ impl QualityBaseline {
                 .network_send_dropped
                 .saturating_sub(previous.network_send_dropped),
             queue_drops: self.queue_drops.saturating_sub(previous.queue_drops),
-            sequence_gaps: self.sequence_gaps.saturating_sub(previous.sequence_gaps),
-            sequence_reordered: self
-                .sequence_reordered
-                .saturating_sub(previous.sequence_reordered),
+            delivery_gaps: self.delivery_gaps.saturating_sub(previous.delivery_gaps),
+            delivery_reordered: self
+                .delivery_reordered
+                .saturating_sub(previous.delivery_reordered),
             runtime_rtt_sent: self
                 .runtime_rtt_sent
                 .saturating_sub(previous.runtime_rtt_sent),
@@ -431,12 +440,12 @@ fn classify_quality(elapsed_seconds: u64, window: SessionHealthWindow) -> Qualit
         reasons.push(SessionQualityReason::NetworkSendDrop);
         poor = true;
     }
-    if window.sequence_gaps >= WATCH_SEQUENCE_GAPS {
-        reasons.push(SessionQualityReason::SequenceGap);
-        poor |= window.sequence_gaps >= POOR_SEQUENCE_GAPS;
+    if window.delivery_gaps >= WATCH_DELIVERY_GAPS {
+        reasons.push(SessionQualityReason::DeliveryGap);
+        poor |= window.delivery_gaps >= POOR_DELIVERY_GAPS;
     }
-    if window.sequence_reordered >= WATCH_DUPLICATE_OR_REORDERED {
-        reasons.push(SessionQualityReason::SequenceReordered);
+    if window.delivery_reordered >= WATCH_DELIVERY_REORDERED {
+        reasons.push(SessionQualityReason::DeliveryReordered);
     }
     if window.hook_send_over_500_ms > 0 {
         reasons.push(SessionQualityReason::HookSendStall);

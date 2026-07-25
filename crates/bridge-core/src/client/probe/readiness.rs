@@ -280,18 +280,18 @@ async fn sample_direction(
     *sent = sent.saturating_add(1);
     let current_sequence = *sequence;
     *sequence = sequence.saturating_add(1);
-    if sender
+    let Ok((delivery_stream_id, delivery_sequence)) = sender
         .send_game_with_sequence(target_steam_id64, payload.clone(), current_sequence)
         .await
-        .is_err()
-    {
+    else {
         return;
-    }
+    };
     if receiver
         .expect_game_with_timeout(
             expected_from,
             expected_to,
-            current_sequence,
+            delivery_stream_id,
+            delivery_sequence,
             &payload,
             READINESS_SAMPLE_TIMEOUT,
         )

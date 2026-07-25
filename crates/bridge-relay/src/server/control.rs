@@ -188,9 +188,9 @@ async fn negotiate(
         ));
     };
     let relay_ranges = vec![ProtocolRange {
-        major: 2,
+        major: tractor_beam_relay_protocol::PROTOCOL_MAJOR,
         min_minor: 0,
-        max_minor: 0,
+        max_minor: tractor_beam_relay_protocol::PROTOCOL_MINOR,
     }];
     let available = CAP_TCP_DATA
         | CAP_RESUME

@@ -18,7 +18,7 @@ use crate::protocol::{Frame, decode_frame};
 
 use super::{
     BridgeClient, ExternalRelayConfig, LogLevel, RelayEndpoint, TransportChoice,
-    packet_flow::decode_outbound_hook_packet,
+    packet_flow::{DeliveryStreamAllocator, DeliveryStreamId},
     relay_transport::{RelayTransport, complete_relay_join},
     state::{HookIpcState, RuntimeEvent, log_event},
 };
@@ -246,6 +246,7 @@ pub(super) fn probe_payload(payload_bytes: usize) -> Bytes {
 
 pub(super) struct ProbePeer {
     transport: RelayTransport,
+    delivery_streams: DeliveryStreamAllocator,
 }
 
 impl ProbePeer {
@@ -275,31 +276,33 @@ impl ProbePeer {
         .await?;
         Ok(Self {
             transport: relay_transport,
+            delivery_streams: DeliveryStreamAllocator::default(),
         })
     }
 
     async fn send_game(&mut self, to_steam_id64: &str, payload: Bytes) -> io::Result<()> {
         self.send_game_with_sequence(to_steam_id64, payload, 1)
             .await
+            .map(|_| ())
     }
 
     pub(super) async fn send_game_with_sequence(
         &mut self,
         to_steam_id64: &str,
         payload: Bytes,
-        source_sequence: u32,
-    ) -> io::Result<()> {
+        hook_sequence: u32,
+    ) -> io::Result<(DeliveryStreamId, u64)> {
         let packet = tractor_beam_hook_ipc::GamePacket {
             peer: to_steam_id64.parse().map_err(io::Error::other)?,
-            sequence: source_sequence,
+            sequence: hook_sequence,
             channel: 0,
             send_type: 0,
             payload: payload.to_vec(),
         };
-        self.transport
-            .sender
-            .send_data_datagram(decode_outbound_hook_packet(packet))
-            .await
+        let packet = self.delivery_streams.assign_hook_packet(packet);
+        let delivery = (packet.delivery_stream_id, packet.delivery_sequence);
+        self.transport.sender.send_data_datagram(packet).await?;
+        Ok(delivery)
     }
 
     async fn expect_game(
@@ -341,7 +344,8 @@ impl ProbePeer {
         &mut self,
         from_steam_id64: &str,
         to_steam_id64: &str,
-        source_sequence: u32,
+        delivery_stream_id: DeliveryStreamId,
+        delivery_sequence: u64,
         payload: &Bytes,
         timeout: Duration,
     ) -> io::Result<()> {
@@ -353,7 +357,8 @@ impl ProbePeer {
                 };
                 if packet.from_steam_id64.to_string() == from_steam_id64
                     && packet.to_steam_id64.to_string() == to_steam_id64
-                    && packet.source_sequence == source_sequence
+                    && packet.delivery_stream_id.as_bytes() == &delivery_stream_id.as_bytes()
+                    && packet.delivery_sequence == delivery_sequence
                     && packet.payload == *payload
                 {
                     return Ok(());

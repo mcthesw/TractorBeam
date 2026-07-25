@@ -4,18 +4,21 @@ Relay OpenTelemetry is explicitly configured and exported only by the Relay
 process. It is separate from Client-local, player-facing Room Path Quality. See
 [Relay observability](relay-observability.md) for the signal boundary.
 
-Tractor Beam keeps three network boundaries deliberately separate:
+Tractor Beam keeps four network boundaries deliberately separate:
 
 1. The Native Hook exchanges target-addressed game packets with Bridge Client
    over Local IPC v2 (`TBI2`). It does not know about Relays, Rooms, Join Codes,
    reconnect credentials, or TCP/UDP path selection.
 2. Bridge Client owns session orchestration, the selected Relay endpoint, the
    Session Credential, retry policy, queue/drop policy, and user-visible state.
-3. Relay Protocol v2 (`TBR2`) is the Client-to-Relay boundary. The Relay owns
+3. Relay Protocol v3 (`TBR3`) is the Client-to-Relay boundary. The Relay owns
    admission, in-memory Room membership, path validation, forwarding, limits,
    duplicate suppression, and the 120-second resume grace window.
+4. Direct Protocol v2 (`TBD2`) is the Bridge-Client-to-Bridge-Client boundary
+   for an existing LAN or virtual LAN. Direct Peer Paths own path validation
+   and transport frame identity without depending on a Relay.
 
-## Relay Protocol v2
+## Relay Protocol v3
 
 Every session has one reliable TCP control connection. A bounded JSON bootstrap
 selects protocol version and capabilities before admission, and returns a
@@ -24,10 +27,16 @@ After bootstrap, direction-specific bounded JSON control frames carry Join,
 Resume, presence, path-validation, Stop, and ping messages.
 
 Gameplay never uses JSON. It uses a fixed binary Data Frame containing the
-connection id, monotonic frame id, source/target SteamID64, Hook packet metadata,
-and opaque Isaac payload. TCP profile frames share the control connection; UDP
-profile frames use a separately path-validated UDP tuple. The selected profile
-is strict for the lifetime of a running session and never silently falls back.
+connection id, monotonic frame id, source/target SteamID64, a per-target
+delivery stream id and sequence, and opaque Isaac payload. TCP profile frames
+share the control connection; UDP profile frames use a separately
+path-validated UDP tuple. The selected profile is strict for the lifetime of a
+running session and never silently falls back.
+
+Direct Protocol v2 carries the same delivery stream id and sequence. Its
+separate path-local `frame_id` is used only for transport acceptance. Native
+Hook's process-global packet sequence remains inside Local IPC diagnostics and
+is never interpreted as per-target network continuity.
 
 Capability-gated fixed binary Probe Frames measure **Room Path Quality** between
 Bridge Clients over that same selected data profile. The target Bridge Client
@@ -75,16 +84,16 @@ and removes it once on expiry. Explicit Stop removes it immediately.
 
 ## Security boundary
 
-Relay Protocol v2 is intentionally plaintext. Session credentials resist random
+Relay Protocol v3 is intentionally plaintext. Session credentials resist random
 Room guessing but do not protect traffic from the Relay or an on-path observer.
-V2 contains no TLS, AEAD, PAKE, payload MAC, nonce reservation, or encryption
+V3 contains no TLS, AEAD, PAKE, payload MAC, nonce reservation, or encryption
 extension fields. A changed confidentiality threat model requires a separately
-designed incompatible v3.
+designed incompatible later generation.
 
 ## Future delivery profiles
 
-UDP duplication/deduplication or hop-by-hop UDP FEC may wrap complete v2 Data
+UDP duplication/deduplication or hop-by-hop UDP FEC may wrap complete v3 Data
 Frames later. They must be negotiated on the control plane, remain bounded by
 Relay packet/byte limits, and must not change Native Hook packet semantics.
 Direct LAN work from issue #38 is implemented as a separate route adapter;
-v2 does not choose that topology in advance.
+Relay Protocol v3 does not choose that topology in advance.

@@ -14,9 +14,10 @@ use super::{SharedMetrics, run_with_listeners};
 use crate::{config::RelayConfig, metrics::RelayMetrics};
 use tractor_beam_relay_protocol::{
     BOOTSTRAP_SCHEMA, BootstrapMessage, BuildMetadata, CAP_RESUME, CAP_ROOM_PATH_PROBE,
-    CAP_TCP_DATA, CAP_UDP_DATA, ClientControl, CompatibilityReject, DataProfile, Frame, ProbeFrame,
-    ProbePhase, ProtocolRange, ProtocolVersion, RejectCode, SecretString, ServerControl,
-    decode_bootstrap, decode_frame, decode_server_control, encode_bootstrap, encode_client_control,
+    CAP_TCP_DATA, CAP_UDP_DATA, ClientControl, CompatibilityReject, DataProfile, Frame,
+    PROTOCOL_MAJOR, PROTOCOL_MINOR, ProbeFrame, ProbePhase, ProtocolRange, ProtocolVersion,
+    RejectCode, SecretString, ServerControl, decode_bootstrap, decode_frame, decode_server_control,
+    encode_bootstrap, encode_client_control,
 };
 
 fn test_metrics() -> SharedMetrics {
@@ -26,7 +27,7 @@ fn test_metrics() -> SharedMetrics {
 }
 
 #[tokio::test]
-async fn real_tcp_socket_negotiates_and_joins_v2() {
+async fn real_tcp_socket_negotiates_and_joins_v3() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let config = RelayConfig {
@@ -40,9 +41,9 @@ async fn real_tcp_socket_negotiates_and_joins_v2() {
     let hello = BootstrapMessage::ClientHello {
         bootstrap_schema: BOOTSTRAP_SCHEMA,
         supported_protocol_ranges: vec![ProtocolRange {
-            major: 2,
+            major: PROTOCOL_MAJOR,
             min_minor: 0,
-            max_minor: 0,
+            max_minor: PROTOCOL_MINOR,
         }],
         required_capabilities: CAP_TCP_DATA,
         optional_capabilities: CAP_RESUME,
@@ -59,7 +60,10 @@ async fn real_tcp_socket_negotiates_and_joins_v2() {
     assert!(matches!(
         response,
         BootstrapMessage::ServerHello {
-            selected_protocol: ProtocolVersion { major: 2, minor: 0 },
+            selected_protocol: ProtocolVersion {
+                major: PROTOCOL_MAJOR,
+                minor: PROTOCOL_MINOR,
+            },
             ..
         }
     ));
@@ -108,9 +112,9 @@ async fn real_tcp_socket_returns_structured_bootstrap_rejection() {
     let hello = BootstrapMessage::ClientHello {
         bootstrap_schema: BOOTSTRAP_SCHEMA + 1,
         supported_protocol_ranges: vec![ProtocolRange {
-            major: 2,
+            major: PROTOCOL_MAJOR,
             min_minor: 0,
-            max_minor: 0,
+            max_minor: PROTOCOL_MINOR,
         }],
         required_capabilities: CAP_TCP_DATA,
         optional_capabilities: CAP_RESUME,
@@ -129,6 +133,47 @@ async fn real_tcp_socket_returns_structured_bootstrap_rejection() {
         response,
         BootstrapMessage::CompatibilityReject(CompatibilityReject {
             code: RejectCode::UnsupportedBootstrapSchema,
+            ..
+        })
+    ));
+    server.abort();
+}
+
+#[tokio::test]
+async fn real_tcp_socket_rejects_relay_protocol_v2_before_admission() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let config = RelayConfig {
+        udp_bind: None,
+        ..RelayConfig::default()
+    };
+    let server = tokio::spawn(run_with_listeners(listener, None, config, test_metrics()));
+
+    let mut stream = TcpStream::connect(address).await.unwrap();
+    let hello = BootstrapMessage::ClientHello {
+        bootstrap_schema: BOOTSTRAP_SCHEMA,
+        supported_protocol_ranges: vec![ProtocolRange {
+            major: 2,
+            min_minor: 0,
+            max_minor: 0,
+        }],
+        required_capabilities: CAP_TCP_DATA,
+        optional_capabilities: 0,
+        client: BuildMetadata {
+            version: "old-client".into(),
+            git_hash: None,
+        },
+    };
+    stream
+        .write_all(&encode_bootstrap(&hello).unwrap())
+        .await
+        .unwrap();
+
+    let response = decode_bootstrap(&read_bootstrap(&mut stream).await.unwrap()).unwrap();
+    assert!(matches!(
+        response,
+        BootstrapMessage::CompatibilityReject(CompatibilityReject {
+            code: RejectCode::UnsupportedProtocol,
             ..
         })
     ));
@@ -255,9 +300,9 @@ async fn connect_joined_peer(
     let hello = BootstrapMessage::ClientHello {
         bootstrap_schema: BOOTSTRAP_SCHEMA,
         supported_protocol_ranges: vec![ProtocolRange {
-            major: 2,
+            major: PROTOCOL_MAJOR,
             min_minor: 0,
-            max_minor: 0,
+            max_minor: PROTOCOL_MINOR,
         }],
         required_capabilities: CAP_TCP_DATA,
         optional_capabilities: CAP_RESUME | CAP_ROOM_PATH_PROBE,
@@ -316,9 +361,9 @@ async fn connect_joined_udp_peer(
     let hello = BootstrapMessage::ClientHello {
         bootstrap_schema: BOOTSTRAP_SCHEMA,
         supported_protocol_ranges: vec![ProtocolRange {
-            major: 2,
+            major: PROTOCOL_MAJOR,
             min_minor: 0,
-            max_minor: 0,
+            max_minor: PROTOCOL_MINOR,
         }],
         required_capabilities: CAP_UDP_DATA,
         optional_capabilities: CAP_RESUME | CAP_ROOM_PATH_PROBE,

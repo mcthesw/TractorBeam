@@ -299,9 +299,9 @@ health.queue_drops:
 health.network_drops:
   zh_CN: "链路丢包"
   en_US: "Network drops"
-health.sequence_gaps:
-  zh_CN: "序列跳变"
-  en_US: "Sequence gaps"
+health.delivery_gaps:
+  zh_CN: "传输缺口"
+  en_US: "Delivery gaps"
 health.packet_gaps:
   zh_CN: "收包间隔"
   en_US: "Packet gaps"

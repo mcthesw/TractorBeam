@@ -30,7 +30,7 @@ env:
 
 jobs:
   client-server-compat:
-    name: Relay Protocol v2 compatibility
+    name: Relay Protocol v3 compatibility
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -43,8 +43,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2.9.1
 
-      - name: Verify v2 wire compatibility contract
-        run: cargo test --locked -p tractor-beam-relay-protocol --test v2_wire_contract
+      - name: Verify v3 wire compatibility contract
+        run: cargo test --locked -p tractor-beam-relay-protocol --test v3_wire_contract
 
       - name: Verify live Relay negotiation
         run: cargo test --locked -p tractor-beam-relay server::tests::real_tcp_socket_

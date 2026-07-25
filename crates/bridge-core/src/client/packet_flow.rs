@@ -1,10 +1,11 @@
 use std::{
     collections::HashMap,
-    io,
+    fmt, io,
     time::{Duration, Instant},
 };
 
 use bytes::Bytes;
+use rand::RngExt as _;
 use tractor_beam_hook_ipc::GamePacket as HookGamePacket;
 
 use crate::protocol::{
@@ -19,8 +20,8 @@ use super::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PacketSummary {
     pub(super) peer: u64,
-    pub(super) sequence: u32,
-    pub(super) source_sequence: u32,
+    pub(super) hook_sequence: u32,
+    pub(super) delivery_sequence: u64,
     pub(super) channel: i32,
     pub(super) send_type: i32,
     pub(super) payload_bytes: usize,
@@ -30,7 +31,9 @@ pub(super) struct PacketSummary {
 #[derive(Clone, Debug)]
 pub(super) struct OutboundGamePacket {
     pub(super) to_steam_id64: u64,
-    pub(super) source_sequence: u32,
+    pub(super) hook_sequence: u32,
+    pub(super) delivery_stream_id: DeliveryStreamId,
+    pub(super) delivery_sequence: u64,
     pub(super) channel: i32,
     pub(super) send_type: i32,
     pub(super) payload: Bytes,
@@ -39,10 +42,77 @@ pub(super) struct OutboundGamePacket {
 #[derive(Clone, Debug)]
 pub(super) struct InboundGamePacket {
     pub(super) from_steam_id64: u64,
-    pub(super) source_sequence: u32,
+    pub(super) delivery_stream_id: DeliveryStreamId,
+    pub(super) delivery_sequence: u64,
     pub(super) channel: i32,
     pub(super) send_type: i32,
     pub(super) payload: Bytes,
+}
+
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub(super) struct DeliveryStreamId([u8; 16]);
+
+impl DeliveryStreamId {
+    pub(super) const fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    pub(super) const fn as_bytes(self) -> [u8; 16] {
+        self.0
+    }
+
+    fn random() -> Self {
+        loop {
+            let bytes = rand::rng().random::<[u8; 16]>();
+            if bytes.iter().any(|byte| *byte != 0) {
+                return Self(bytes);
+            }
+        }
+    }
+}
+
+impl fmt::Debug for DeliveryStreamId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DeliveryStreamId([REDACTED])")
+    }
+}
+
+#[derive(Debug)]
+struct DeliveryCursor {
+    stream_id: DeliveryStreamId,
+    next_sequence: u64,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct DeliveryStreamAllocator {
+    by_target: HashMap<u64, DeliveryCursor>,
+}
+
+impl DeliveryStreamAllocator {
+    pub(super) fn assign_hook_packet(&mut self, packet: HookGamePacket) -> OutboundGamePacket {
+        let cursor = self
+            .by_target
+            .entry(packet.peer)
+            .or_insert_with(|| DeliveryCursor {
+                stream_id: DeliveryStreamId::random(),
+                next_sequence: 1,
+            });
+        if cursor.next_sequence == u64::MAX {
+            cursor.stream_id = DeliveryStreamId::random();
+            cursor.next_sequence = 1;
+        }
+        let outbound = OutboundGamePacket {
+            to_steam_id64: packet.peer,
+            hook_sequence: packet.sequence,
+            delivery_stream_id: cursor.stream_id,
+            delivery_sequence: cursor.next_sequence,
+            channel: packet.channel,
+            send_type: packet.send_type,
+            payload: Bytes::from(packet.payload),
+        };
+        cursor.next_sequence = cursor.next_sequence.saturating_add(1);
+        outbound
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -59,7 +129,6 @@ pub(super) struct PacketObserver {
     network_packets: u64,
     last_hook_packet_at: Option<Instant>,
     last_network_packet_at: Option<Instant>,
-    last_remote_sequences: HashMap<u64, u32>,
 }
 
 impl PacketObserver {
@@ -82,10 +151,10 @@ impl PacketObserver {
                 log_event(
                     LogLevel::Debug,
                     format!(
-                        "Hook -> network packet #{}: to={} sequence={} channel={} send_type={} payload_bytes={} wire_bytes={}",
+                        "Hook -> network packet #{}: to={} hook_sequence={} channel={} send_type={} payload_bytes={} wire_bytes={}",
                         self.hook_packets,
                         summary.peer,
-                        summary.sequence,
+                        summary.hook_sequence,
                         summary.channel,
                         summary.send_type,
                         summary.payload_bytes,
@@ -106,7 +175,6 @@ impl PacketObserver {
             "Network -> Hook",
             &mut self.last_network_packet_at,
         );
-        observe_source_sequence(event_tx, &mut self.last_remote_sequences, summary);
         self.network_packets = self.network_packets.saturating_add(1);
         if self.network_packets == 1 {
             send_event(
@@ -120,11 +188,11 @@ impl PacketObserver {
                 log_event(
                     LogLevel::Debug,
                     format!(
-                        "Network -> Hook packet #{}: from={} source_sequence={} local_sequence={} channel={} send_type={} payload_bytes={} local_bytes={}",
+                        "Network -> Hook packet #{}: from={} delivery_sequence={} hook_sequence={} channel={} send_type={} payload_bytes={} local_bytes={}",
                         self.network_packets,
                         summary.peer,
-                        summary.source_sequence,
-                        summary.sequence,
+                        summary.delivery_sequence,
+                        summary.hook_sequence,
                         summary.channel,
                         summary.send_type,
                         summary.payload_bytes,
@@ -136,23 +204,16 @@ impl PacketObserver {
     }
 }
 
-pub(super) fn decode_outbound_hook_packet(packet: HookGamePacket) -> OutboundGamePacket {
-    OutboundGamePacket {
-        to_steam_id64: packet.peer,
-        source_sequence: packet.sequence,
-        channel: packet.channel,
-        send_type: packet.send_type,
-        payload: Bytes::from(packet.payload),
-    }
-}
-
 pub(super) fn decode_inbound_relay_datagram(
     bytes: Bytes,
 ) -> io::Result<Option<InboundRelayDatagram>> {
     match decode_frame(bytes).map_err(io::Error::other)? {
         Frame::Data(game) => Ok(Some(InboundRelayDatagram::Game(InboundGamePacket {
             from_steam_id64: game.from_steam_id64,
-            source_sequence: game.source_sequence,
+            delivery_stream_id: DeliveryStreamId::from_bytes(
+                game.delivery_stream_id.as_bytes().to_owned(),
+            ),
+            delivery_sequence: game.delivery_sequence,
             channel: game.channel,
             send_type: game.send_type,
             payload: game.payload,
@@ -184,8 +245,8 @@ pub(super) fn encode_inbound_hook_packet(
     let received_bytes = u64::try_from(inbound.payload.len()).unwrap_or(u64::MAX);
     let summary = PacketSummary {
         peer: inbound.from_steam_id64,
-        sequence: *local_sequence,
-        source_sequence: inbound.source_sequence,
+        hook_sequence: *local_sequence,
+        delivery_sequence: inbound.delivery_sequence,
         channel: inbound.channel,
         send_type: inbound.send_type,
         payload_bytes: inbound.payload.len(),
@@ -254,41 +315,46 @@ fn observe_packet_gap(
     }
 }
 
-fn observe_source_sequence(
-    event_tx: &RuntimeEventSender,
-    last_remote_sequences: &mut HashMap<u64, u32>,
-    summary: &PacketSummary,
-) {
-    if summary.source_sequence == 0 {
-        return;
-    }
-    let Some(previous) = last_remote_sequences.get_mut(&summary.peer) else {
-        last_remote_sequences.insert(summary.peer, summary.source_sequence);
-        return;
-    };
-    let expected = previous.saturating_add(1);
-    if summary.source_sequence == expected {
-        *previous = summary.source_sequence;
-        return;
-    }
-    send_event(
-        event_tx,
-        log_event(
-            LogLevel::Debug,
-            format!(
-                "Network source sequence gap: from={} previous={} expected={} current={}",
-                summary.peer, *previous, expected, summary.source_sequence
-            ),
-        ),
-    );
-    if summary.source_sequence > *previous {
-        *previous = summary.source_sequence;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hook_packet(target: u64) -> HookGamePacket {
+        HookGamePacket {
+            peer: target,
+            sequence: 1,
+            channel: 0,
+            send_type: 0,
+            payload: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn delivery_streams_are_independent_per_target() {
+        let mut allocator = DeliveryStreamAllocator::default();
+        let b1 = allocator.assign_hook_packet(hook_packet(2));
+        let c1 = allocator.assign_hook_packet(hook_packet(3));
+        let b2 = allocator.assign_hook_packet(hook_packet(2));
+        let c2 = allocator.assign_hook_packet(hook_packet(3));
+
+        assert_eq!((b1.delivery_sequence, b2.delivery_sequence), (1, 2));
+        assert_eq!((c1.delivery_sequence, c2.delivery_sequence), (1, 2));
+        assert_eq!(b1.delivery_stream_id, b2.delivery_stream_id);
+        assert_eq!(c1.delivery_stream_id, c2.delivery_stream_id);
+        assert_ne!(b1.delivery_stream_id, c1.delivery_stream_id);
+    }
+
+    #[test]
+    fn sequence_exhaustion_rotates_the_delivery_stream() {
+        let mut allocator = DeliveryStreamAllocator::default();
+        let first = allocator.assign_hook_packet(hook_packet(2));
+        let cursor = allocator.by_target.get_mut(&2).unwrap();
+        cursor.next_sequence = u64::MAX;
+        let rotated = allocator.assign_hook_packet(hook_packet(2));
+
+        assert_eq!(rotated.delivery_sequence, 1);
+        assert_ne!(rotated.delivery_stream_id, first.delivery_stream_id);
+    }
 
     #[test]
     fn hook_packet_conversion_preserves_route_neutral_fields() {
@@ -300,10 +366,10 @@ mod tests {
             payload: vec![1, 2, 3],
         };
 
-        let outbound = decode_outbound_hook_packet(packet);
+        let outbound = DeliveryStreamAllocator::default().assign_hook_packet(packet);
 
         assert_eq!(outbound.to_steam_id64, 76_561_198_000_000_002);
-        assert_eq!(outbound.source_sequence, 42);
+        assert_eq!(outbound.hook_sequence, 42);
         assert_eq!(outbound.channel, 3);
         assert_eq!(outbound.send_type, 1);
         assert_eq!(outbound.payload, Bytes::from_static(&[1, 2, 3]));
@@ -316,7 +382,8 @@ mod tests {
             frame_id: 8,
             from_steam_id64: 76_561_198_000_000_002,
             to_steam_id64: 76_561_198_000_000_001,
-            source_sequence: 42,
+            delivery_stream_id: crate::protocol::DeliveryStreamId::from_bytes([4; 16]),
+            delivery_sequence: 42,
             channel: 3,
             send_type: 1,
             payload: Bytes::from_static(&[1, 2, 3]),
@@ -330,7 +397,7 @@ mod tests {
         };
 
         assert_eq!(inbound.from_steam_id64, 76_561_198_000_000_002);
-        assert_eq!(inbound.source_sequence, 42);
+        assert_eq!(inbound.delivery_sequence, 42);
         assert_eq!(inbound.channel, 3);
         assert_eq!(inbound.send_type, 1);
         assert_eq!(inbound.payload, Bytes::from_static(&[1, 2, 3]));

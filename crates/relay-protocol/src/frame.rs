@@ -1,12 +1,14 @@
 //! Fixed binary data and probe frame codecs.
 
+use std::fmt;
+
 use bytes::{Buf as _, BufMut as _, Bytes, BytesMut};
 use thiserror::Error;
 
 use super::{FRAME_MAGIC, IPV4_UDP_DATAGRAM_BUDGET, PROTOCOL_MAJOR, PROTOCOL_MINOR};
 
 pub const COMMON_HEADER_LEN: usize = 16;
-pub const DATA_FRAME_HEADER_LEN: usize = 60;
+pub const DATA_FRAME_HEADER_LEN: usize = 80;
 pub const DATA_FRAME_OVERHEAD: usize = DATA_FRAME_HEADER_LEN;
 pub const PROBE_FRAME_HEADER_LEN: usize = 56;
 pub const MAX_CONTROL_PAYLOAD: usize = 16 * 1024;
@@ -43,10 +45,37 @@ pub struct DataFrame {
     pub frame_id: u64,
     pub from_steam_id64: u64,
     pub to_steam_id64: u64,
-    pub source_sequence: u32,
+    pub delivery_stream_id: DeliveryStreamId,
+    pub delivery_sequence: u64,
     pub channel: i32,
     pub send_type: i32,
     pub payload: Bytes,
+}
+
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct DeliveryStreamId([u8; 16]);
+
+impl DeliveryStreamId {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn is_zero(&self) -> bool {
+        self.0.iter().all(|byte| *byte == 0)
+    }
+}
+
+impl fmt::Debug for DeliveryStreamId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DeliveryStreamId([REDACTED])")
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -124,6 +153,12 @@ impl DataFrame {
         if self.frame_id == 0 {
             return Err(FrameEncodeError::ZeroFrameId);
         }
+        if self.delivery_stream_id.is_zero() {
+            return Err(FrameEncodeError::ZeroDeliveryStreamId);
+        }
+        if self.delivery_sequence == 0 {
+            return Err(FrameEncodeError::ZeroDeliverySequence);
+        }
         if self.payload.len() > MAX_DATA_PAYLOAD {
             return Err(FrameEncodeError::PayloadTooLarge(self.payload.len()));
         }
@@ -140,7 +175,8 @@ impl DataFrame {
         bytes.put_u64(self.frame_id);
         bytes.put_u64(self.from_steam_id64);
         bytes.put_u64(self.to_steam_id64);
-        bytes.put_u32(self.source_sequence);
+        bytes.put_slice(self.delivery_stream_id.as_bytes());
+        bytes.put_u64(self.delivery_sequence);
         bytes.put_i32(self.channel);
         bytes.put_i32(self.send_type);
         bytes.put_slice(&self.payload);
@@ -220,7 +256,8 @@ pub fn decode_frame(mut bytes: Bytes) -> Result<Frame, FrameDecodeError> {
             let frame_id = bytes.get_u64();
             let from_steam_id64 = bytes.get_u64();
             let to_steam_id64 = bytes.get_u64();
-            let source_sequence = bytes.get_u32();
+            let delivery_stream_id = DeliveryStreamId::from_bytes(read_array::<16>(&mut bytes)?);
+            let delivery_sequence = bytes.get_u64();
             let channel = bytes.get_i32();
             let send_type = bytes.get_i32();
             if connection_id == 0 {
@@ -229,13 +266,20 @@ pub fn decode_frame(mut bytes: Bytes) -> Result<Frame, FrameDecodeError> {
             if frame_id == 0 {
                 return Err(FrameDecodeError::ZeroFrameId);
             }
+            if delivery_stream_id.is_zero() {
+                return Err(FrameDecodeError::ZeroDeliveryStreamId);
+            }
+            if delivery_sequence == 0 {
+                return Err(FrameDecodeError::ZeroDeliverySequence);
+            }
             bytes.advance(header_len - DATA_FRAME_HEADER_LEN);
             Ok(Frame::Data(DataFrame {
                 connection_id,
                 frame_id,
                 from_steam_id64,
                 to_steam_id64,
-                source_sequence,
+                delivery_stream_id,
+                delivery_sequence,
                 channel,
                 send_type,
                 payload: bytes.copy_to_bytes(payload_len),
@@ -281,6 +325,15 @@ fn encode_common(kind: FrameKind, payload: &Bytes) -> Result<Bytes, FrameEncodeE
     Ok(bytes.freeze())
 }
 
+fn read_array<const N: usize>(bytes: &mut Bytes) -> Result<[u8; N], FrameDecodeError> {
+    if bytes.remaining() < N {
+        return Err(FrameDecodeError::TooShort);
+    }
+    let mut value = [0_u8; N];
+    bytes.copy_to_slice(&mut value);
+    Ok(value)
+}
+
 fn put_common_header(
     bytes: &mut BytesMut,
     kind: FrameKind,
@@ -310,6 +363,10 @@ pub enum FrameEncodeError {
     ZeroConnectionId,
     #[error("data frame id must be non-zero")]
     ZeroFrameId,
+    #[error("delivery stream id must be non-zero")]
+    ZeroDeliveryStreamId,
+    #[error("delivery sequence must be non-zero")]
+    ZeroDeliverySequence,
     #[error("probe id must be non-zero")]
     ZeroProbeId,
 }
@@ -340,6 +397,10 @@ pub enum FrameDecodeError {
     ZeroConnectionId,
     #[error("data frame id must be non-zero")]
     ZeroFrameId,
+    #[error("delivery stream id must be non-zero")]
+    ZeroDeliveryStreamId,
+    #[error("delivery sequence must be non-zero")]
+    ZeroDeliverySequence,
     #[error("probe id must be non-zero")]
     ZeroProbeId,
     #[error("unknown probe phase {0}")]

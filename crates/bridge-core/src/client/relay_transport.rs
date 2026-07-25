@@ -253,7 +253,10 @@ impl RelayTransportSender {
             frame_id: self.next_frame_id,
             from_steam_id64: self.from_steam_id64,
             to_steam_id64: packet.to_steam_id64,
-            source_sequence: packet.source_sequence,
+            delivery_stream_id: crate::protocol::DeliveryStreamId::from_bytes(
+                packet.delivery_stream_id.as_bytes(),
+            ),
+            delivery_sequence: packet.delivery_sequence,
             channel: packet.channel,
             send_type: packet.send_type,
             payload: packet.payload,

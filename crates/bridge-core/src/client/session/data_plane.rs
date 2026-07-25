@@ -22,13 +22,14 @@ pub(super) async fn hook_in_task(
     cancellation: CancellationToken,
     health: Option<SharedSessionHealth>,
 ) -> io::Result<()> {
+    let mut delivery_streams = DeliveryStreamAllocator::default();
     loop {
         tokio::select! {
             () = cancellation.cancelled() => return Ok(()),
             Some(packet) = hook_packets_rx.recv() => {
                 let size = packet.payload.len();
                 observe_health(&health, |health| health.observe_hook_in_recv(size, Instant::now()));
-                let packet = decode_outbound_hook_packet(packet);
+                let packet = delivery_streams.assign_hook_packet(packet);
                 let accepted = outbound_tx.try_send(packet).is_ok();
                 observe_health(&health, |health| health.observe_outbound_enqueue(accepted));
                 if !accepted {
@@ -70,8 +71,8 @@ pub(super) async fn relay_transport_task(
                 let sent_bytes = u64::try_from(packet.payload.len()).unwrap_or(u64::MAX);
                 let summary = PacketSummary {
                     peer: packet.to_steam_id64,
-                    sequence: packet.source_sequence,
-                    source_sequence: packet.source_sequence,
+                    hook_sequence: packet.hook_sequence,
+                    delivery_sequence: packet.delivery_sequence,
                     channel: packet.channel,
                     send_type: packet.send_type,
                     payload_bytes: packet.payload.len(),
@@ -354,12 +355,17 @@ pub(super) async fn hook_out_task(
             () = cancellation.cancelled() => return Ok(()),
             Some(packet) = inbound_rx.recv() => {
                 let from_steam_id64 = packet.from_steam_id64;
-                let source_sequence = packet.source_sequence;
+                let delivery_stream_id = packet.delivery_stream_id;
+                let delivery_sequence = packet.delivery_sequence;
                 let (packet, summary, received_bytes) =
                     encode_inbound_hook_packet(packet, &mut local_sequence);
                 observe_health(&health, |health| {
                     health.observe_network_recv(summary.payload_bytes, Instant::now());
-                    health.observe_source_sequence(from_steam_id64, source_sequence);
+                    health.observe_delivery(
+                        from_steam_id64,
+                        delivery_stream_id,
+                        delivery_sequence,
+                    );
                 });
                 let started = Instant::now();
                 let accepted = to_hook.try_send(packet);
@@ -455,4 +461,72 @@ fn current_health_snapshot(health: &Option<SharedSessionHealth>) -> Option<Sessi
     health
         .as_ref()
         .and_then(|health| Some(health.lock().ok()?.snapshot(Instant::now())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hook_packet(sequence: u32) -> tractor_beam_hook_ipc::GamePacket {
+        tractor_beam_hook_ipc::GamePacket {
+            peer: 2,
+            sequence,
+            channel: 0,
+            send_type: 0,
+            payload: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn outbound_queue_drop_consumes_delivery_sequence() {
+        let (hook_tx, hook_rx) = tokio_mpsc::channel(3);
+        let (outbound_tx, mut outbound_rx) = tokio_mpsc::channel(1);
+        let (event_tx, _event_rx) = tokio_mpsc::channel(8);
+        let cancellation = CancellationToken::new();
+        let health = Arc::new(Mutex::new(SessionHealth::new(
+            false,
+            Duration::from_secs(1),
+            Instant::now(),
+        )));
+        let task = tokio::spawn(hook_in_task(
+            hook_rx,
+            outbound_tx,
+            event_tx,
+            cancellation.clone(),
+            Some(health.clone()),
+        ));
+
+        hook_tx.send(hook_packet(1)).await.unwrap();
+        hook_tx.send(hook_packet(2)).await.unwrap();
+        time::timeout(Duration::from_secs(1), async {
+            loop {
+                if health
+                    .lock()
+                    .unwrap()
+                    .snapshot(Instant::now())
+                    .queues
+                    .outbound_dropped
+                    == 1
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let first = outbound_rx.recv().await.unwrap();
+        assert_eq!(first.delivery_sequence, 1);
+        hook_tx.send(hook_packet(3)).await.unwrap();
+        let third = time::timeout(Duration::from_secs(1), outbound_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(third.delivery_sequence, 3);
+        assert_eq!(third.delivery_stream_id, first.delivery_stream_id);
+
+        cancellation.cancel();
+        task.await.unwrap().unwrap();
+    }
 }

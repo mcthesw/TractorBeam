@@ -347,7 +347,10 @@ mod tests {
     #[test]
     fn control_round_trip_validates_nested_values() {
         let message = ControlMessage::JoinAccepted {
-            selected_protocol: ProtocolVersion { major: 1, minor: 0 },
+            selected_protocol: ProtocolVersion {
+                major: super::super::PROTOCOL_MAJOR,
+                minor: super::super::PROTOCOL_MINOR,
+            },
             enabled_capabilities: super::super::KNOWN_CAPABILITIES,
             peers: vec![descriptor(1), descriptor(2)],
         };

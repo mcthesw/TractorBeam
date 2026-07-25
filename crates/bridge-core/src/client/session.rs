@@ -26,8 +26,8 @@ use super::{
     hook_ipc::{self, HookIpcSession, InputDelayCall},
     lan::LanGameSendError,
     packet_flow::{
-        InboundGamePacket, InboundRelayDatagram, OutboundGamePacket, PacketObserver, PacketSummary,
-        decode_inbound_relay_datagram, decode_outbound_hook_packet, encode_inbound_hook_packet,
+        DeliveryStreamAllocator, InboundGamePacket, InboundRelayDatagram, OutboundGamePacket,
+        PacketObserver, PacketSummary, decode_inbound_relay_datagram, encode_inbound_hook_packet,
         network_in_counter, network_out_counter, send_error,
     },
     process_lifecycle,

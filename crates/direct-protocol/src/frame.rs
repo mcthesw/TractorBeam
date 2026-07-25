@@ -4,8 +4,8 @@ use bytes::{Buf as _, BufMut as _, Bytes, BytesMut};
 use thiserror::Error;
 
 use super::{
-    FRAME_MAGIC, IPV4_UDP_DATAGRAM_BUDGET, InstanceId, PROTOCOL_MAJOR, PROTOCOL_MINOR, PathId,
-    PathToken, PeerIdentity, TransactionId,
+    DeliveryStreamId, FRAME_MAGIC, IPV4_UDP_DATAGRAM_BUDGET, InstanceId, PROTOCOL_MAJOR,
+    PROTOCOL_MINOR, PathId, PathToken, PeerIdentity, TransactionId,
 };
 
 const COMMON_HEADER_LEN: usize = 16;
@@ -13,7 +13,7 @@ const PATH_CONTEXT_LEN: usize = 64;
 const PATH_HEADER_LEN: usize = COMMON_HEADER_LEN + PATH_CONTEXT_LEN;
 pub const CHECK_FRAME_HEADER_LEN: usize = PATH_HEADER_LEN + 24;
 pub const HEARTBEAT_FRAME_HEADER_LEN: usize = PATH_HEADER_LEN + 16;
-pub const DATA_FRAME_HEADER_LEN: usize = PATH_HEADER_LEN + 20;
+pub const DATA_FRAME_HEADER_LEN: usize = PATH_HEADER_LEN + 40;
 pub const DATA_FRAME_OVERHEAD: usize = DATA_FRAME_HEADER_LEN;
 pub const MAX_FRAME_LEN: usize = IPV4_UDP_DATAGRAM_BUDGET;
 pub const MAX_DATA_PAYLOAD: usize = MAX_FRAME_LEN - DATA_FRAME_HEADER_LEN;
@@ -104,7 +104,8 @@ pub struct HeartbeatFrame {
 pub struct DataFrame {
     pub path: PathContext,
     pub frame_id: u64,
-    pub source_sequence: u32,
+    pub delivery_stream_id: DeliveryStreamId,
+    pub delivery_sequence: u64,
     pub channel: i32,
     pub send_type: i32,
     pub payload: Bytes,
@@ -170,6 +171,12 @@ impl DataFrame {
         if self.frame_id == 0 {
             return Err(FrameEncodeError::ZeroFrameId);
         }
+        if self.delivery_stream_id.is_zero() {
+            return Err(FrameEncodeError::ZeroDeliveryStreamId);
+        }
+        if self.delivery_sequence == 0 {
+            return Err(FrameEncodeError::ZeroDeliverySequence);
+        }
         if self.payload.len() > MAX_DATA_PAYLOAD {
             return Err(FrameEncodeError::PayloadTooLarge(self.payload.len()));
         }
@@ -184,7 +191,8 @@ impl DataFrame {
         )?;
         put_path(&mut bytes, self.path);
         bytes.put_u64(self.frame_id);
-        bytes.put_u32(self.source_sequence);
+        bytes.put_slice(self.delivery_stream_id.as_bytes());
+        bytes.put_u64(self.delivery_sequence);
         bytes.put_i32(self.channel);
         bytes.put_i32(self.send_type);
         bytes.put_slice(&self.payload);
@@ -281,14 +289,22 @@ pub fn decode_frame(mut bytes: Bytes) -> Result<DirectFrame, FrameDecodeError> {
             if frame_id == 0 {
                 return Err(FrameDecodeError::ZeroFrameId);
             }
-            let source_sequence = bytes.get_u32();
+            let delivery_stream_id = DeliveryStreamId::from_bytes(read_array::<16>(&mut bytes)?);
+            if delivery_stream_id.is_zero() {
+                return Err(FrameDecodeError::ZeroDeliveryStreamId);
+            }
+            let delivery_sequence = bytes.get_u64();
+            if delivery_sequence == 0 {
+                return Err(FrameDecodeError::ZeroDeliverySequence);
+            }
             let channel = bytes.get_i32();
             let send_type = bytes.get_i32();
             bytes.advance(header_len - DATA_FRAME_HEADER_LEN);
             Ok(DirectFrame::Data(DataFrame {
                 path,
                 frame_id,
-                source_sequence,
+                delivery_stream_id,
+                delivery_sequence,
                 channel,
                 send_type,
                 payload: bytes.copy_to_bytes(payload_len),
@@ -417,6 +433,10 @@ pub enum FrameEncodeError {
     ZeroHeartbeatId,
     #[error("gameplay frame id must be non-zero")]
     ZeroFrameId,
+    #[error("delivery stream id must be non-zero")]
+    ZeroDeliveryStreamId,
+    #[error("delivery sequence must be non-zero")]
+    ZeroDeliverySequence,
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -459,6 +479,10 @@ pub enum FrameDecodeError {
     ZeroHeartbeatId,
     #[error("gameplay frame id must be non-zero")]
     ZeroFrameId,
+    #[error("delivery stream id must be non-zero")]
+    ZeroDeliveryStreamId,
+    #[error("delivery sequence must be non-zero")]
+    ZeroDeliverySequence,
     #[error("unknown path-check phase {0}")]
     UnknownCheckPhase(u8),
     #[error("unknown heartbeat phase {0}")]
@@ -494,7 +518,8 @@ mod tests {
             DirectFrame::Data(DataFrame {
                 path: path(),
                 frame_id: 8,
-                source_sequence: 9,
+                delivery_stream_id: DeliveryStreamId::from_bytes([9; 16]),
+                delivery_sequence: 10,
                 channel: -2,
                 send_type: 3,
                 payload: Bytes::from_static(b"payload"),
@@ -511,7 +536,8 @@ mod tests {
         let mut frame = DataFrame {
             path: path(),
             frame_id: 1,
-            source_sequence: 1,
+            delivery_stream_id: DeliveryStreamId::from_bytes([1; 16]),
+            delivery_sequence: 1,
             channel: 0,
             send_type: 0,
             payload: Bytes::from(vec![0; MAX_DATA_PAYLOAD]),

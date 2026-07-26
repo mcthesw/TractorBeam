@@ -6,7 +6,14 @@ use std::{
 
 use serde::Serialize;
 
-use super::packet_flow::DeliveryStreamId;
+use super::{lan::LanDataPlaneSnapshot, packet_flow::DeliveryStreamId};
+
+mod direct;
+pub use direct::{
+    DirectDirectionHealthSnapshot, DirectDropReason, DirectEpochHealthSnapshot,
+    DirectFlowDirection, DirectFlowHealthSnapshot, DirectFlowStage, DirectFlowWindow,
+    DirectOutcomeWindow, DirectPeerHealthSnapshot, DirectRejectionHealthSnapshot,
+};
 
 const LATENCY_SAMPLE_CAPACITY: usize = 2_048;
 const ACTIVE_TRAFFIC_STARTUP_GRACE_SECONDS: u64 = 15;
@@ -41,14 +48,6 @@ pub struct QueueHealthSnapshot {
     pub inbound_enqueued: u64,
     pub inbound_full: u64,
     pub inbound_dropped: u64,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
-pub struct DirectReceiveHandoffSnapshot {
-    pub enabled: bool,
-    pub attempted: u64,
-    pub dropped: u64,
-    pub saturated: bool,
 }
 
 impl QueueHealthSnapshot {
@@ -115,7 +114,8 @@ pub enum QualityConfidence {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionQualityReason {
-    DirectReceiveHandoffDrop,
+    DirectSendDrop,
+    DirectReceiveDrop,
     LocalQueueDrop,
     NetworkSendDrop,
     DeliveryGap,
@@ -130,8 +130,7 @@ pub struct SessionHealthWindow {
     pub duration_seconds: u64,
     pub hook_in_packets: u64,
     pub network_recv_packets: u64,
-    pub direct_receive_attempted: u64,
-    pub direct_receive_dropped: u64,
+    pub direct: DirectFlowWindow,
     pub network_send_dropped: u64,
     pub queue_drops: u64,
     pub delivery_gaps: u64,
@@ -168,7 +167,7 @@ pub struct SessionHealthSnapshot {
     pub network_send_dropped: u64,
     pub hook_out_send_duration: LatencySummary,
     pub queues: QueueHealthSnapshot,
-    pub direct_receive: DirectReceiveHandoffSnapshot,
+    pub direct: DirectFlowHealthSnapshot,
     pub delivery: DeliveryHealthSnapshot,
     pub runtime_rtt: RuntimeRttSnapshot,
 }
@@ -179,17 +178,20 @@ impl SessionHealthSnapshot {
     #[must_use]
     pub fn compact_log_line(&self, label: &str) -> String {
         format!(
-            "{label}: quality={} confidence={:?} reasons={:?} window={}s hook_in={} network_recv={} direct_receive_enabled={} direct_receive_attempted={} direct_receive_drops={} direct_receive_saturated={} rtt_p95={} queue_drops={} network_drops={} delivery_gaps={} network_gap_p95={} hook_out_p95={}",
+            "{label}: quality={} confidence={:?} reasons={:?} window={}s hook_in={} network_recv={} direct_enabled={} direct_peers={} direct_send_succeeded={} direct_send_dropped={} direct_receive_accepted={} direct_receive_dropped={} direct_transitions_dropped={} rtt_p95={} queue_drops={} network_drops={} delivery_gaps={} network_gap_p95={} hook_out_p95={}",
             self.quality,
             self.confidence,
             self.reasons,
             self.window.duration_seconds,
             self.hook_in_recv.packets,
             self.network_recv.packets,
-            self.direct_receive.enabled,
-            self.direct_receive.attempted,
-            self.direct_receive.dropped,
-            self.direct_receive.saturated,
+            self.direct.enabled,
+            self.direct.peers.len(),
+            self.direct.send.resolved_success,
+            self.direct.send.dropped,
+            self.direct.receive.resolved_success,
+            self.direct.receive.dropped,
+            self.direct.transitions_dropped,
             display_ms(self.runtime_rtt.latency.p95_ms),
             self.queues.total_dropped(),
             self.network_send_dropped,
@@ -211,7 +213,7 @@ pub(super) struct SessionHealth {
     network_send_dropped: u64,
     hook_out_send_duration: LatencyAccumulator,
     queues: QueueStats,
-    direct_receive: DirectReceiveHandoffSnapshot,
+    direct: DirectFlowHealthSnapshot,
     delivery: DeliveryStats,
     runtime_rtt: RuntimeRttStats,
     quality_baseline: QualityBaseline,
@@ -235,7 +237,7 @@ impl SessionHealth {
             network_send_dropped: 0,
             hook_out_send_duration: LatencyAccumulator::default(),
             queues: QueueStats::default(),
-            direct_receive: DirectReceiveHandoffSnapshot::default(),
+            direct: DirectFlowHealthSnapshot::default(),
             delivery: DeliveryStats::default(),
             runtime_rtt: RuntimeRttStats::default(),
             quality_baseline: QualityBaseline::default(),
@@ -267,16 +269,8 @@ impl SessionHealth {
         self.queues.observe_inbound(accepted);
     }
 
-    pub(super) fn observe_direct_receive_handoff(&mut self, accepted: bool) {
-        self.direct_receive.attempted = self.direct_receive.attempted.saturating_add(1);
-        if !accepted {
-            self.direct_receive.dropped = self.direct_receive.dropped.saturating_add(1);
-        }
-        self.direct_receive.saturated = !accepted;
-    }
-
-    pub(super) fn enable_direct_receive_handoff(&mut self) {
-        self.direct_receive.enabled = true;
+    pub(super) fn refresh_direct(&mut self, snapshot: LanDataPlaneSnapshot) {
+        self.direct = DirectFlowHealthSnapshot::from_lan(snapshot);
     }
 
     pub(super) fn observe_hook_out_send_duration(&mut self, duration: Duration) {
@@ -345,7 +339,7 @@ impl SessionHealth {
             network_send_dropped: self.network_send_dropped,
             hook_out_send_duration,
             queues,
-            direct_receive: self.direct_receive,
+            direct: self.direct.clone(),
             delivery,
             runtime_rtt,
         }
@@ -366,7 +360,9 @@ use stats::*;
 struct QualityBaseline {
     hook_in_packets: u64,
     network_recv_packets: u64,
-    direct_receive_attempted: u64,
+    direct_send_succeeded: u64,
+    direct_send_dropped: u64,
+    direct_receive_accepted: u64,
     direct_receive_dropped: u64,
     network_send_dropped: u64,
     queue_drops: u64,
@@ -393,8 +389,10 @@ impl QualityBaseline {
         Self {
             hook_in_packets: hook_in.packets,
             network_recv_packets: network_recv.packets,
-            direct_receive_attempted: health.direct_receive.attempted,
-            direct_receive_dropped: health.direct_receive.dropped,
+            direct_send_succeeded: health.direct.send.resolved_success,
+            direct_send_dropped: health.direct.send.dropped,
+            direct_receive_accepted: health.direct.receive.resolved_success,
+            direct_receive_dropped: health.direct.receive.dropped,
             network_send_dropped: health.network_send_dropped,
             queue_drops: queues.total_dropped(),
             delivery_gaps: delivery.confirmed_gaps,
@@ -417,12 +415,24 @@ impl QualityBaseline {
             network_recv_packets: self
                 .network_recv_packets
                 .saturating_sub(previous.network_recv_packets),
-            direct_receive_attempted: self
-                .direct_receive_attempted
-                .saturating_sub(previous.direct_receive_attempted),
-            direct_receive_dropped: self
-                .direct_receive_dropped
-                .saturating_sub(previous.direct_receive_dropped),
+            direct: DirectFlowWindow {
+                send: DirectOutcomeWindow {
+                    resolved_success: self
+                        .direct_send_succeeded
+                        .saturating_sub(previous.direct_send_succeeded),
+                    dropped: self
+                        .direct_send_dropped
+                        .saturating_sub(previous.direct_send_dropped),
+                },
+                receive: DirectOutcomeWindow {
+                    resolved_success: self
+                        .direct_receive_accepted
+                        .saturating_sub(previous.direct_receive_accepted),
+                    dropped: self
+                        .direct_receive_dropped
+                        .saturating_sub(previous.direct_receive_dropped),
+                },
+            },
             network_send_dropped: self
                 .network_send_dropped
                 .saturating_sub(previous.network_send_dropped),
@@ -462,7 +472,8 @@ struct QualityAssessment {
 fn classify_quality(elapsed_seconds: u64, window: SessionHealthWindow) -> QualityAssessment {
     let has_evidence = window.hook_in_packets > 0
         || window.network_recv_packets > 0
-        || window.direct_receive_attempted > 0
+        || window.direct.send.resolved_outcomes() > 0
+        || window.direct.receive.resolved_outcomes() > 0
         || window.runtime_rtt_sent > 0;
     if elapsed_seconds < ACTIVE_TRAFFIC_STARTUP_GRACE_SECONDS || !has_evidence {
         return QualityAssessment {
@@ -474,8 +485,12 @@ fn classify_quality(elapsed_seconds: u64, window: SessionHealthWindow) -> Qualit
 
     let mut reasons = Vec::new();
     let mut poor = false;
-    if window.direct_receive_dropped > 0 {
-        reasons.push(SessionQualityReason::DirectReceiveHandoffDrop);
+    if window.direct.send.dropped > 0 {
+        reasons.push(SessionQualityReason::DirectSendDrop);
+        poor = true;
+    }
+    if window.direct.receive.dropped > 0 {
+        reasons.push(SessionQualityReason::DirectReceiveDrop);
         poor = true;
     }
     if window.queue_drops > 0 {
@@ -505,7 +520,10 @@ fn classify_quality(elapsed_seconds: u64, window: SessionHealthWindow) -> Qualit
     let evidence_count = window
         .hook_in_packets
         .saturating_add(window.network_recv_packets)
-        .saturating_add(window.direct_receive_attempted)
+        .saturating_add(u64::try_from(window.direct.send.resolved_outcomes()).unwrap_or(u64::MAX))
+        .saturating_add(
+            u64::try_from(window.direct.receive.resolved_outcomes()).unwrap_or(u64::MAX),
+        )
         .saturating_add(window.network_send_dropped)
         .saturating_add(window.runtime_rtt_sent);
     QualityAssessment {

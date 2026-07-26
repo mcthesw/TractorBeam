@@ -55,6 +55,9 @@ pub use session_config::{
     TransportChoice,
 };
 pub use session_health::{
+    DirectDirectionHealthSnapshot, DirectDropReason, DirectEpochHealthSnapshot,
+    DirectFlowDirection, DirectFlowHealthSnapshot, DirectFlowStage, DirectFlowWindow,
+    DirectOutcomeWindow, DirectPeerHealthSnapshot, DirectRejectionHealthSnapshot,
     QualityConfidence, SessionHealthSnapshot, SessionHealthSummary, SessionHealthWindow,
     SessionQuality, SessionQualityReason,
 };

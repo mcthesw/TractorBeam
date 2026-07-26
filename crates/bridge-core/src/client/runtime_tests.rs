@@ -1,8 +1,10 @@
 use std::{fs, path::PathBuf};
 
 use crate::client::{
-    ExternalRelayConfig, LanDirectConfig, QualityConfidence, SessionHealthConfig,
-    SessionHealthSnapshot, SessionQuality, SmoothnessReason, TransportChoice,
+    DirectDirectionHealthSnapshot, DirectDropReason, DirectEpochHealthSnapshot,
+    DirectFlowDirection, DirectFlowHealthSnapshot, DirectFlowStage, DirectPeerHealthSnapshot,
+    DirectRejectionHealthSnapshot, ExternalRelayConfig, LanDirectConfig, QualityConfidence,
+    SessionHealthConfig, SessionHealthSnapshot, SessionQuality, SmoothnessReason, TransportChoice,
 };
 
 use super::*;
@@ -78,11 +80,15 @@ fn diagnostics_include_session_health_evidence() {
     let mut client = BridgeClient::new();
     client.state.latest_session_health = Some(SessionHealthSnapshot {
         quality: SessionQuality::Good,
-        direct_receive: crate::client::session_health::DirectReceiveHandoffSnapshot {
+        direct: DirectFlowHealthSnapshot {
             enabled: true,
-            attempted: 12,
-            dropped: 3,
-            saturated: true,
+            send: direct_direction(DirectFlowDirection::Send, 14, 11, 3),
+            receive: direct_direction(DirectFlowDirection::Receive, 12, 11, 1),
+            peers: vec![
+                direct_peer(1, 76561198000000001, 2, (12, 9, 3), (8, 7, 1)),
+                direct_peer(2, 76561198000000002, 4, (2, 2, 0), (4, 4, 0)),
+            ],
+            transitions_dropped: 4,
         },
         ..SessionHealthSnapshot::default()
     });
@@ -94,16 +100,90 @@ fn diagnostics_include_session_health_evidence() {
 
     assert!(text.contains("session health:"));
     assert!(text.contains("quality=good"));
-    assert!(text.contains("direct_receive_attempted=12"));
-    assert!(text.contains("direct_receive_drops=3"));
-    assert!(text.contains("\"direct_receive\""));
-    assert!(text.contains("\"attempted\": 12"));
+    assert!(text.contains("direct_send_succeeded=11"));
+    assert!(text.contains("direct_receive_dropped=1"));
+    assert!(text.contains("\"peer_slot\": 1"));
+    assert!(text.contains("\"lifecycle_epoch\": 2"));
+    assert!(text.contains("\"stage\": \"outbound_queue\""));
+    assert!(text.contains("\"reason\": \"queue_full\""));
+    assert!(text.contains("\"current_queue_depth\": 0"));
+    assert!(text.contains("\"transitions_dropped\": 4"));
     assert!(text.contains("\"dropped\": 3"));
     assert!(text.contains("\"quality\": \"good\""));
     assert!(text.contains("current smoothness:"));
     assert!(text.contains("\"level\": \"watch\""));
     assert!(text.contains("path_jitter_elevated"));
     assert!(text.contains("input_delay_evidence:"));
+
+    let redacted = client.redacted_diagnostics_text();
+    assert!(!redacted.contains("76561198000000001"));
+    assert!(!redacted.contains("76561198000000002"));
+    assert!(redacted.contains("\"peer_slot\": 1"));
+    assert!(redacted.contains("\"peer_slot\": 2"));
+    assert!(redacted.contains("\"lifecycle_epoch\": 2"));
+}
+
+fn direct_peer(
+    peer_slot: u32,
+    peer_steam_id64: u64,
+    lifecycle_epoch: u64,
+    send_outcomes: (u64, u64, u64),
+    receive_outcomes: (u64, u64, u64),
+) -> DirectPeerHealthSnapshot {
+    let (send_queued, send_success, send_dropped) = send_outcomes;
+    let (receive_queued, receive_success, receive_dropped) = receive_outcomes;
+    let send = direct_direction(
+        DirectFlowDirection::Send,
+        send_queued,
+        send_success,
+        send_dropped,
+    );
+    let receive = direct_direction(
+        DirectFlowDirection::Receive,
+        receive_queued,
+        receive_success,
+        receive_dropped,
+    );
+    DirectPeerHealthSnapshot {
+        peer_slot,
+        peer_steam_id64,
+        latest_lifecycle_epoch: lifecycle_epoch,
+        active: true,
+        send: send.clone(),
+        receive: receive.clone(),
+        epochs: vec![DirectEpochHealthSnapshot {
+            lifecycle_epoch,
+            active: true,
+            send,
+            receive,
+        }],
+    }
+}
+
+fn direct_direction(
+    direction: DirectFlowDirection,
+    queued: u64,
+    resolved_success: u64,
+    dropped: u64,
+) -> DirectDirectionHealthSnapshot {
+    DirectDirectionHealthSnapshot {
+        direction,
+        queued,
+        resolved_success,
+        dropped,
+        current_queue_depth: 0,
+        max_queue_depth: 12,
+        rejections: if dropped == 0 {
+            Vec::new()
+        } else {
+            vec![DirectRejectionHealthSnapshot {
+                direction,
+                stage: DirectFlowStage::OutboundQueue,
+                reason: DirectDropReason::QueueFull,
+                count: dropped,
+            }]
+        },
+    }
 }
 
 #[test]

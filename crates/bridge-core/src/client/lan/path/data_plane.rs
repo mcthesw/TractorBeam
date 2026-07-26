@@ -21,11 +21,12 @@ use incidents::{
     update_incident_drop, update_incidents,
 };
 pub(super) use model::LanDataOutcome;
+use model::fold_directions;
 pub(in crate::client) use model::{
     LanDataDirection, LanDataDropReason, LanDataPlaneMonitor, LanDataPlaneSnapshot, LanDataStage,
-    LanIncidentTransition, LanIncidentTransitionKind,
+    LanDirectionSnapshot, LanEpochDataSnapshot, LanIncidentTransition, LanIncidentTransitionKind,
+    LanPeerDataSnapshot, LanRejectionSnapshot,
 };
-use model::{LanEpochDataSnapshot, LanPeerDataSnapshot, fold_directions};
 
 pub(super) const PER_PEER_PACKET_QUEUE_CAPACITY: usize = 256;
 const CLOSED_EPOCH_DETAIL_CAPACITY: usize = 8;

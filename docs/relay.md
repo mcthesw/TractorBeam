@@ -54,6 +54,15 @@ Relay applies packet and byte limits per connection, validates sender identity,
 Room membership, selected profile, UDP tuple, target membership, and monotonic
 frame window before forwarding. Duplicate and too-old frames are discarded.
 
+Gameplay delivery is isolated per frame. Target membership or availability
+changes, duplicate or stale frames, traffic-limit rejection, and target egress
+backpressure or dispatch failure drop only the current frame and update Relay
+metrics; they do not close the sender's TCP control session. Source-side
+authentication, identity, profile, and validated-path violations remain fatal.
+Relay does not retry an accepted frame or send a per-frame negative
+acknowledgement: retrying would consume the frame's monotonic identity and could
+amplify congestion, while gameplay recovery remains the Client's responsibility.
+
 Startup/bootstrap transitions, disconnect/resume outcomes, expiry, and anomalies
 are structured logs. Continuous workload, latency, queue pressure, and active
 state belong to metrics and are not repeated as periodic INFO logs. Never log

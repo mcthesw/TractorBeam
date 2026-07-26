@@ -14,10 +14,10 @@ use super::{SharedMetrics, run_with_listeners};
 use crate::{config::RelayConfig, metrics::RelayMetrics};
 use tractor_beam_relay_protocol::{
     BOOTSTRAP_SCHEMA, BootstrapMessage, BuildMetadata, CAP_RESUME, CAP_ROOM_PATH_PROBE,
-    CAP_TCP_DATA, CAP_UDP_DATA, ClientControl, CompatibilityReject, DataProfile, Frame,
-    PROTOCOL_MAJOR, PROTOCOL_MINOR, ProbeFrame, ProbePhase, ProtocolRange, ProtocolVersion,
-    RejectCode, SecretString, ServerControl, decode_bootstrap, decode_frame, decode_server_control,
-    encode_bootstrap, encode_client_control,
+    CAP_TCP_DATA, CAP_UDP_DATA, ClientControl, CompatibilityReject, DataFrame, DataProfile,
+    DeliveryStreamId, Frame, PROTOCOL_MAJOR, PROTOCOL_MINOR, ProbeFrame, ProbePhase, ProtocolRange,
+    ProtocolVersion, RejectCode, SecretString, ServerControl, decode_bootstrap, decode_frame,
+    decode_server_control, encode_bootstrap, encode_client_control,
 };
 
 fn test_metrics() -> SharedMetrics {
@@ -251,6 +251,138 @@ async fn rejected_tcp_probe_does_not_close_control_session() {
 }
 
 #[tokio::test]
+async fn target_not_joined_does_not_close_tcp_sender() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let config = RelayConfig {
+        pow_difficulty_bits: 0,
+        udp_bind: None,
+        ..RelayConfig::default()
+    };
+    let server = tokio::spawn(run_with_listeners(listener, None, config, test_metrics()));
+    let (mut peer, connection_id) = connect_joined_peer(address, 101).await;
+
+    peer.send(game_frame(connection_id, 1, 101, 999))
+        .await
+        .unwrap();
+    send_client_control(&mut peer, &ClientControl::ControlPing { id: 43 }).await;
+
+    assert!(matches!(
+        time::timeout(Duration::from_secs(1), receive_server_control(&mut peer))
+            .await
+            .unwrap(),
+        ServerControl::ControlPong { id: 43 }
+    ));
+    server.abort();
+}
+
+#[tokio::test]
+async fn target_unavailable_does_not_close_tcp_sender() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let config = RelayConfig {
+        pow_difficulty_bits: 0,
+        udp_bind: None,
+        ..RelayConfig::default()
+    };
+    let server = tokio::spawn(run_with_listeners(listener, None, config, test_metrics()));
+    let (mut first, first_connection_id) = connect_joined_peer(address, 101).await;
+    let (second, _) = connect_joined_peer(address, 202).await;
+    assert!(matches!(
+        receive_server_control(&mut first).await,
+        ServerControl::PeerPresenceUpdate { peers }
+            if peers.iter().any(|peer| peer.steam_id64 == 202)
+    ));
+
+    drop(second);
+    assert!(matches!(
+        time::timeout(Duration::from_secs(1), receive_server_control(&mut first))
+            .await
+            .unwrap(),
+        ServerControl::PeerPresenceUpdate { peers }
+            if peers.iter().any(|peer| {
+                peer.steam_id64 == 202
+                    && peer.presence == tractor_beam_relay_protocol::PeerPresence::Reconnecting
+            })
+    ));
+
+    first
+        .send(game_frame(first_connection_id, 1, 101, 202))
+        .await
+        .unwrap();
+    send_client_control(&mut first, &ClientControl::ControlPing { id: 44 }).await;
+    assert!(matches!(
+        time::timeout(Duration::from_secs(1), receive_server_control(&mut first))
+            .await
+            .unwrap(),
+        ServerControl::ControlPong { id: 44 }
+    ));
+    server.abort();
+}
+
+#[tokio::test]
+async fn duplicate_data_does_not_close_tcp_sender() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let config = RelayConfig {
+        pow_difficulty_bits: 0,
+        udp_bind: None,
+        ..RelayConfig::default()
+    };
+    let server = tokio::spawn(run_with_listeners(listener, None, config, test_metrics()));
+    let (mut first, first_connection_id) = connect_joined_peer(address, 101).await;
+    let (mut second, _) = connect_joined_peer(address, 202).await;
+    let _ = receive_server_control(&mut first).await;
+    let frame = game_frame(first_connection_id, 1, 101, 202);
+
+    first.send(frame.clone()).await.unwrap();
+    assert!(matches!(
+        time::timeout(Duration::from_secs(1), second.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .freeze(),
+        raw if matches!(decode_frame(raw.clone()).unwrap(), Frame::Data(_))
+    ));
+    first.send(frame).await.unwrap();
+    send_client_control(&mut first, &ClientControl::ControlPing { id: 45 }).await;
+
+    assert!(matches!(
+        time::timeout(Duration::from_secs(1), receive_server_control(&mut first))
+            .await
+            .unwrap(),
+        ServerControl::ControlPong { id: 45 }
+    ));
+    server.abort();
+}
+
+#[tokio::test]
+async fn sender_identity_mismatch_closes_tcp_sender() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let config = RelayConfig {
+        pow_difficulty_bits: 0,
+        udp_bind: None,
+        ..RelayConfig::default()
+    };
+    let server = tokio::spawn(run_with_listeners(listener, None, config, test_metrics()));
+    let (mut peer, connection_id) = connect_joined_peer(address, 101).await;
+
+    peer.send(game_frame(connection_id, 1, 999, 101))
+        .await
+        .unwrap();
+
+    assert!(
+        time::timeout(Duration::from_secs(1), peer.next())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn real_udp_socket_forwards_probe_without_tcp_fallback() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let tcp_address = listener.local_addr().unwrap();
@@ -350,6 +482,22 @@ async fn connect_joined_peer(
         panic!("expected join ready")
     };
     (framed, connection_id)
+}
+
+fn game_frame(connection_id: u64, frame_id: u64, from: u64, to: u64) -> Bytes {
+    Frame::Data(DataFrame {
+        connection_id,
+        frame_id,
+        from_steam_id64: from,
+        to_steam_id64: to,
+        delivery_stream_id: DeliveryStreamId::from_bytes([1; 16]),
+        delivery_sequence: frame_id,
+        channel: 0,
+        send_type: 0,
+        payload: Bytes::from_static(b"game"),
+    })
+    .encode()
+    .unwrap()
 }
 
 async fn connect_joined_udp_peer(

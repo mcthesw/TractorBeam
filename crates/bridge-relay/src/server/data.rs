@@ -1,4 +1,4 @@
-use std::{io, sync::Arc, time::Instant};
+use std::{fmt, io, sync::Arc, time::Instant};
 
 use bytes::Bytes;
 use tokio::net::UdpSocket;
@@ -10,10 +10,41 @@ use tractor_beam_relay_protocol::{
 
 use super::{SharedEstablishments, SharedMetrics, SharedState, SharedTcpEgress, invalid_data};
 use crate::{
-    domain::{DataDestination, DataSource, PeerId, PresenceBroadcast, RouteData, RouteProbe},
+    domain::{
+        DataDestination, DataSource, PeerId, PresenceBroadcast, RouteData, RouteProbe, StateError,
+    },
     metrics::RelayMetrics,
     protocol,
 };
+
+#[derive(Debug)]
+pub(super) enum ForwardDataError {
+    Route(StateError),
+    Dispatch(io::Error),
+}
+
+impl ForwardDataError {
+    pub(super) fn is_fatal_for_tcp_sender(&self) -> bool {
+        matches!(
+            self,
+            Self::Route(
+                StateError::UnknownConnection
+                    | StateError::SenderMismatch
+                    | StateError::ProfileMismatch
+                    | StateError::PathNotValidated
+            )
+        )
+    }
+}
+
+impl fmt::Display for ForwardDataError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Route(error) => error.fmt(formatter),
+            Self::Dispatch(error) => error.fmt(formatter),
+        }
+    }
+}
 
 pub(super) async fn udp_task(
     socket: Arc<UdpSocket>,
@@ -112,7 +143,7 @@ pub(super) async fn forward_data(
     egress: &SharedTcpEgress,
     udp: Option<&Arc<UdpSocket>>,
     metrics: &RelayMetrics,
-) -> io::Result<()> {
+) -> Result<(), ForwardDataError> {
     let frame_bytes = raw.len();
     let transport = source.transport_name();
     let started = Instant::now();
@@ -129,26 +160,29 @@ pub(super) async fn forward_data(
         })
     };
     let destination = destination.map_err(|error| {
-        match error {
-            crate::domain::StateError::DuplicateFrame | crate::domain::StateError::FrameTooOld => {
+        match &error {
+            StateError::DuplicateFrame | StateError::FrameTooOld => {
                 metrics.record_data(transport, "inbound", "game", "duplicate", 0);
             }
-            crate::domain::StateError::RateLimited => {
+            StateError::RateLimited => {
                 metrics.record_data(transport, "inbound", "game", "rate_limited", 0);
             }
             _ => metrics.record_data(transport, "inbound", "game", "rejected", 0),
         }
-        invalid_data(error)
+        ForwardDataError::Route(error)
     })?;
     metrics.record_data(transport, "inbound", "game", "accepted", frame_bytes);
     let result = match destination {
         DataDestination::Tcp(peer_id) => send_frame(egress, metrics, peer_id, "game", raw).await,
         DataDestination::Udp(address) => {
-            let socket = udp.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotConnected, "UDP listener unavailable")
-            })?;
-            socket.send_to(&raw, address).await?;
-            Ok(())
+            if let Some(socket) = udp {
+                socket.send_to(&raw, address).await.map(|_| ())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "UDP listener unavailable",
+                ))
+            }
         }
     };
     if result.is_ok() {
@@ -169,7 +203,7 @@ pub(super) async fn forward_data(
         );
     }
     metrics.record_dispatch_duration(transport, "game", started.elapsed().as_secs_f64());
-    result
+    result.map_err(ForwardDataError::Dispatch)
 }
 
 pub(super) async fn forward_probe(
@@ -279,4 +313,41 @@ pub(super) async fn send_frame(
         metrics.record_tcp_egress_queue_full(frame_type);
         io::Error::new(io::ErrorKind::WouldBlock, "TCP egress queue is full")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_forwarding_classifies_sender_violations_as_fatal() {
+        for error in [
+            StateError::UnknownConnection,
+            StateError::SenderMismatch,
+            StateError::ProfileMismatch,
+            StateError::PathNotValidated,
+        ] {
+            assert!(ForwardDataError::Route(error).is_fatal_for_tcp_sender());
+        }
+    }
+
+    #[test]
+    fn data_forwarding_keeps_delivery_failures_non_fatal() {
+        for error in [
+            StateError::DuplicateFrame,
+            StateError::FrameTooOld,
+            StateError::RateLimited,
+            StateError::TargetNotJoined,
+            StateError::TargetUnavailable,
+        ] {
+            assert!(!ForwardDataError::Route(error).is_fatal_for_tcp_sender());
+        }
+        assert!(
+            !ForwardDataError::Dispatch(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "TCP egress queue is full",
+            ))
+            .is_fatal_for_tcp_sender()
+        );
+    }
 }

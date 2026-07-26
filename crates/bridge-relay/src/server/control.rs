@@ -24,7 +24,7 @@ use tractor_beam_relay_protocol::{
 
 use super::{
     SharedState, SharedTcpEgress, TcpTaskContext,
-    data::{forward_data, forward_probe, send_presence},
+    data::{ForwardDataError, forward_data, forward_probe, send_presence},
     establishment::{EstablishmentAttempt, EstablishmentRegistry, Milestone, mark_span},
     invalid_data,
 };
@@ -330,7 +330,7 @@ async fn handle_tcp_frame(
             }
         }
         Frame::Data(data) => {
-            forward_data(
+            let result = forward_data(
                 data,
                 raw,
                 DataSource::Tcp(peer_id),
@@ -339,8 +339,8 @@ async fn handle_tcp_frame(
                 udp,
                 metrics,
             )
-            .await?;
-            Ok(false)
+            .await;
+            handle_tcp_data_result(result)
         }
         Frame::Probe(probe) => {
             if let Err(error) = forward_probe(
@@ -362,6 +362,14 @@ async fn handle_tcp_frame(
             io::ErrorKind::InvalidData,
             "client sent server control frame",
         )),
+    }
+}
+
+fn handle_tcp_data_result(result: Result<(), ForwardDataError>) -> io::Result<bool> {
+    match result {
+        Ok(()) => Ok(false),
+        Err(error) if error.is_fatal_for_tcp_sender() => Err(invalid_data(error)),
+        Err(_) => Ok(false),
     }
 }
 
@@ -467,5 +475,29 @@ fn relay_build() -> BuildMetadata {
     BuildMetadata {
         version: crate::build_info::version_label(),
         git_hash: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::StateError;
+
+    #[test]
+    fn target_egress_backpressure_does_not_stop_tcp_sender() {
+        let result = handle_tcp_data_result(Err(ForwardDataError::Dispatch(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "TCP egress queue is full",
+        ))));
+
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn source_violation_stops_tcp_sender() {
+        let result =
+            handle_tcp_data_result(Err(ForwardDataError::Route(StateError::SenderMismatch)));
+
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
     }
 }

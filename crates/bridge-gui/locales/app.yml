@@ -296,6 +296,9 @@ health.runtime_rtt:
 health.queue_drops:
   zh_CN: "队列丢包"
   en_US: "Queue drops"
+health.direct_receive_drops:
+  zh_CN: "直连接收丢包"
+  en_US: "Direct receive drops"
 health.network_drops:
   zh_CN: "链路丢包"
   en_US: "Network drops"

@@ -20,6 +20,7 @@ pub enum SmoothnessReason {
     PathRttElevated,
     PathLoss,
     PathJitterElevated,
+    DirectReceiveHandoffDrop,
     LocalQueueDrop,
     NetworkSendDrop,
     DeliveryGap,
@@ -174,6 +175,9 @@ fn path_score(path: &RoomPathQualitySnapshot) -> (u16, u128, u128) {
 
 fn map_local_reason(reason: &SessionQualityReason) -> Option<SmoothnessReason> {
     match reason {
+        SessionQualityReason::DirectReceiveHandoffDrop => {
+            Some(SmoothnessReason::DirectReceiveHandoffDrop)
+        }
         SessionQualityReason::LocalQueueDrop => Some(SmoothnessReason::LocalQueueDrop),
         SessionQualityReason::NetworkSendDrop => Some(SmoothnessReason::NetworkSendDrop),
         SessionQualityReason::DeliveryGap => Some(SmoothnessReason::DeliveryGap),
@@ -232,6 +236,24 @@ mod tests {
                 SmoothnessReason::PathLoss,
                 SmoothnessReason::PathJitterElevated,
             ]
+        );
+    }
+
+    #[test]
+    fn direct_receive_handoff_drop_keeps_its_own_smoothness_reason() {
+        let health = SessionHealthSnapshot {
+            quality: SessionQuality::Poor,
+            confidence: QualityConfidence::Medium,
+            reasons: vec![SessionQualityReason::DirectReceiveHandoffDrop],
+            ..SessionHealthSnapshot::default()
+        };
+
+        let estimate = assess_smoothness(Some(&health), &[], 10);
+
+        assert_eq!(estimate.level, SessionQuality::Poor);
+        assert_eq!(
+            estimate.reasons,
+            [SmoothnessReason::DirectReceiveHandoffDrop]
         );
     }
 

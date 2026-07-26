@@ -231,7 +231,7 @@ fn data_plane_stalled(health: &SessionHealthSnapshot) -> bool {
 
 fn incident_summary(kind: ClientIncidentKind, health: &SessionHealthSnapshot) -> String {
     let base = format!(
-        "elapsed={}s hook_in={} network_recv={} hook_out_sends={} rtt_sent={} rtt_recv={} rtt_timeout={} queue_drops={} delivery_gaps={}",
+        "elapsed={}s hook_in={} network_recv={} hook_out_sends={} rtt_sent={} rtt_recv={} rtt_timeout={} queue_drops={} direct_receive_drops={} delivery_gaps={}",
         health.elapsed_seconds,
         health.hook_in_recv.packets,
         health.network_recv.packets,
@@ -240,6 +240,7 @@ fn incident_summary(kind: ClientIncidentKind, health: &SessionHealthSnapshot) ->
         health.runtime_rtt.received,
         health.runtime_rtt.timed_out,
         health.queues.total_dropped(),
+        health.direct_receive.dropped,
         health.delivery.confirmed_gaps,
     );
     match kind {

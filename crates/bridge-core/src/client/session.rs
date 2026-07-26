@@ -41,12 +41,14 @@ use super::{
 };
 
 mod data_plane;
+mod direct_receive;
 mod lan_route;
 
 use data_plane::{
     RelayTransportTaskContext, emit_health_summary, health_snapshot_task, hook_in_task,
     hook_out_task, observe_health, relay_transport_task,
 };
+use direct_receive::DirectReceiveObserver;
 use lan_route::lan_route_task;
 
 const EVENT_QUEUE_CAPACITY: usize = 512;

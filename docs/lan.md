@@ -45,4 +45,8 @@ before switching routes.
 
 Diagnostics report bind, probe, admission, path, and gameplay stages plus the
 nominated endpoint pair for each Peer. Exported bundles redact IP addresses and
-never include the Session Credential, path identifier, or path token.
+never include the Session Credential, path identifier, or path token. Session
+health and the Statistics page report Direct receive attempts and drops
+separately from network-send and Native Hook queue drops. A saturated local
+receive handoff emits one onset record, aggregates repeated drops, and emits one
+recovery record when delivery resumes.

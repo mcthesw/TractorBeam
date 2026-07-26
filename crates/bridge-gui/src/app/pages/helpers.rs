@@ -203,6 +203,15 @@ pub(super) fn session_health_summary(ui: &mut egui::Ui, state: &RuntimeState) {
             ui.monospace(snapshot.queues.total_dropped().to_string());
             ui.end_row();
 
+            if snapshot.direct_receive.enabled {
+                ui.label(t!("health.direct_receive_drops"));
+                ui.monospace(format!(
+                    "{} / {}",
+                    snapshot.direct_receive.dropped, snapshot.direct_receive.attempted
+                ));
+                ui.end_row();
+            }
+
             ui.label(t!("health.network_drops"));
             ui.monospace(snapshot.network_send_dropped.to_string());
             ui.end_row();

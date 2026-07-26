@@ -89,7 +89,11 @@ fn runtime_rtt_timeout_is_nonfatal() {
         )
     });
 
-    assert!(event.is_some());
+    assert!(matches!(
+        event,
+        Some(RuntimeEvent::SessionHealthSnapshot(snapshot))
+            if !snapshot.direct_receive.enabled
+    ));
     handle.stop();
     relay.stop();
 }
@@ -173,6 +177,8 @@ async fn lan_mode_attaches_existing_room_without_relay() {
     .await
     .expect("LAN sessions should emit periodic health snapshots");
     assert!(!health_snapshot.runtime_rtt.enabled);
+    assert!(health_snapshot.direct_receive.enabled);
+    assert_eq!(health_snapshot.direct_receive.attempted, 0);
     cancellation.cancel();
     shutdown_tasks(tasks.route, &event_tx).await;
     shutdown_tasks(tasks.support, &event_tx).await;

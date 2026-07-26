@@ -27,8 +27,9 @@ use super::membership::PeerLifecycleEpoch;
 use candidate::{nonzero_random, path_offer, select_candidate_pair};
 pub(in crate::client) use data::{LanGameSendError, LanGameSendObserver, LanGameSendSuccess};
 pub(in crate::client) use data_plane::{
-    LanDataDirection, LanDataDropReason, LanDataPlaneMonitor, LanDataStage, LanInboundReceipt,
-    LanInboundReceiver, LanIncidentTransition, LanIncidentTransitionKind,
+    LanDataDirection, LanDataDropReason, LanDataPlaneMonitor, LanDataPlaneSnapshot, LanDataStage,
+    LanDirectionSnapshot, LanEpochDataSnapshot, LanInboundReceipt, LanInboundReceiver,
+    LanIncidentTransition, LanIncidentTransitionKind, LanPeerDataSnapshot, LanRejectionSnapshot,
 };
 use data_plane::{
     LanDataOutcome, LanDataPlaneLedger, PER_PEER_PACKET_QUEUE_CAPACITY, PeerPathDataPlane,

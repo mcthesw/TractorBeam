@@ -296,9 +296,18 @@ health.runtime_rtt:
 health.queue_drops:
   zh_CN: "队列丢包"
   en_US: "Queue drops"
-health.direct_receive_drops:
-  zh_CN: "直连接收丢包"
-  en_US: "Direct receive drops"
+health.direct_loss:
+  zh_CN: "丢包"
+  en_US: "Packet loss"
+health.receive_short:
+  zh_CN: "收"
+  en_US: "Receive"
+health.send_short:
+  zh_CN: "发"
+  en_US: "Send"
+help.health.direct_loss:
+  zh_CN: "最近一次统计周期内，本机与各玩家直连传输的收发丢包；详细路径信息可在诊断包中查看"
+  en_US: "Recent local Direct receive and send loss; per-player path details are available in the Diagnostics Bundle"
 health.network_drops:
   zh_CN: "链路丢包"
   en_US: "Network drops"

@@ -199,22 +199,25 @@ pub(super) fn session_health_summary(ui: &mut egui::Ui, state: &RuntimeState) {
             ui.monospace(display_latency_ms(snapshot.runtime_rtt.latency.p95_ms));
             ui.end_row();
 
-            ui.label(t!("health.queue_drops"));
-            ui.monospace(snapshot.queues.total_dropped().to_string());
-            ui.end_row();
-
-            if snapshot.direct_receive.enabled {
-                ui.label(t!("health.direct_receive_drops"));
+            if snapshot.direct.enabled {
+                label_with_help(ui, t!("health.direct_loss"), t!("help.health.direct_loss"));
                 ui.monospace(format!(
-                    "{} / {}",
-                    snapshot.direct_receive.dropped, snapshot.direct_receive.attempted
+                    "{} {} · {} {}",
+                    t!("health.receive_short"),
+                    display_direct_loss(snapshot.window.direct.receive),
+                    t!("health.send_short"),
+                    display_direct_loss(snapshot.window.direct.send),
                 ));
                 ui.end_row();
-            }
+            } else {
+                ui.label(t!("health.queue_drops"));
+                ui.monospace(snapshot.queues.total_dropped().to_string());
+                ui.end_row();
 
-            ui.label(t!("health.network_drops"));
-            ui.monospace(snapshot.network_send_dropped.to_string());
-            ui.end_row();
+                ui.label(t!("health.network_drops"));
+                ui.monospace(snapshot.network_send_dropped.to_string());
+                ui.end_row();
+            }
 
             ui.label(t!("health.delivery_gaps"));
             ui.monospace(snapshot.delivery.confirmed_gaps.to_string());
@@ -276,9 +279,39 @@ pub(super) fn display_latency_ms(value: Option<u64>) -> String {
     )
 }
 
+fn display_direct_loss(outcomes: DirectOutcomeWindow) -> String {
+    outcomes
+        .loss_percent()
+        .map_or_else(|| "—".to_owned(), |percent| format!("{percent}%"))
+}
+
 pub(super) fn unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_loss_display_distinguishes_no_outcome_zero_and_rounded_loss() {
+        assert_eq!(display_direct_loss(DirectOutcomeWindow::default()), "—");
+        assert_eq!(
+            display_direct_loss(DirectOutcomeWindow {
+                resolved_success: 12,
+                dropped: 0,
+            }),
+            "0%"
+        );
+        assert_eq!(
+            display_direct_loss(DirectOutcomeWindow {
+                resolved_success: 17,
+                dropped: 3,
+            }),
+            "15%"
+        );
+    }
 }

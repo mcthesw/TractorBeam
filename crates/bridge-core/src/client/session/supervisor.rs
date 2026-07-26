@@ -64,7 +64,12 @@ pub(super) async fn supervise_session(
             shutdown_tasks(runtime_tasks.route, &event_tx).await;
             shutdown_tasks(runtime_tasks.support, &event_tx).await;
             emit_direct_summary(&event_tx, &runtime_tasks.direct_monitor).await;
-            emit_health_summary(&event_tx, &runtime_tasks.health).await;
+            emit_health_summary(
+                &event_tx,
+                &runtime_tasks.health,
+                &runtime_tasks.direct_monitor,
+            )
+            .await;
         }
         Err(error) => {
             let kind = error.kind();
@@ -249,7 +254,6 @@ pub(super) async fn start_runtime_tasks_inner(
                     "Direct LAN room data plane is already attached",
                 )
             })?;
-            observe_health(&health, SessionHealth::enable_direct_receive_handoff);
             tasks.spawn(direct_hook_in_task(
                 room,
                 hook_packets_rx,
@@ -280,6 +284,7 @@ pub(super) async fn start_runtime_tasks_inner(
             event_tx.clone(),
             cancellation.clone(),
             health.clone(),
+            direct_monitor.clone(),
             Duration::from_secs(config.session_health.snapshot_interval_seconds),
         ));
     }

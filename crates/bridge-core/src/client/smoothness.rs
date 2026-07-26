@@ -20,7 +20,8 @@ pub enum SmoothnessReason {
     PathRttElevated,
     PathLoss,
     PathJitterElevated,
-    DirectReceiveHandoffDrop,
+    DirectSendDrop,
+    DirectReceiveDrop,
     LocalQueueDrop,
     NetworkSendDrop,
     DeliveryGap,
@@ -175,9 +176,8 @@ fn path_score(path: &RoomPathQualitySnapshot) -> (u16, u128, u128) {
 
 fn map_local_reason(reason: &SessionQualityReason) -> Option<SmoothnessReason> {
     match reason {
-        SessionQualityReason::DirectReceiveHandoffDrop => {
-            Some(SmoothnessReason::DirectReceiveHandoffDrop)
-        }
+        SessionQualityReason::DirectSendDrop => Some(SmoothnessReason::DirectSendDrop),
+        SessionQualityReason::DirectReceiveDrop => Some(SmoothnessReason::DirectReceiveDrop),
         SessionQualityReason::LocalQueueDrop => Some(SmoothnessReason::LocalQueueDrop),
         SessionQualityReason::NetworkSendDrop => Some(SmoothnessReason::NetworkSendDrop),
         SessionQualityReason::DeliveryGap => Some(SmoothnessReason::DeliveryGap),
@@ -240,11 +240,14 @@ mod tests {
     }
 
     #[test]
-    fn direct_receive_handoff_drop_keeps_its_own_smoothness_reason() {
+    fn direct_flow_drops_keep_directional_smoothness_reasons() {
         let health = SessionHealthSnapshot {
             quality: SessionQuality::Poor,
             confidence: QualityConfidence::Medium,
-            reasons: vec![SessionQualityReason::DirectReceiveHandoffDrop],
+            reasons: vec![
+                SessionQualityReason::DirectSendDrop,
+                SessionQualityReason::DirectReceiveDrop,
+            ],
             ..SessionHealthSnapshot::default()
         };
 
@@ -253,7 +256,10 @@ mod tests {
         assert_eq!(estimate.level, SessionQuality::Poor);
         assert_eq!(
             estimate.reasons,
-            [SmoothnessReason::DirectReceiveHandoffDrop]
+            [
+                SmoothnessReason::DirectSendDrop,
+                SmoothnessReason::DirectReceiveDrop,
+            ]
         );
     }
 

@@ -74,8 +74,7 @@ pub(super) async fn direct_hook_in_task(
                     health.observe_hook_in_recv(size, Instant::now());
                 });
                 let packet = delivery_streams.assign_hook_packet(packet);
-                let accepted = room.try_send_game(packet).is_ok();
-                observe_health(&health, |health| health.observe_outbound_enqueue(accepted));
+                let _ = room.try_send_game(packet);
             }
         }
     }
@@ -126,9 +125,6 @@ pub(super) async fn direct_hook_out_task(
             .with_active(|| to_hook.try_send_recoverable(delivery.packet));
         match result {
             None => {
-                observe_health(&health, |health| {
-                    health.observe_direct_receive_handoff(false);
-                });
                 delivery
                     .receipt
                     .complete_dropped(crate::client::lan::LanDataDropReason::GenerationClosed);
@@ -136,8 +132,6 @@ pub(super) async fn direct_hook_out_task(
             Some(Ok(())) => {
                 observe_health(&health, |health| {
                     health.observe_hook_out_send_duration(started.elapsed());
-                    health.observe_inbound_enqueue(true);
-                    health.observe_direct_receive_handoff(true);
                 });
                 send_event(
                     &event_tx,
@@ -163,9 +157,6 @@ pub(super) async fn direct_hook_out_task(
             }
             Some(Err(hook_ipc::ClientIpcTrySendError::Disconnected(packet))) => {
                 drop(packet);
-                observe_health(&health, |health| {
-                    health.observe_direct_receive_handoff(false);
-                });
                 delivery
                     .receipt
                     .complete_dropped(crate::client::lan::LanDataDropReason::HookDisconnected);

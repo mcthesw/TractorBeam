@@ -394,6 +394,7 @@ pub(super) async fn health_snapshot_task(
     event_tx: RuntimeEventSender,
     cancellation: CancellationToken,
     health: Option<SharedSessionHealth>,
+    direct_monitor: Option<crate::client::lan::LanDataPlaneMonitor>,
     interval: Duration,
 ) -> io::Result<()> {
     let mut tick = time::interval(interval);
@@ -401,7 +402,7 @@ pub(super) async fn health_snapshot_task(
     loop {
         tokio::select! {
             () = cancellation.cancelled() => return Ok(()),
-            _ = tick.tick() => emit_health_snapshot(&event_tx, &health),
+            _ = tick.tick() => emit_health_snapshot(&event_tx, &health, &direct_monitor),
         }
     }
 }
@@ -424,8 +425,12 @@ fn next_health_ping(health: &Option<SharedSessionHealth>) -> Option<u64> {
         .and_then(|health| health.lock().ok()?.next_health_ping(Instant::now()))
 }
 
-fn emit_health_snapshot(event_tx: &RuntimeEventSender, health: &Option<SharedSessionHealth>) {
-    if let Some(snapshot) = current_health_snapshot(health) {
+fn emit_health_snapshot(
+    event_tx: &RuntimeEventSender,
+    health: &Option<SharedSessionHealth>,
+    direct_monitor: &Option<crate::client::lan::LanDataPlaneMonitor>,
+) {
+    if let Some(snapshot) = current_health_snapshot(health, direct_monitor) {
         send_event(
             event_tx,
             log_event(LogLevel::Info, snapshot.compact_log_line("Session health")),
@@ -440,8 +445,9 @@ fn emit_health_snapshot(event_tx: &RuntimeEventSender, health: &Option<SharedSes
 pub(super) async fn emit_health_summary(
     event_tx: &RuntimeEventSender,
     health: &Option<SharedSessionHealth>,
+    direct_monitor: &Option<crate::client::lan::LanDataPlaneMonitor>,
 ) {
-    if let Some(snapshot) = current_health_snapshot(health) {
+    if let Some(snapshot) = current_health_snapshot(health, direct_monitor) {
         send_event(
             event_tx,
             log_event(
@@ -457,10 +463,15 @@ pub(super) async fn emit_health_summary(
     }
 }
 
-fn current_health_snapshot(health: &Option<SharedSessionHealth>) -> Option<SessionHealthSnapshot> {
-    health
-        .as_ref()
-        .and_then(|health| Some(health.lock().ok()?.snapshot(Instant::now())))
+fn current_health_snapshot(
+    health: &Option<SharedSessionHealth>,
+    direct_monitor: &Option<crate::client::lan::LanDataPlaneMonitor>,
+) -> Option<SessionHealthSnapshot> {
+    let mut health = health.as_ref()?.lock().ok()?;
+    if let Some(monitor) = direct_monitor {
+        health.refresh_direct(monitor.snapshot());
+    }
+    Some(health.snapshot(Instant::now()))
 }
 
 #[cfg(test)]

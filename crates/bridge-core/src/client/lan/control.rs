@@ -32,7 +32,9 @@ use super::{
         run_membership_dialer,
     },
     membership::Membership,
-    path::{LanInboundHandoffObserver, LanPeerPathState, PathManager},
+    path::{
+        LanDataPlaneMonitor, LanGameSendObserver, LanInboundReceiver, LanPeerPathState, PathManager,
+    },
 };
 use crate::client::{LanJoinCode, LogLevel, SessionCredential, emit_client_log_event};
 
@@ -75,7 +77,8 @@ pub struct LanControlPlane {
     cancellation: CancellationToken,
     listener_tasks: Vec<JoinHandle<()>>,
     background_tasks: Vec<JoinHandle<()>>,
-    inbound: Mutex<Option<mpsc::Receiver<crate::client::packet_flow::InboundGamePacket>>>,
+    inbound: Mutex<Option<LanInboundReceiver>>,
+    data_monitor: LanDataPlaneMonitor,
 }
 
 pub(super) struct ControlShared {
@@ -185,7 +188,7 @@ impl LanControlPlane {
             .iter()
             .map(|(_, socket, candidate)| (socket.clone(), candidate.priority))
             .collect();
-        let (paths, inbound) =
+        let (paths, inbound, data_monitor) =
             PathManager::new(identity, path_sockets, cancellation.clone()).await?;
         let (dial_tx, dial_rx) = mpsc::unbounded_channel();
         let shared = Arc::new(ControlShared {
@@ -211,6 +214,7 @@ impl LanControlPlane {
             listener_tasks,
             background_tasks,
             inbound: Mutex::new(Some(inbound)),
+            data_monitor,
         })
     }
 
@@ -298,44 +302,40 @@ impl LanControlPlane {
         self.shared.paths.states()
     }
 
+    #[cfg(test)]
     pub(in crate::client) async fn send_game(
         &self,
         packet: crate::client::packet_flow::OutboundGamePacket,
     ) -> Result<(), super::path::LanGameSendError> {
-        self.shared.paths.send_game(packet).await
+        self.shared.paths.try_send_game(packet)
     }
 
-    pub(in crate::client) fn take_inbound_with_observer(
+    pub(in crate::client) fn try_send_game(
         &self,
-        observer: Arc<dyn LanInboundHandoffObserver>,
-    ) -> Option<mpsc::Receiver<crate::client::packet_flow::InboundGamePacket>> {
+        packet: crate::client::packet_flow::OutboundGamePacket,
+    ) -> Result<(), super::path::LanGameSendError> {
+        self.shared.paths.try_send_game(packet)
+    }
+
+    pub(in crate::client) fn take_data_plane(
+        &self,
+        send_observer: Arc<dyn LanGameSendObserver>,
+    ) -> Option<(LanInboundReceiver, LanDataPlaneMonitor)> {
         let mut inbound = self
             .inbound
             .lock()
             .expect("LAN inbound queue lock poisoned");
         let receiver = inbound.take()?;
-        if self.shared.paths.attach_inbound_observer(observer).is_err() {
+        if self
+            .shared
+            .paths
+            .attach_send_observer(send_observer)
+            .is_err()
+        {
             *inbound = Some(receiver);
             return None;
         }
-        Some(receiver)
-    }
-
-    pub(in crate::client) fn finish_inbound_observer(
-        &self,
-        now: std::time::Instant,
-    ) -> Option<super::LanInboundHandoffIncidentSummary> {
-        self.shared.paths.finish_inbound_observer(now)
-    }
-
-    #[cfg(test)]
-    pub(in crate::client) fn take_inbound(
-        &self,
-    ) -> Option<mpsc::Receiver<crate::client::packet_flow::InboundGamePacket>> {
-        self.inbound
-            .lock()
-            .expect("LAN inbound queue lock poisoned")
-            .take()
+        Some((receiver, self.data_monitor.clone()))
     }
 
     #[must_use]
@@ -410,6 +410,7 @@ impl LanControlPlane {
         }
         tokio::task::yield_now().await;
         self.cancellation.cancel();
+        self.shared.paths.stop_data_workers().await;
     }
 }
 

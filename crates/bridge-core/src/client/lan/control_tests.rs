@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use tractor_beam_direct_protocol::InstanceId;
 
 use super::*;
@@ -5,6 +7,17 @@ use crate::client::{
     LanPeerPathStatus,
     packet_flow::{DeliveryStreamId, OutboundGamePacket},
 };
+
+#[derive(Default)]
+struct TestSendObserver {
+    peers: Mutex<Vec<u64>>,
+}
+
+impl LanGameSendObserver for TestSendObserver {
+    fn observe(&self, success: super::super::path::LanGameSendSuccess, _duration: Duration) {
+        self.peers.lock().unwrap().push(success.peer);
+    }
+}
 
 fn loopback_adapter(id: u32) -> LanAdapterAddress {
     LanAdapterAddress {
@@ -319,9 +332,12 @@ async fn direct_gameplay_is_targeted_bounded_and_accepts_delivery_reordering() {
     let alice = room(1, credential).await;
     let bob = room(2, credential).await;
     let carol = room(3, credential).await;
-    let mut alice_inbound = alice.take_inbound().unwrap();
-    let mut bob_inbound = bob.take_inbound().unwrap();
-    let mut carol_inbound = carol.take_inbound().unwrap();
+    let alice_observer = Arc::new(TestSendObserver::default());
+    let bob_observer = Arc::new(TestSendObserver::default());
+    let carol_observer = Arc::new(TestSendObserver::default());
+    let (mut alice_inbound, _) = alice.take_data_plane(alice_observer.clone()).unwrap();
+    let (mut bob_inbound, _) = bob.take_data_plane(bob_observer.clone()).unwrap();
+    let (mut carol_inbound, _) = carol.take_data_plane(carol_observer.clone()).unwrap();
     let invitation = alice.invitation();
     bob.join(&invitation, invitation.control_endpoints[0])
         .await
@@ -342,12 +358,63 @@ async fn direct_gameplay_is_targeted_bounded_and_accepts_delivery_reordering() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(received.from_steam_id64, identity(1).steam_id64);
-    assert_eq!(received.delivery_sequence, 7);
-    assert_eq!(received.channel, 3);
-    assert_eq!(received.send_type, 1);
-    assert_eq!(received.payload, bytes::Bytes::from_static(b"hello"));
+    assert_eq!(received.packet.from_steam_id64, identity(1).steam_id64);
+    assert_eq!(received.packet.delivery_sequence, 7);
+    assert_eq!(received.packet.channel, 3);
+    assert_eq!(received.packet.send_type, 1);
+    assert_eq!(received.packet.payload, bytes::Bytes::from_static(b"hello"));
+    received.receipt.complete_accepted();
     assert!(carol_inbound.try_recv().is_err());
+
+    alice
+        .send_game(game_packet(identity(3).steam_id64, 8, b"a-to-c"))
+        .await
+        .unwrap();
+    bob.send_game(game_packet(identity(1).steam_id64, 9, b"b-to-a"))
+        .await
+        .unwrap();
+    bob.send_game(game_packet(identity(3).steam_id64, 10, b"b-to-c"))
+        .await
+        .unwrap();
+    carol
+        .send_game(game_packet(identity(1).steam_id64, 11, b"c-to-a"))
+        .await
+        .unwrap();
+    carol
+        .send_game(game_packet(identity(2).steam_id64, 12, b"c-to-b"))
+        .await
+        .unwrap();
+
+    let mut alice_sources = Vec::new();
+    for _ in 0..2 {
+        let delivery = time::timeout(Duration::from_secs(2), alice_inbound.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        alice_sources.push(delivery.packet.from_steam_id64);
+        delivery.receipt.complete_accepted();
+    }
+    alice_sources.sort_unstable();
+    assert_eq!(alice_sources, [2, 3]);
+
+    let delivery = time::timeout(Duration::from_secs(2), bob_inbound.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(delivery.packet.from_steam_id64, 3);
+    delivery.receipt.complete_accepted();
+
+    let mut carol_sources = Vec::new();
+    for _ in 0..2 {
+        let delivery = time::timeout(Duration::from_secs(2), carol_inbound.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        carol_sources.push(delivery.packet.from_steam_id64);
+        delivery.receipt.complete_accepted();
+    }
+    carol_sources.sort_unstable();
+    assert_eq!(carol_sources, [1, 2]);
 
     alice
         .send_game(game_packet(identity(2).steam_id64, 7, b"stale"))
@@ -357,8 +424,12 @@ async fn direct_gameplay_is_targeted_bounded_and_accepts_delivery_reordering() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(reordered.delivery_sequence, 7);
-    assert_eq!(reordered.payload, bytes::Bytes::from_static(b"stale"));
+    assert_eq!(reordered.packet.delivery_sequence, 7);
+    assert_eq!(
+        reordered.packet.payload,
+        bytes::Bytes::from_static(b"stale")
+    );
+    reordered.receipt.complete_accepted();
     assert!(
         alice
             .send_game(game_packet(99, 8, b"missing"))
@@ -366,6 +437,15 @@ async fn direct_gameplay_is_targeted_bounded_and_accepts_delivery_reordering() {
             .is_err()
     );
     assert!(alice_inbound.try_recv().is_err());
+    let mut alice_successes = alice_observer.peers.lock().unwrap().clone();
+    let mut bob_successes = bob_observer.peers.lock().unwrap().clone();
+    let mut carol_successes = carol_observer.peers.lock().unwrap().clone();
+    alice_successes.sort_unstable();
+    bob_successes.sort_unstable();
+    carol_successes.sort_unstable();
+    assert_eq!(alice_successes, [2, 2, 3]);
+    assert_eq!(bob_successes, [1, 3]);
+    assert_eq!(carol_successes, [1, 2]);
 
     alice.shutdown().await;
     bob.shutdown().await;

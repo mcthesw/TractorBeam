@@ -25,19 +25,46 @@ pub(super) struct LinkKey {
     pub initiator: PeerIdentity,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(super) struct PeerLifecycleEpoch(u64);
+
+impl PeerLifecycleEpoch {
+    pub(super) const UNATTACHED: Self = Self(0);
+
+    #[must_use]
+    pub(super) const fn get(self) -> u64 {
+        self.0
+    }
+
+    #[cfg(test)]
+    pub(super) const fn test(value: u64) -> Self {
+        Self(value)
+    }
+}
+
 pub(super) enum RegisterResult {
-    Accepted { replaced: Option<ActiveLink> },
+    Accepted {
+        replaced: Option<ActiveLink>,
+        epoch: PeerLifecycleEpoch,
+    },
     DuplicateLost,
     DuplicateSteamIdentity,
     SelfConnection,
+    LifecycleExhausted,
+}
+
+struct RegisteredLink {
+    epoch: PeerLifecycleEpoch,
+    link: ActiveLink,
 }
 
 pub(super) struct Membership {
     local: PeerDescriptor,
     hints: BTreeMap<PeerIdentity, PeerDescriptor>,
-    active: HashMap<PeerIdentity, ActiveLink>,
+    active: HashMap<PeerIdentity, RegisteredLink>,
     dialing: HashSet<PeerIdentity>,
     recovery_deadlines: HashMap<PeerIdentity, Instant>,
+    next_lifecycle_epoch: Option<u64>,
 }
 
 impl Membership {
@@ -48,6 +75,7 @@ impl Membership {
             active: HashMap::new(),
             dialing: HashSet::new(),
             recovery_deadlines: HashMap::new(),
+            next_lifecycle_epoch: Some(1),
         }
     }
 
@@ -58,8 +86,11 @@ impl Membership {
     pub fn snapshot(&self) -> Vec<PeerDescriptor> {
         let mut peers = BTreeMap::new();
         peers.insert(self.local.identity, self.local.clone());
-        for link in self.active.values() {
-            peers.insert(link.descriptor.identity, link.descriptor.clone());
+        for registered in self.active.values() {
+            peers.insert(
+                registered.link.descriptor.identity,
+                registered.link.descriptor.clone(),
+            );
         }
         for (identity, descriptor) in &self.hints {
             peers.entry(*identity).or_insert_with(|| descriptor.clone());
@@ -73,9 +104,9 @@ impl Membership {
             if peer.identity == self.local.identity
                 || peer.identity.steam_id64 == self.local.identity.steam_id64
                 || self.active.contains_key(&peer.identity)
-                || self.active.values().any(|link| {
-                    link.descriptor.identity.steam_id64 == peer.identity.steam_id64
-                        && link.descriptor.identity != peer.identity
+                || self.active.values().any(|registered| {
+                    registered.link.descriptor.identity.steam_id64 == peer.identity.steam_id64
+                        && registered.link.descriptor.identity != peer.identity
                 })
             {
                 continue;
@@ -112,39 +143,53 @@ impl Membership {
         {
             return RegisterResult::SelfConnection;
         }
-        if self.active.values().any(|existing| {
-            existing.descriptor.identity.steam_id64 == identity.steam_id64
-                && existing.descriptor.identity != identity
+        if self.active.values().any(|registered| {
+            registered.link.descriptor.identity.steam_id64 == identity.steam_id64
+                && registered.link.descriptor.identity != identity
         }) {
             return RegisterResult::DuplicateSteamIdentity;
         }
-        let replaced = if let Some(existing) = self.active.get(&identity) {
-            if existing.key <= link.key {
+        let should_replace = if let Some(existing) = self.active.get(&identity) {
+            if existing.link.key <= link.key {
                 return RegisterResult::DuplicateLost;
             }
-            self.active.remove(&identity)
+            true
         } else {
-            None
+            false
         };
+        let Some(next_epoch) = self.next_lifecycle_epoch else {
+            return RegisterResult::LifecycleExhausted;
+        };
+        let epoch = PeerLifecycleEpoch(next_epoch);
+        self.next_lifecycle_epoch = next_epoch.checked_add(1);
+        let replaced = should_replace
+            .then(|| self.active.remove(&identity))
+            .flatten()
+            .map(|registered| registered.link);
         self.hints.insert(identity, link.descriptor.clone());
         self.hints.retain(|hint_identity, _| {
             hint_identity.steam_id64 != identity.steam_id64 || *hint_identity == identity
         });
         self.recovery_deadlines.remove(&identity);
         self.dialing.remove(&identity);
-        self.active.insert(identity, link);
-        RegisterResult::Accepted { replaced }
+        self.active.insert(identity, RegisteredLink { epoch, link });
+        RegisterResult::Accepted { replaced, epoch }
     }
 
-    pub fn remove_link(&mut self, identity: PeerIdentity, key: LinkKey, graceful: bool) -> bool {
+    pub fn remove_link(
+        &mut self,
+        identity: PeerIdentity,
+        key: LinkKey,
+        graceful: bool,
+    ) -> Option<PeerLifecycleEpoch> {
         if self
             .active
             .get(&identity)
-            .is_none_or(|link| link.key != key)
+            .is_none_or(|registered| registered.link.key != key)
         {
-            return false;
+            return None;
         }
-        self.active.remove(&identity);
+        let epoch = self.active.remove(&identity)?.epoch;
         if graceful {
             self.hints.remove(&identity);
             self.recovery_deadlines.remove(&identity);
@@ -152,7 +197,7 @@ impl Membership {
             self.recovery_deadlines
                 .insert(identity, Instant::now() + PEER_RECOVERY_HORIZON);
         }
-        true
+        Some(epoch)
     }
 
     pub fn expire(&mut self, now: Instant) {
@@ -184,20 +229,23 @@ impl Membership {
     }
 
     pub fn links(&self) -> Vec<ActiveLink> {
-        self.active.values().cloned().collect()
+        self.active
+            .values()
+            .map(|registered| registered.link.clone())
+            .collect()
     }
 
     pub fn is_active_link(&self, identity: PeerIdentity, key: LinkKey) -> bool {
         self.active
             .get(&identity)
-            .is_some_and(|link| link.key == key)
+            .is_some_and(|registered| registered.link.key == key)
     }
 
     pub fn connected_descriptors(&self) -> Vec<PeerDescriptor> {
         let mut peers = self
             .active
             .values()
-            .map(|link| link.descriptor.clone())
+            .map(|registered| registered.link.descriptor.clone())
             .collect::<Vec<_>>();
         peers.sort_by_key(|peer| peer.identity);
         peers
@@ -218,7 +266,7 @@ impl Membership {
 
 fn trim_hints(
     hints: &mut BTreeMap<PeerIdentity, PeerDescriptor>,
-    active: &HashMap<PeerIdentity, ActiveLink>,
+    active: &HashMap<PeerIdentity, RegisteredLink>,
 ) {
     while hints.len().saturating_add(1) > MAX_PEERS {
         let removable = hints
@@ -299,6 +347,35 @@ mod tests {
     }
 
     #[test]
+    fn accepted_links_receive_monotonic_lifecycle_epochs() {
+        let mut membership = Membership::new(descriptor(1, 1));
+        let peer = descriptor(2, 2);
+        let link = |id| {
+            let (sender, _) = mpsc::channel(8);
+            ActiveLink {
+                key: LinkKey {
+                    link_id: LinkId::from_bytes([id; 16]),
+                    initiator: descriptor(1, 1).identity,
+                },
+                descriptor: peer.clone(),
+                sender,
+                cancellation: CancellationToken::new(),
+            }
+        };
+        let first = match membership.register(link(2)) {
+            RegisterResult::Accepted { epoch, .. } => epoch,
+            _ => panic!("first link should be accepted"),
+        };
+        let second = match membership.register(link(1)) {
+            RegisterResult::Accepted { epoch, .. } => epoch,
+            _ => panic!("lower link key should replace the active link"),
+        };
+
+        assert_eq!(first.get(), 1);
+        assert_eq!(second.get(), 2);
+    }
+
+    #[test]
     fn restart_replaces_disconnected_instance_and_grace_expiry_removes_stale_hint() {
         let mut membership = Membership::new(descriptor(1, 1));
         let old = descriptor(2, 2);
@@ -313,7 +390,7 @@ mod tests {
             sender,
             cancellation: CancellationToken::new(),
         });
-        assert!(membership.remove_link(old.identity, key, false));
+        assert!(membership.remove_link(old.identity, key, false).is_some());
 
         let restarted = descriptor(2, 3);
         let (sender, _) = mpsc::channel(8);

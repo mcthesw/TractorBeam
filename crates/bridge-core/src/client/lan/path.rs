@@ -9,21 +9,30 @@ use std::{
 use bytes::Bytes;
 use tokio::{
     net::UdpSocket,
-    sync::mpsc,
+    sync::{Notify, mpsc},
     task::JoinHandle,
     time::{self, MissedTickBehavior},
 };
 use tokio_util::sync::CancellationToken;
 use tractor_beam_direct_protocol::{
     CheckFrame, CheckPhase, ControlMessage, DirectFrame, HeartbeatFrame, HeartbeatPhase,
-    HostCandidate, PathContext, PathId, PathToken, PeerDescriptor, PeerIdentity, TransactionId,
-    decode_frame,
+    HostCandidate, PathContext, PathId, PathToken, PeerIdentity, TransactionId, decode_frame,
 };
 
 mod candidate;
 mod data;
+mod data_plane;
+mod lifecycle;
+use super::membership::PeerLifecycleEpoch;
 use candidate::{nonzero_random, path_offer, select_candidate_pair};
-pub(in crate::client) use data::LanGameSendError;
+pub(in crate::client) use data::{LanGameSendError, LanGameSendObserver, LanGameSendSuccess};
+pub(in crate::client) use data_plane::{
+    LanDataDirection, LanDataDropReason, LanDataPlaneMonitor, LanDataStage, LanInboundReceipt,
+    LanInboundReceiver, LanIncidentTransition, LanIncidentTransitionKind,
+};
+use data_plane::{
+    LanDataOutcome, LanDataPlaneLedger, PER_PEER_PACKET_QUEUE_CAPACITY, PeerPathDataPlane,
+};
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const PATH_LIVENESS_TIMEOUT: Duration = Duration::from_secs(3);
@@ -49,18 +58,10 @@ pub(super) struct PathManager {
     candidates: Vec<LocalCandidate>,
     cancellation: CancellationToken,
     inner: Mutex<PathState>,
-    inbound: Mutex<mpsc::Sender<crate::client::packet_flow::InboundGamePacket>>,
-    inbound_observer: OnceLock<Arc<dyn LanInboundHandoffObserver>>,
-}
-
-pub(in crate::client) trait LanInboundHandoffObserver: Send + Sync {
-    fn observe(&self, accepted: bool, now: Instant);
-    fn finish(&self, now: Instant) -> Option<LanInboundHandoffIncidentSummary>;
-}
-
-pub(in crate::client) struct LanInboundHandoffIncidentSummary {
-    pub duration: Duration,
-    pub dropped_packets: u64,
+    inbound_notify: Notify,
+    ledger: Arc<LanDataPlaneLedger>,
+    data_workers: Mutex<Vec<JoinHandle<()>>>,
+    send_observer: OnceLock<Arc<dyn LanGameSendObserver>>,
 }
 
 #[derive(Clone)]
@@ -72,6 +73,9 @@ struct LocalCandidate {
 #[derive(Default)]
 struct PathState {
     peers: HashMap<PeerIdentity, PeerPath>,
+    peer_order: Vec<PeerIdentity>,
+    latest_epochs: HashMap<PeerIdentity, PeerLifecycleEpoch>,
+    latest_data_keys: HashMap<u64, data_plane::PeerDataKey>,
     transactions: HashMap<TransactionId, PendingCheck>,
 }
 
@@ -87,6 +91,7 @@ struct PeerPath {
     checking_since: Instant,
     next_frame_id: u64,
     last_received_frame_id: u64,
+    data: PeerPathDataPlane,
 }
 
 #[derive(Clone, Copy)]
@@ -120,10 +125,7 @@ impl PathManager {
         local: PeerIdentity,
         sockets: Vec<(Arc<UdpSocket>, u32)>,
         cancellation: CancellationToken,
-    ) -> io::Result<(
-        Arc<Self>,
-        mpsc::Receiver<crate::client::packet_flow::InboundGamePacket>,
-    )> {
+    ) -> io::Result<(Arc<Self>, LanInboundReceiver, LanDataPlaneMonitor)> {
         let mut candidates = Vec::with_capacity(sockets.len());
         for (socket, priority) in sockets {
             candidates.push(LocalCandidate {
@@ -132,40 +134,27 @@ impl PathManager {
                 socket,
             });
         }
-        let (inbound, inbound_rx) = mpsc::channel(256);
-        Ok((
-            Arc::new(Self {
-                local,
-                candidates,
-                cancellation,
-                inner: Mutex::new(PathState::default()),
-                inbound: Mutex::new(inbound),
-                inbound_observer: OnceLock::new(),
-            }),
-            inbound_rx,
-        ))
+        let ledger = LanDataPlaneLedger::new();
+        let monitor = ledger.monitor();
+        let manager = Arc::new(Self {
+            local,
+            candidates,
+            cancellation,
+            inner: Mutex::new(PathState::default()),
+            inbound_notify: Notify::new(),
+            ledger,
+            data_workers: Mutex::new(Vec::new()),
+            send_observer: OnceLock::new(),
+        });
+        let inbound = LanInboundReceiver::new(manager.clone());
+        Ok((manager, inbound, monitor))
     }
 
-    pub(in crate::client) fn attach_inbound_observer(
+    pub(in crate::client) fn attach_send_observer(
         &self,
-        observer: Arc<dyn LanInboundHandoffObserver>,
-    ) -> Result<(), Arc<dyn LanInboundHandoffObserver>> {
-        let _inbound = self
-            .inbound
-            .lock()
-            .expect("LAN inbound queue lock poisoned");
-        self.inbound_observer.set(observer)
-    }
-
-    pub(in crate::client) fn finish_inbound_observer(
-        &self,
-        now: Instant,
-    ) -> Option<LanInboundHandoffIncidentSummary> {
-        let _inbound = self
-            .inbound
-            .lock()
-            .expect("LAN inbound queue lock poisoned");
-        self.inbound_observer.get()?.finish(now)
+        observer: Arc<dyn LanGameSendObserver>,
+    ) -> Result<(), Arc<dyn LanGameSendObserver>> {
+        self.send_observer.set(observer)
     }
 
     pub fn start(self: &Arc<Self>) -> Vec<JoinHandle<()>> {
@@ -182,52 +171,6 @@ impl PathManager {
             .collect::<Vec<_>>();
         tasks.push(tokio::spawn(run_path_maintenance(self.clone())));
         tasks
-    }
-
-    pub fn peer_connected(
-        self: &Arc<Self>,
-        descriptor: PeerDescriptor,
-        control: mpsc::Sender<ControlMessage>,
-    ) {
-        let remote = descriptor.identity;
-        let mut offer = None;
-        {
-            let mut state = self.inner.lock().expect("LAN path lock poisoned");
-            state.transactions.retain(|_, check| check.peer != remote);
-            let path = PeerPath {
-                identity: remote,
-                control: control.clone(),
-                material: None,
-                remote_candidates: Vec::new(),
-                checks: BTreeMap::new(),
-                nominated: None,
-                pending_nomination: None,
-                next_heartbeat_id: 1,
-                checking_since: Instant::now(),
-                next_frame_id: 1,
-                last_received_frame_id: 0,
-            };
-            state.peers.insert(remote, path);
-            if self.local < remote {
-                let material = PathMaterial {
-                    id: PathId::from_bytes(nonzero_random()),
-                    token: PathToken::from_bytes(nonzero_random()),
-                };
-                if let Some(path) = state.peers.get_mut(&remote) {
-                    path.material = Some(material);
-                }
-                offer = Some(path_offer(self.local, material, &self.candidates));
-            }
-        }
-        if let Some(offer) = offer {
-            let _ = control.try_send(offer);
-        }
-    }
-
-    pub fn peer_disconnected(&self, peer: PeerIdentity) {
-        let mut state = self.inner.lock().expect("LAN path lock poisoned");
-        state.peers.remove(&peer);
-        state.transactions.retain(|_, check| check.peer != peer);
     }
 
     pub fn handle_control(self: &Arc<Self>, peer: PeerIdentity, message: ControlMessage) -> bool {

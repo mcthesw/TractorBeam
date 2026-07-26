@@ -24,7 +24,6 @@ use crate::protocol::{ClientControl, PeerPresenceInfo, ProbePhase};
 use super::{
     LogLevel, SessionConfig, SessionMode, SessionRouteConfig,
     hook_ipc::{self, HookIpcSession, InputDelayCall},
-    lan::LanGameSendError,
     packet_flow::{
         DeliveryStreamAllocator, InboundGamePacket, InboundRelayDatagram, OutboundGamePacket,
         PacketObserver, PacketSummary, decode_inbound_relay_datagram, encode_inbound_hook_packet,
@@ -41,15 +40,16 @@ use super::{
 };
 
 mod data_plane;
-mod direct_receive;
 mod lan_route;
 
 use data_plane::{
     RelayTransportTaskContext, emit_health_summary, health_snapshot_task, hook_in_task,
     hook_out_task, observe_health, relay_transport_task,
 };
-use direct_receive::DirectReceiveObserver;
-use lan_route::lan_route_task;
+use lan_route::{
+    DirectSendObserver, direct_hook_in_task, direct_hook_out_task, direct_monitor_task,
+    emit_direct_summary,
+};
 
 const EVENT_QUEUE_CAPACITY: usize = 512;
 const PACKET_QUEUE_CAPACITY: usize = 256;
@@ -90,6 +90,7 @@ struct RuntimeTasks {
     route: JoinSet<io::Result<()>>,
     support: JoinSet<io::Result<()>>,
     health: Option<SharedSessionHealth>,
+    direct_monitor: Option<crate::client::lan::LanDataPlaneMonitor>,
 }
 
 #[cfg(test)]

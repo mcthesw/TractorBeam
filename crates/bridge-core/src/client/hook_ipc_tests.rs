@@ -544,3 +544,26 @@ fn full_client_queue_drops_newest_without_blocking() {
     assert!(!to_hook.try_send(packet(1, u32::MAX, b"dropped")));
     assert_eq!(to_hook.dropped.load(Ordering::Relaxed), 1);
 }
+
+#[test]
+fn recoverable_full_client_queue_preserves_packet_without_counting_a_drop() {
+    let session = HookIpcSession::test();
+    let (_control_tx, control_rx) = control_channel();
+    let (event_tx, _event_rx) = tokio::sync::mpsc::channel(16);
+    let (_from_hook, to_hook, _worker) =
+        start(session, control_rx, event_tx, CancellationToken::new()).unwrap();
+    for sequence in 0..tractor_beam_hook_ipc::CLIENT_DATA_QUEUE_CAPACITY {
+        assert!(
+            to_hook
+                .try_send_recoverable(packet(1, sequence as u32, b"queued"))
+                .is_ok()
+        );
+    }
+
+    let pending = packet(1, u32::MAX, b"pending");
+    match to_hook.try_send_recoverable(pending.clone()) {
+        Err(ClientIpcTrySendError::Full(returned)) => assert_eq!(returned, pending),
+        _ => panic!("full queue should return the pending packet"),
+    }
+    assert_eq!(to_hook.dropped.load(Ordering::Relaxed), 0);
+}

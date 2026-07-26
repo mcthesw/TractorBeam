@@ -63,6 +63,7 @@ pub(super) async fn supervise_session(
             }
             shutdown_tasks(runtime_tasks.route, &event_tx).await;
             shutdown_tasks(runtime_tasks.support, &event_tx).await;
+            emit_direct_summary(&event_tx, &runtime_tasks.direct_monitor).await;
             emit_health_summary(&event_tx, &runtime_tasks.health).await;
         }
         Err(error) => {
@@ -145,6 +146,7 @@ pub(super) async fn start_runtime_tasks_inner(
             route: JoinSet::new(),
             support,
             health: None,
+            direct_monitor: None,
         });
     }
 
@@ -169,7 +171,6 @@ pub(super) async fn start_runtime_tasks_inner(
         event_tx.clone(),
         cancellation.clone(),
     ));
-    let (outbound_tx, outbound_rx) = tokio_mpsc::channel(PACKET_QUEUE_CAPACITY);
     let health = config.session_health.enabled.then(|| {
         Arc::new(Mutex::new(SessionHealth::new(
             config.session_health.runtime_rtt_enabled
@@ -178,15 +179,16 @@ pub(super) async fn start_runtime_tasks_inner(
             Instant::now(),
         )))
     });
-    tasks.spawn(hook_in_task(
-        hook_packets_rx,
-        outbound_tx,
-        event_tx.clone(),
-        cancellation.clone(),
-        health.clone(),
-    ));
-    let inbound_rx = match &config.route {
+    let direct_monitor = match &config.route {
         SessionRouteConfig::ExternalRelay(relay_route) => {
+            let (outbound_tx, outbound_rx) = tokio_mpsc::channel(PACKET_QUEUE_CAPACITY);
+            tasks.spawn(hook_in_task(
+                hook_packets_rx,
+                outbound_tx,
+                event_tx.clone(),
+                cancellation.clone(),
+                health.clone(),
+            ));
             let (relay, peers) = RelayTransport::connect_session(
                 relay_route,
                 &config.steam_id64,
@@ -221,7 +223,14 @@ pub(super) async fn start_runtime_tasks_inner(
                     initial_peers: peers,
                 },
             ));
-            inbound_rx
+            tasks.spawn(hook_out_task(
+                to_hook,
+                inbound_rx,
+                event_tx.clone(),
+                cancellation.clone(),
+                health.clone(),
+            ));
+            None
         }
         SessionRouteConfig::LanDirect(lan_route) => {
             let room = lan_route.room.clone().ok_or_else(|| {
@@ -233,28 +242,37 @@ pub(super) async fn start_runtime_tasks_inner(
                     "Direct LAN room credential does not match the session",
                 ));
             }
-            let direct_receive =
-                Arc::new(DirectReceiveObserver::new(event_tx.clone(), health.clone()));
-            let inbound_rx = room
-                .take_inbound_with_observer(direct_receive.clone())
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        "Direct LAN room data plane is already attached",
-                    )
-                })?;
-            tasks.spawn(lan_route_task(
+            let send_observer = Arc::new(DirectSendObserver::new(event_tx.clone(), health.clone()));
+            let (inbound, monitor) = room.take_data_plane(send_observer).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "Direct LAN room data plane is already attached",
+                )
+            })?;
+            observe_health(&health, SessionHealth::enable_direct_receive_handoff);
+            tasks.spawn(direct_hook_in_task(
                 room,
-                outbound_rx,
+                hook_packets_rx,
+                cancellation.clone(),
+                health.clone(),
+            ));
+            tasks.spawn(direct_hook_out_task(
+                to_hook,
+                inbound,
                 event_tx.clone(),
                 cancellation.clone(),
                 health.clone(),
+            ));
+            tasks.spawn(direct_monitor_task(
+                monitor.clone(),
+                event_tx.clone(),
+                cancellation.clone(),
             ));
             send_event(
                 event_tx,
                 log_event(LogLevel::Info, "Direct LAN route is attached"),
             );
-            inbound_rx
+            Some(monitor)
         }
     };
     if health.is_some() {
@@ -265,18 +283,11 @@ pub(super) async fn start_runtime_tasks_inner(
             Duration::from_secs(config.session_health.snapshot_interval_seconds),
         ));
     }
-    tasks.spawn(hook_out_task(
-        to_hook,
-        inbound_rx,
-        event_tx.clone(),
-        cancellation.clone(),
-        health.clone(),
-    ));
-
     Ok(RuntimeTasks {
         route: tasks,
         support,
         health,
+        direct_monitor,
     })
 }
 

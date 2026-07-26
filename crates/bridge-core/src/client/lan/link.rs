@@ -87,7 +87,7 @@ pub(super) async fn accept_inbound_join(
             cancellation: link_cancellation.clone(),
         },
     ) {
-        RegisterResult::Accepted { replaced } => {
+        RegisterResult::Accepted { replaced, .. } => {
             if let Some(replaced) = replaced {
                 replaced.cancellation.cancel();
             }
@@ -113,6 +113,14 @@ pub(super) async fn accept_inbound_join(
                 &mut framed,
                 ControlErrorCode::IdentityMismatch,
                 "cannot connect a LAN peer to itself",
+            )
+            .await;
+        }
+        RegisterResult::LifecycleExhausted => {
+            return reject_join(
+                &mut framed,
+                ControlErrorCode::InvalidState,
+                "LAN peer lifecycle capacity is exhausted",
             )
             .await;
         }
@@ -261,7 +269,7 @@ async fn establish_outbound_endpoint(
             cancellation: link_cancellation.clone(),
         },
     ) {
-        RegisterResult::Accepted { replaced } => {
+        RegisterResult::Accepted { replaced, .. } => {
             if let Some(replaced) = replaced {
                 replaced.cancellation.cancel();
             }
@@ -278,6 +286,9 @@ async fn establish_outbound_endpoint(
                 io::ErrorKind::InvalidInput,
                 "cannot connect a LAN peer to itself",
             ));
+        }
+        RegisterResult::LifecycleExhausted => {
+            return Err(io::Error::other("LAN peer lifecycle capacity is exhausted"));
         }
     }
     broadcast_snapshot(&shared);
@@ -459,8 +470,8 @@ fn register_link(shared: &ControlShared, link: ActiveLink) -> RegisterResult {
         .lock()
         .expect("LAN membership lock poisoned")
         .register(link);
-    if matches!(result, RegisterResult::Accepted { .. }) {
-        shared.paths.peer_connected(descriptor, sender);
+    if let RegisterResult::Accepted { epoch, .. } = &result {
+        shared.paths.peer_connected(*epoch, descriptor, sender);
     }
     result
 }
@@ -484,10 +495,12 @@ fn remove_link(
         .lock()
         .expect("LAN membership lock poisoned")
         .remove_link(identity, key, graceful);
-    if removed {
-        shared.paths.peer_disconnected(identity);
+    if let Some(epoch) = removed {
+        shared.paths.peer_disconnected(identity, epoch);
+        true
+    } else {
+        false
     }
-    removed
 }
 
 fn broadcast_snapshot(shared: &ControlShared) {

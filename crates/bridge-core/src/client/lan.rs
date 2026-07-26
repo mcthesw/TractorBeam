@@ -14,7 +14,8 @@ pub use adapter::{
 };
 pub use control::{LanControlPlane, LanPeerConnectionState, LanPeerState, LanProbeResult};
 pub(in crate::client) use path::{
-    LanGameSendError, LanInboundHandoffIncidentSummary, LanInboundHandoffObserver,
+    LanDataDropReason, LanDataPlaneMonitor, LanGameSendObserver, LanGameSendSuccess,
+    LanInboundReceipt, LanInboundReceiver, LanIncidentTransition, LanIncidentTransitionKind,
 };
 pub use path::{LanPeerPathState, LanPeerPathStatus};
 pub use room_handle::LanRoomHandle;

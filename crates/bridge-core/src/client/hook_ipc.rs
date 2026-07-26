@@ -105,6 +105,11 @@ pub(super) struct ClientIpcSender {
     dropped: Arc<AtomicU64>,
 }
 
+pub(super) enum ClientIpcTrySendError {
+    Full(GamePacket),
+    Disconnected(GamePacket),
+}
+
 struct ListenerContext {
     session_id: SessionId,
     from_hook_tx: TokioSender<GamePacket>,
@@ -126,10 +131,20 @@ struct ConnectionContext<'a> {
 }
 
 impl ClientIpcSender {
+    pub(super) fn try_send_recoverable(
+        &self,
+        packet: GamePacket,
+    ) -> Result<(), ClientIpcTrySendError> {
+        self.data_tx.try_send(packet).map_err(|error| match error {
+            TrySendError::Full(packet) => ClientIpcTrySendError::Full(packet),
+            TrySendError::Disconnected(packet) => ClientIpcTrySendError::Disconnected(packet),
+        })
+    }
+
     pub(super) fn try_send(&self, packet: GamePacket) -> bool {
-        match self.data_tx.try_send(packet) {
+        match self.try_send_recoverable(packet) {
             Ok(()) => true,
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
+            Err(ClientIpcTrySendError::Full(_) | ClientIpcTrySendError::Disconnected(_)) => {
                 saturating_increment(&self.dropped);
                 false
             }

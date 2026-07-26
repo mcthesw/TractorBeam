@@ -1,144 +1,259 @@
 use super::*;
-use std::collections::HashMap;
 
-#[derive(Debug)]
-struct LanDropIncident {
-    started_at: Instant,
-    dropped_packets: u64,
+const DIRECT_HOOK_RETRY_INTERVAL: Duration = Duration::from_millis(2);
+
+struct PendingHookDelivery {
+    packet: tractor_beam_hook_ipc::GamePacket,
+    receipt: crate::client::lan::LanInboundReceipt,
+    summary: PacketSummary,
+    received_bytes: u64,
 }
 
-#[derive(Debug, Default)]
-struct LanDropIncidents {
-    by_peer: HashMap<u64, LanDropIncident>,
-}
-
-impl LanDropIncidents {
-    fn record_drop(&mut self, peer: u64, now: Instant) -> bool {
-        if let Some(incident) = self.by_peer.get_mut(&peer) {
-            incident.dropped_packets = incident.dropped_packets.saturating_add(1);
-            return false;
-        }
-
-        self.by_peer.insert(
-            peer,
-            LanDropIncident {
-                started_at: now,
-                dropped_packets: 1,
-            },
-        );
-        true
-    }
-
-    fn record_recovery(&mut self, peer: u64, now: Instant) -> Option<(Duration, u64)> {
-        let incident = self.by_peer.remove(&peer)?;
-        Some((
-            now.saturating_duration_since(incident.started_at),
-            incident.dropped_packets,
-        ))
-    }
-}
-
-pub(super) async fn lan_route_task(
-    room: Arc<super::super::LanControlPlane>,
-    mut outbound_rx: TokioReceiver<OutboundGamePacket>,
+pub(super) struct DirectSendObserver {
     event_tx: RuntimeEventSender,
+    health: Option<SharedSessionHealth>,
+    packets: Mutex<PacketObserver>,
+}
+
+impl DirectSendObserver {
+    pub(super) fn new(event_tx: RuntimeEventSender, health: Option<SharedSessionHealth>) -> Self {
+        Self {
+            event_tx,
+            health,
+            packets: Mutex::new(PacketObserver::default()),
+        }
+    }
+}
+
+impl crate::client::lan::LanGameSendObserver for DirectSendObserver {
+    fn observe(&self, success: crate::client::lan::LanGameSendSuccess, duration: Duration) {
+        observe_health(&self.health, |health| {
+            health.observe_network_send_duration(duration);
+        });
+        send_event(
+            &self.event_tx,
+            RuntimeEvent::CounterDelta(network_out_counter(
+                u64::try_from(success.payload_bytes).unwrap_or(u64::MAX),
+            )),
+        );
+        let summary = PacketSummary {
+            peer: success.peer,
+            hook_sequence: success.hook_sequence,
+            delivery_sequence: success.delivery_sequence,
+            channel: success.channel,
+            send_type: success.send_type,
+            payload_bytes: success.payload_bytes,
+            wire_bytes: success.wire_bytes,
+        };
+        if let Ok(mut packets) = self.packets.lock() {
+            packets.observe_hook_packet(&self.event_tx, &summary);
+        }
+    }
+}
+
+pub(super) async fn direct_hook_in_task(
+    room: Arc<super::super::LanControlPlane>,
+    mut hook_packets_rx: TokioReceiver<tractor_beam_hook_ipc::GamePacket>,
     cancellation: CancellationToken,
     health: Option<SharedSessionHealth>,
 ) -> io::Result<()> {
-    let mut observer = PacketObserver::default();
-    let mut drop_incidents = LanDropIncidents::default();
+    let mut delivery_streams = DeliveryStreamAllocator::default();
     loop {
         tokio::select! {
             () = cancellation.cancelled() => {
                 room.stop().await;
-                if let Some(summary) = room.finish_inbound_observer(Instant::now()) {
-                    send_critical_event(
-                        &event_tx,
-                        log_event(
-                            LogLevel::Warn,
-                            format!(
-                                "Direct receive handoff ended while saturated outage_ms={} packets_dropped={}",
-                                summary.duration.as_millis(),
-                                summary.dropped_packets,
-                            ),
-                        ),
-                    )
-                    .await;
-                }
                 return Ok(());
-            }
-            Some(packet) = outbound_rx.recv() => {
-                let started = Instant::now();
-                let sent_bytes = u64::try_from(packet.payload.len()).unwrap_or(u64::MAX);
-                let peer = packet.to_steam_id64;
-                let summary = PacketSummary {
-                    peer,
-                    hook_sequence: packet.hook_sequence,
-                    delivery_sequence: packet.delivery_sequence,
-                    channel: packet.channel,
-                    send_type: packet.send_type,
-                    payload_bytes: packet.payload.len(),
-                    wire_bytes: tractor_beam_direct_protocol::DATA_FRAME_OVERHEAD
-                        + packet.payload.len(),
+            },
+            packet = hook_packets_rx.recv() => {
+                let Some(packet) = packet else {
+                    room.stop().await;
+                    return Ok(());
                 };
-                match room.send_game(packet).await {
-                    Ok(()) => {
-                        observe_health(&health, |health| {
-                            health.observe_network_send_duration(started.elapsed());
-                        });
-                        send_event(
-                            &event_tx,
-                            RuntimeEvent::CounterDelta(network_out_counter(sent_bytes)),
-                        );
-                        observer.observe_hook_packet(&event_tx, &summary);
-                        if let Some((outage, dropped_packets)) =
-                            drop_incidents.record_recovery(peer, Instant::now())
-                        {
-                            send_event(
-                                &event_tx,
-                                log_event(
-                                    LogLevel::Info,
-                                    format!(
-                                        "Direct LAN peer path recovered outage_ms={} packets_dropped={dropped_packets}",
-                                        outage.as_millis()
-                                    ),
-                                ),
-                            );
-                        }
-                    }
-                    Err(LanGameSendError::Unavailable(peer)) => {
-                        observe_health(&health, SessionHealth::observe_network_send_drop);
-                        if drop_incidents.record_drop(peer, Instant::now()) {
-                            send_error(
-                                &event_tx,
-                                "Direct LAN peer path is unavailable; dropping gameplay packets",
-                            );
-                        }
-                    }
-                    Err(error) => {
-                        send_error(&event_tx, format!("Direct LAN packet dropped: {error}"));
-                    }
-                }
+                let size = packet.payload.len();
+                observe_health(&health, |health| {
+                    health.observe_hook_in_recv(size, Instant::now());
+                });
+                let packet = delivery_streams.assign_hook_packet(packet);
+                let accepted = room.try_send_game(packet).is_ok();
+                observe_health(&health, |health| health.observe_outbound_enqueue(accepted));
             }
         }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub(super) async fn direct_hook_out_task(
+    to_hook: hook_ipc::ClientIpcSender,
+    mut inbound: crate::client::lan::LanInboundReceiver,
+    event_tx: RuntimeEventSender,
+    cancellation: CancellationToken,
+    health: Option<SharedSessionHealth>,
+) -> io::Result<()> {
+    let mut local_sequence = 1_u32;
+    let mut observer = PacketObserver::default();
+    let mut pending = None;
+    loop {
+        if pending.is_none() {
+            let delivery = tokio::select! {
+                () = cancellation.cancelled() => return Ok(()),
+                delivery = inbound.recv() => delivery,
+            };
+            let Some(delivery) = delivery else {
+                return Ok(());
+            };
+            let from_steam_id64 = delivery.packet.from_steam_id64;
+            let delivery_stream_id = delivery.packet.delivery_stream_id;
+            let delivery_sequence = delivery.packet.delivery_sequence;
+            let (packet, summary, received_bytes) =
+                encode_inbound_hook_packet(delivery.packet, &mut local_sequence);
+            observe_health(&health, |health| {
+                health.observe_network_recv(summary.payload_bytes, Instant::now());
+                health.observe_delivery(from_steam_id64, delivery_stream_id, delivery_sequence);
+            });
+            pending = Some(PendingHookDelivery {
+                packet,
+                receipt: delivery.receipt,
+                summary,
+                received_bytes,
+            });
+        }
 
-    #[test]
-    fn lan_drop_incident_logs_once_until_the_peer_recovers() {
-        let start = Instant::now();
-        let mut incidents = LanDropIncidents::default();
-
-        assert!(incidents.record_drop(42, start));
-        assert!(!incidents.record_drop(42, start + Duration::from_millis(10)));
-        assert_eq!(
-            incidents.record_recovery(42, start + Duration::from_millis(25)),
-            Some((Duration::from_millis(25), 2))
-        );
-        assert!(incidents.record_drop(42, start + Duration::from_millis(30)));
+        let Some(mut delivery) = pending.take() else {
+            continue;
+        };
+        let started = Instant::now();
+        let result = delivery
+            .receipt
+            .with_active(|| to_hook.try_send_recoverable(delivery.packet));
+        match result {
+            None => {
+                observe_health(&health, |health| {
+                    health.observe_direct_receive_handoff(false);
+                });
+                delivery
+                    .receipt
+                    .complete_dropped(crate::client::lan::LanDataDropReason::GenerationClosed);
+            }
+            Some(Ok(())) => {
+                observe_health(&health, |health| {
+                    health.observe_hook_out_send_duration(started.elapsed());
+                    health.observe_inbound_enqueue(true);
+                    health.observe_direct_receive_handoff(true);
+                });
+                send_event(
+                    &event_tx,
+                    RuntimeEvent::CounterDelta(network_in_counter(delivery.received_bytes)),
+                );
+                observer.observe_network_packet(&event_tx, &delivery.summary);
+                delivery.receipt.complete_accepted();
+            }
+            Some(Err(hook_ipc::ClientIpcTrySendError::Full(packet))) => {
+                delivery.packet = packet;
+                pending = Some(delivery);
+                tokio::select! {
+                    () = cancellation.cancelled() => {
+                        if let Some(delivery) = pending.take() {
+                            delivery
+                                .receipt
+                                .complete_dropped(crate::client::lan::LanDataDropReason::SessionClosed);
+                        }
+                        return Ok(());
+                    },
+                    () = time::sleep(DIRECT_HOOK_RETRY_INTERVAL) => {}
+                }
+            }
+            Some(Err(hook_ipc::ClientIpcTrySendError::Disconnected(packet))) => {
+                drop(packet);
+                observe_health(&health, |health| {
+                    health.observe_direct_receive_handoff(false);
+                });
+                delivery
+                    .receipt
+                    .complete_dropped(crate::client::lan::LanDataDropReason::HookDisconnected);
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "Native Hook outbound queue is disconnected",
+                ));
+            }
+        }
     }
+}
+
+pub(super) async fn direct_monitor_task(
+    monitor: crate::client::lan::LanDataPlaneMonitor,
+    event_tx: RuntimeEventSender,
+    cancellation: CancellationToken,
+) -> io::Result<()> {
+    loop {
+        for transition in monitor.drain_transitions() {
+            send_event(
+                &event_tx,
+                log_event(
+                    transition_level(transition.kind),
+                    transition_log(&transition),
+                ),
+            );
+        }
+        tokio::select! {
+            () = cancellation.cancelled() => {
+                for transition in monitor.drain_transitions() {
+                    send_event(
+                        &event_tx,
+                        log_event(transition_level(transition.kind), transition_log(&transition)),
+                    );
+                }
+                return Ok(());
+            }
+            () = monitor.changed() => {}
+        }
+    }
+}
+
+pub(super) async fn emit_direct_summary(
+    event_tx: &RuntimeEventSender,
+    monitor: &Option<crate::client::lan::LanDataPlaneMonitor>,
+) {
+    let Some(monitor) = monitor else {
+        return;
+    };
+    let snapshot = monitor.snapshot();
+    send_critical_event(
+        event_tx,
+        log_event(
+            LogLevel::Info,
+            format!(
+                "Direct data summary peers={} send_queued={} send_succeeded={} send_dropped={} receive_queued={} hook_queue_accepted={} receive_dropped={} transitions_dropped={}",
+                snapshot.peers.len(),
+                snapshot.send.queued,
+                snapshot.send.resolved_success,
+                snapshot.send.dropped,
+                snapshot.receive.queued,
+                snapshot.receive.resolved_success,
+                snapshot.receive.dropped,
+                snapshot.transitions_dropped,
+            ),
+        ),
+    )
+    .await;
+}
+
+fn transition_level(kind: crate::client::lan::LanIncidentTransitionKind) -> LogLevel {
+    match kind {
+        crate::client::lan::LanIncidentTransitionKind::Started => LogLevel::Warn,
+        crate::client::lan::LanIncidentTransitionKind::Recovered
+        | crate::client::lan::LanIncidentTransitionKind::Closed => LogLevel::Info,
+    }
+}
+
+fn transition_log(transition: &crate::client::lan::LanIncidentTransition) -> String {
+    format!(
+        "Direct data incident kind={:?} peer_slot={} epoch={} direction={:?} stage={:?} reason={:?} outage_ms={} packets_dropped={}",
+        transition.kind,
+        transition.peer_slot,
+        transition.lifecycle_epoch,
+        transition.direction,
+        transition.stage,
+        transition.reason,
+        transition.duration.as_millis(),
+        transition.dropped_packets,
+    )
 }

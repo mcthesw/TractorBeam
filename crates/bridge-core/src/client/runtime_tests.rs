@@ -78,6 +78,12 @@ fn diagnostics_include_session_health_evidence() {
     let mut client = BridgeClient::new();
     client.state.latest_session_health = Some(SessionHealthSnapshot {
         quality: SessionQuality::Good,
+        direct_receive: crate::client::session_health::DirectReceiveHandoffSnapshot {
+            enabled: true,
+            attempted: 12,
+            dropped: 3,
+            saturated: true,
+        },
         ..SessionHealthSnapshot::default()
     });
     client.state.smoothness.level = SessionQuality::Watch;
@@ -88,6 +94,11 @@ fn diagnostics_include_session_health_evidence() {
 
     assert!(text.contains("session health:"));
     assert!(text.contains("quality=good"));
+    assert!(text.contains("direct_receive_attempted=12"));
+    assert!(text.contains("direct_receive_drops=3"));
+    assert!(text.contains("\"direct_receive\""));
+    assert!(text.contains("\"attempted\": 12"));
+    assert!(text.contains("\"dropped\": 3"));
     assert!(text.contains("\"quality\": \"good\""));
     assert!(text.contains("current smoothness:"));
     assert!(text.contains("\"level\": \"watch\""));

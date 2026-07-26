@@ -13,6 +13,8 @@ pub use adapter::{
     lan_candidate_addresses,
 };
 pub use control::{LanControlPlane, LanPeerConnectionState, LanPeerState, LanProbeResult};
-pub(in crate::client) use path::LanGameSendError;
+pub(in crate::client) use path::{
+    LanGameSendError, LanInboundHandoffIncidentSummary, LanInboundHandoffObserver,
+};
 pub use path::{LanPeerPathState, LanPeerPathStatus};
 pub use room_handle::LanRoomHandle;

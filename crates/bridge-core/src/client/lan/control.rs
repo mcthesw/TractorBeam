@@ -32,7 +32,7 @@ use super::{
         run_membership_dialer,
     },
     membership::Membership,
-    path::{LanPeerPathState, PathManager},
+    path::{LanInboundHandoffObserver, LanPeerPathState, PathManager},
 };
 use crate::client::{LanJoinCode, LogLevel, SessionCredential, emit_client_log_event};
 
@@ -305,6 +305,30 @@ impl LanControlPlane {
         self.shared.paths.send_game(packet).await
     }
 
+    pub(in crate::client) fn take_inbound_with_observer(
+        &self,
+        observer: Arc<dyn LanInboundHandoffObserver>,
+    ) -> Option<mpsc::Receiver<crate::client::packet_flow::InboundGamePacket>> {
+        let mut inbound = self
+            .inbound
+            .lock()
+            .expect("LAN inbound queue lock poisoned");
+        let receiver = inbound.take()?;
+        if self.shared.paths.attach_inbound_observer(observer).is_err() {
+            *inbound = Some(receiver);
+            return None;
+        }
+        Some(receiver)
+    }
+
+    pub(in crate::client) fn finish_inbound_observer(
+        &self,
+        now: std::time::Instant,
+    ) -> Option<super::LanInboundHandoffIncidentSummary> {
+        self.shared.paths.finish_inbound_observer(now)
+    }
+
+    #[cfg(test)]
     pub(in crate::client) fn take_inbound(
         &self,
     ) -> Option<mpsc::Receiver<crate::client::packet_flow::InboundGamePacket>> {

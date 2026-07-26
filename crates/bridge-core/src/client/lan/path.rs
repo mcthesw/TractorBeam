@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     io,
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -49,7 +49,18 @@ pub(super) struct PathManager {
     candidates: Vec<LocalCandidate>,
     cancellation: CancellationToken,
     inner: Mutex<PathState>,
-    inbound: mpsc::Sender<crate::client::packet_flow::InboundGamePacket>,
+    inbound: Mutex<mpsc::Sender<crate::client::packet_flow::InboundGamePacket>>,
+    inbound_observer: OnceLock<Arc<dyn LanInboundHandoffObserver>>,
+}
+
+pub(in crate::client) trait LanInboundHandoffObserver: Send + Sync {
+    fn observe(&self, accepted: bool, now: Instant);
+    fn finish(&self, now: Instant) -> Option<LanInboundHandoffIncidentSummary>;
+}
+
+pub(in crate::client) struct LanInboundHandoffIncidentSummary {
+    pub duration: Duration,
+    pub dropped_packets: u64,
 }
 
 #[derive(Clone)]
@@ -128,10 +139,33 @@ impl PathManager {
                 candidates,
                 cancellation,
                 inner: Mutex::new(PathState::default()),
-                inbound,
+                inbound: Mutex::new(inbound),
+                inbound_observer: OnceLock::new(),
             }),
             inbound_rx,
         ))
+    }
+
+    pub(in crate::client) fn attach_inbound_observer(
+        &self,
+        observer: Arc<dyn LanInboundHandoffObserver>,
+    ) -> Result<(), Arc<dyn LanInboundHandoffObserver>> {
+        let _inbound = self
+            .inbound
+            .lock()
+            .expect("LAN inbound queue lock poisoned");
+        self.inbound_observer.set(observer)
+    }
+
+    pub(in crate::client) fn finish_inbound_observer(
+        &self,
+        now: Instant,
+    ) -> Option<LanInboundHandoffIncidentSummary> {
+        let _inbound = self
+            .inbound
+            .lock()
+            .expect("LAN inbound queue lock poisoned");
+        self.inbound_observer.get()?.finish(now)
     }
 
     pub fn start(self: &Arc<Self>) -> Vec<JoinHandle<()>> {

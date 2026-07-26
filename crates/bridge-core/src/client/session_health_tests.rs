@@ -17,21 +17,65 @@ fn latency_summary_reports_percentiles_and_thresholds() {
 #[test]
 fn queue_and_delivery_windows_use_deltas() {
     let previous = QualityBaseline {
+        direct_receive_attempted: 4,
+        direct_receive_dropped: 1,
         queue_drops: 2,
         delivery_gaps: 3,
         delivery_reordered: 4,
         ..QualityBaseline::default()
     };
     let current = QualityBaseline {
+        direct_receive_attempted: 7,
+        direct_receive_dropped: 2,
         queue_drops: 2,
         delivery_gaps: 4,
         delivery_reordered: 9,
         ..QualityBaseline::default()
     };
     let window = current.delta(previous, Duration::from_secs(5));
+    assert_eq!(window.direct_receive_attempted, 3);
+    assert_eq!(window.direct_receive_dropped, 1);
     assert_eq!(window.queue_drops, 0);
     assert_eq!(window.delivery_gaps, 1);
     assert_eq!(window.delivery_reordered, 5);
+}
+
+#[test]
+fn direct_receive_handoff_drop_is_dedicated_health_evidence() {
+    let start = Instant::now();
+    let active = start + Duration::from_secs(ACTIVE_TRAFFIC_STARTUP_GRACE_SECONDS);
+    let mut health = SessionHealth::new(false, Duration::from_secs(1), start);
+
+    health.enable_direct_receive_handoff();
+    health.observe_direct_receive_handoff(false);
+    let snapshot = health.snapshot(active);
+
+    assert!(snapshot.direct_receive.enabled);
+    assert_eq!(snapshot.direct_receive.attempted, 1);
+    assert_eq!(snapshot.direct_receive.dropped, 1);
+    assert!(snapshot.direct_receive.saturated);
+    assert_eq!(snapshot.queues.total_dropped(), 0);
+    assert_eq!(snapshot.network_send_dropped, 0);
+    assert_eq!(snapshot.window.direct_receive_dropped, 1);
+    assert_eq!(snapshot.quality, SessionQuality::Poor);
+    assert_eq!(
+        snapshot.reasons,
+        [SessionQualityReason::DirectReceiveHandoffDrop]
+    );
+}
+
+#[test]
+fn direct_receive_handoff_counters_saturate() {
+    let start = Instant::now();
+    let mut health = SessionHealth::new(false, Duration::from_secs(1), start);
+    health.direct_receive.attempted = u64::MAX;
+    health.direct_receive.dropped = u64::MAX;
+
+    health.observe_direct_receive_handoff(false);
+
+    let snapshot = health.snapshot(start);
+    assert_eq!(snapshot.direct_receive.attempted, u64::MAX);
+    assert_eq!(snapshot.direct_receive.dropped, u64::MAX);
 }
 
 #[test]
@@ -177,6 +221,8 @@ const fn active_window() -> SessionHealthWindow {
         duration_seconds: 5,
         hook_in_packets: 20,
         network_recv_packets: 20,
+        direct_receive_attempted: 0,
+        direct_receive_dropped: 0,
         network_send_dropped: 0,
         queue_drops: 0,
         delivery_gaps: 0,

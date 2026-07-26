@@ -233,12 +233,16 @@ pub(super) async fn start_runtime_tasks_inner(
                     "Direct LAN room credential does not match the session",
                 ));
             }
-            let inbound_rx = room.take_inbound().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "Direct LAN room data plane is already attached",
-                )
-            })?;
+            let direct_receive =
+                Arc::new(DirectReceiveObserver::new(event_tx.clone(), health.clone()));
+            let inbound_rx = room
+                .take_inbound_with_observer(direct_receive.clone())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "Direct LAN room data plane is already attached",
+                    )
+                })?;
             tasks.spawn(lan_route_task(
                 room,
                 outbound_rx,

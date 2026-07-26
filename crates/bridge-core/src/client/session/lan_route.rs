@@ -51,6 +51,20 @@ pub(super) async fn lan_route_task(
         tokio::select! {
             () = cancellation.cancelled() => {
                 room.stop().await;
+                if let Some(summary) = room.finish_inbound_observer(Instant::now()) {
+                    send_critical_event(
+                        &event_tx,
+                        log_event(
+                            LogLevel::Warn,
+                            format!(
+                                "Direct receive handoff ended while saturated outage_ms={} packets_dropped={}",
+                                summary.duration.as_millis(),
+                                summary.dropped_packets,
+                            ),
+                        ),
+                    )
+                    .await;
+                }
                 return Ok(());
             }
             Some(packet) = outbound_rx.recv() => {

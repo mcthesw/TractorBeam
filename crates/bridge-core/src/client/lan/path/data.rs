@@ -110,7 +110,27 @@ impl PathManager {
                 payload: frame.payload,
             }
         };
-        let _ = self.inbound.try_send(packet);
+        self.try_handoff_inbound(packet, std::time::Instant::now());
+    }
+
+    fn try_handoff_inbound(&self, packet: InboundGamePacket, now: std::time::Instant) {
+        let inbound = self
+            .inbound
+            .lock()
+            .expect("LAN inbound queue lock poisoned");
+        match inbound.try_send(packet) {
+            Ok(()) => {
+                if let Some(observer) = self.inbound_observer.get() {
+                    observer.observe(true, now);
+                }
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                if let Some(observer) = self.inbound_observer.get() {
+                    observer.observe(false, now);
+                }
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {}
+        }
     }
 }
 
@@ -144,12 +164,35 @@ fn valid_data_path(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex, OnceLock};
+
     use bytes::Bytes;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
     use tractor_beam_direct_protocol::{
         DeliveryStreamId, InstanceId, PathId, PathToken, PeerIdentity,
     };
 
     use super::*;
+    use crate::client::lan::LanInboundHandoffObserver;
+
+    #[derive(Default)]
+    struct TestObserver {
+        accepted: Mutex<Vec<bool>>,
+    }
+
+    impl LanInboundHandoffObserver for TestObserver {
+        fn observe(&self, accepted: bool, _now: std::time::Instant) {
+            self.accepted.lock().unwrap().push(accepted);
+        }
+
+        fn finish(
+            &self,
+            _now: std::time::Instant,
+        ) -> Option<crate::client::lan::LanInboundHandoffIncidentSummary> {
+            None
+        }
+    }
 
     #[test]
     fn stale_endpoint_identity_target_and_material_are_rejected() {
@@ -234,5 +277,36 @@ mod tests {
             Some(wrong_material),
             &frame,
         ));
+    }
+
+    #[test]
+    fn bounded_handoff_distinguishes_full_from_closed() {
+        let local = PeerIdentity::new(1, InstanceId::from_bytes([1; 16]));
+        let (inbound, inbound_rx) = mpsc::channel(1);
+        let observer = Arc::new(TestObserver::default());
+        let manager = PathManager {
+            local,
+            candidates: Vec::new(),
+            cancellation: CancellationToken::new(),
+            inner: Mutex::new(super::super::PathState::default()),
+            inbound: Mutex::new(inbound),
+            inbound_observer: OnceLock::from(observer.clone() as Arc<dyn LanInboundHandoffObserver>),
+        };
+        let packet = || InboundGamePacket {
+            from_steam_id64: 2,
+            delivery_stream_id: crate::client::packet_flow::DeliveryStreamId::from_bytes([1; 16]),
+            delivery_sequence: 1,
+            channel: 0,
+            send_type: 0,
+            payload: Bytes::new(),
+        };
+
+        manager.try_handoff_inbound(packet(), std::time::Instant::now());
+        manager.try_handoff_inbound(packet(), std::time::Instant::now());
+        assert_eq!(*observer.accepted.lock().unwrap(), [true, false]);
+
+        drop(inbound_rx);
+        manager.try_handoff_inbound(packet(), std::time::Instant::now());
+        assert_eq!(*observer.accepted.lock().unwrap(), [true, false]);
     }
 }

@@ -108,8 +108,8 @@ about.desc:
   zh_CN: "为《以撒的结合：忏悔+》打造的轻量联机桥接工具"
   en_US: "A lightweight co-op bridge for The Binding of Isaac: Repentance+."
 about.protocol_version:
-  zh_CN: "协议版本"
-  en_US: "Protocol"
+  zh_CN: "Relay 协议版本"
+  en_US: "Relay protocol"
 about.acknowledgements:
   zh_CN: "感谢"
   en_US: "Acknowledgements"

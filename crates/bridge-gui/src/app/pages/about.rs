@@ -6,8 +6,15 @@ use tractor_beam_core::build_info;
 
 use crate::app::BridgeApp;
 
-const PROTOCOL_VERSION: &str = "2.0";
 const ACKNOWLEDGEMENTS_TWO_COLUMN_MIN_WIDTH: f32 = 620.0;
+
+fn relay_protocol_version() -> String {
+    format!(
+        "{}.{}",
+        tractor_beam_core::protocol::PROTOCOL_MAJOR,
+        tractor_beam_core::protocol::PROTOCOL_MINOR
+    )
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ContributorIdentity {
@@ -128,7 +135,7 @@ impl BridgeApp {
                 ui.monospace(build_info::version_label());
                 ui.end_row();
                 ui.label(proto_label);
-                ui.monospace(PROTOCOL_VERSION);
+                ui.monospace(relay_protocol_version());
                 ui.end_row();
             });
         ui.add_space(12.0);
@@ -201,5 +208,10 @@ mod tests {
     fn acknowledgements_use_two_columns_only_when_space_allows() {
         assert_eq!(acknowledgements_columns(619.0), 1);
         assert_eq!(acknowledgements_columns(620.0), 2);
+    }
+
+    #[test]
+    fn about_reports_current_relay_protocol_version() {
+        assert_eq!(relay_protocol_version(), "3.0");
     }
 }

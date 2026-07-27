@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.4.0](https://github.com/mcthesw/TractorBeam/compare/v0.3.0...v0.4.0) (2026-07-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **protocol:** scope delivery sequences per target
+
+### Features
+
+* **client:** observe Direct receive handoff drops ([ee222df](https://github.com/mcthesw/TractorBeam/commit/ee222dfb655cb93aac0a11e78336badd3b32d728))
+* **client:** report per-peer Direct delivery loss ([8d1c14e](https://github.com/mcthesw/TractorBeam/commit/8d1c14ec7936c45f5b7e0819644ee32771360d17))
+
+
+### Bug Fixes
+
+* **gui:** report Relay Protocol 3.0 ([0068677](https://github.com/mcthesw/TractorBeam/commit/006867775ea9a5de164b1e3d8ea1bd31c9045144))
+* **injector:** reject stale native hook sessions ([155fd90](https://github.com/mcthesw/TractorBeam/commit/155fd901780a5cc28ae8160db4fe0c348ee19f50))
+* **injector:** retry transient module snapshots ([a09ec2a](https://github.com/mcthesw/TractorBeam/commit/a09ec2aa941f9c08b15810423214da82fb0c6559))
+* **ipc:** prevent local transport busy polling ([fe5d68b](https://github.com/mcthesw/TractorBeam/commit/fe5d68b97dfd2110870fe91100cac57dbb0b5f7d))
+* **protocol:** scope delivery sequences per target ([f2e4390](https://github.com/mcthesw/TractorBeam/commit/f2e439070927e601dbe430cffcb32156c32dbf77))
+* **relay:** keep per-frame delivery failures non-fatal ([46179b2](https://github.com/mcthesw/TractorBeam/commit/46179b26f7860ed754089c0d029272f8c05a68c7))
+
+
+### Code Refactoring
+
+* **client:** isolate Direct gameplay queues per peer ([598b61d](https://github.com/mcthesw/TractorBeam/commit/598b61d1ac1dc2bbd2f79d9c3d310ce718868afb))
+* **config:** use a single portable client config ([84c0033](https://github.com/mcthesw/TractorBeam/commit/84c0033416d6972c1f3fc385da874265f2618e2f))
+* **logging:** unify portable logs and diagnostics ([afd435c](https://github.com/mcthesw/TractorBeam/commit/afd435c01e35fd7ce3b02957700673fb9a33d816))
+* reduce infrastructure maintenance surface ([df7e5f2](https://github.com/mcthesw/TractorBeam/commit/df7e5f2bd38829b508841a9cb4cd48590f3b991a))
+
+
+### Documentation
+
+* unify diagnostics and testing terminology ([7d4dfda](https://github.com/mcthesw/TractorBeam/commit/7d4dfdac845489df3b6f6799ded9944e78961c3d))
+
 ## [0.3.0](https://github.com/mcthesw/TractorBeam/compare/v0.2.1...v0.3.0) (2026-07-15)
 
 

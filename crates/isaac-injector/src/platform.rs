@@ -2,6 +2,9 @@ use std::path::Path;
 
 use crate::InjectorError;
 
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{ERROR_BAD_LENGTH, ERROR_PARTIAL_COPY};
+
 pub fn inject(pid: u32, hook: &Path) -> Result<(), InjectorError> {
     inject_platform(pid, hook)
 }
@@ -13,7 +16,8 @@ fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
         io, iter,
         os::windows::ffi::{OsStrExt, OsStringExt},
         path::PathBuf,
-        ptr,
+        ptr, thread,
+        time::Duration,
     };
 
     use crate::InjectionStep;
@@ -177,13 +181,31 @@ fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
     }
 
     fn process_has_module(pid: u32, hook: &Path) -> Result<bool, InjectorError> {
+        const MAX_ATTEMPTS: usize = 40;
+        const RETRY_DELAY: Duration = Duration::from_millis(50);
+
+        let mut attempt = 1;
+        loop {
+            match process_has_module_once(pid, hook) {
+                Ok(result) => return Ok(result),
+                Err(error)
+                    if attempt < MAX_ATTEMPTS && is_retryable_module_snapshot_error(&error) =>
+                {
+                    attempt += 1;
+                    thread::sleep(RETRY_DELAY);
+                }
+                Err(error) => {
+                    return Err(InjectorError::step_io(InjectionStep::InspectModules, error));
+                }
+            }
+        }
+    }
+
+    fn process_has_module_once(pid: u32, hook: &Path) -> io::Result<bool> {
         unsafe {
             let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
             if snapshot == INVALID_HANDLE_VALUE {
-                return Err(InjectorError::step_io(
-                    InjectionStep::InspectModules,
-                    io::Error::last_os_error(),
-                ));
+                return Err(io::Error::last_os_error());
             }
 
             let mut entry: MODULEENTRY32W = std::mem::zeroed();
@@ -194,7 +216,7 @@ fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
                 if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
                     return Ok(false);
                 }
-                return Err(InjectorError::step_io(InjectionStep::InspectModules, error));
+                return Err(error);
             }
 
             let expected = normalized_path(hook);
@@ -218,7 +240,7 @@ fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
                     if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
                         return Ok(false);
                     }
-                    return Err(InjectorError::step_io(InjectionStep::InspectModules, error));
+                    return Err(error);
                 }
             }
         }
@@ -243,7 +265,33 @@ fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn is_retryable_module_snapshot_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(code) if code == ERROR_BAD_LENGTH as i32 || code == ERROR_PARTIAL_COPY as i32
+    )
+}
+
 #[cfg(not(windows))]
 fn inject_platform(_pid: u32, _hook: &Path) -> Result<(), InjectorError> {
     Err(InjectorError::UnsupportedPlatform)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retries_transient_module_snapshot_errors_only() {
+        assert!(is_retryable_module_snapshot_error(
+            &std::io::Error::from_raw_os_error(ERROR_BAD_LENGTH as i32)
+        ));
+        assert!(is_retryable_module_snapshot_error(
+            &std::io::Error::from_raw_os_error(ERROR_PARTIAL_COPY as i32)
+        ));
+        assert!(!is_retryable_module_snapshot_error(
+            &std::io::Error::from_raw_os_error(5)
+        ));
+    }
 }

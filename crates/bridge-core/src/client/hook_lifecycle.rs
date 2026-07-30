@@ -305,6 +305,16 @@ mod tests {
     }
 
     #[test]
+    fn elevated_helper_failure_does_not_show_access_denied_hint() {
+        let message = injection_support_message(&InjectorError::elevated_retry_failed(
+            "could not read elevated injector helper exit code",
+        ));
+
+        assert!(message.contains("could not read elevated injector helper exit code"));
+        assert!(!message.contains("matching privilege levels"));
+    }
+
+    #[test]
     fn stale_native_hook_support_message_requires_full_isaac_restart() {
         let message = injection_support_message(&InjectorError::NativeHookAlreadyLoaded);
 

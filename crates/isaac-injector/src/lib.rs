@@ -4,6 +4,7 @@ mod error;
 mod paths;
 mod platform;
 mod process;
+mod report;
 
 pub use error::{InjectionStep, InjectorError};
 pub use paths::{
@@ -15,3 +16,4 @@ pub use process::{
     ISAAC_PROCESS_NAME, IsaacProcess, find_isaac_process, find_isaac_processes, is_process_running,
     wait_for_isaac,
 };
+pub use report::{read_failure_report, write_failure_report};

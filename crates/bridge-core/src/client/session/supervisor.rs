@@ -149,6 +149,7 @@ pub(super) async fn start_runtime_tasks_inner(
         let mut support = JoinSet::new();
         support.spawn(process_lifecycle::run(
             None,
+            Vec::new(),
             event_tx.clone(),
             cancellation.clone(),
         ));
@@ -163,6 +164,7 @@ pub(super) async fn start_runtime_tasks_inner(
     }
 
     let native_hook = native_hook.expect("Native Hook presence was validated above");
+    let preexisting_processes = native_hook.preexisting_processes;
     let ipc_control_rx = ipc_control_rx.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -180,6 +182,7 @@ pub(super) async fn start_runtime_tasks_inner(
     let mut support = JoinSet::new();
     support.spawn(process_lifecycle::run(
         Some(native_hook.paths),
+        preexisting_processes,
         event_tx.clone(),
         cancellation.clone(),
     ));

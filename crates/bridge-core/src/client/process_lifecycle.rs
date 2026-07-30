@@ -20,6 +20,7 @@ const PROCESS_WAIT_TIMEOUT: Duration = Duration::from_secs(120);
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const PROCESS_WAIT_NOTICE_INTERVAL: Duration = Duration::from_secs(30);
 const PROCESS_WATCH_INTERVAL: Duration = Duration::from_secs(1);
+const PREEXISTING_PROCESS_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy)]
 struct ProcessLifecycleSettings {
@@ -27,6 +28,7 @@ struct ProcessLifecycleSettings {
     poll_interval: Duration,
     wait_notice_interval: Duration,
     watch_interval: Duration,
+    preexisting_process_grace: Duration,
 }
 
 impl Default for ProcessLifecycleSettings {
@@ -36,20 +38,21 @@ impl Default for ProcessLifecycleSettings {
             poll_interval: PROCESS_POLL_INTERVAL,
             wait_notice_interval: PROCESS_WAIT_NOTICE_INTERVAL,
             watch_interval: PROCESS_WATCH_INTERVAL,
+            preexisting_process_grace: PREEXISTING_PROCESS_GRACE,
         }
     }
 }
 
 trait IsaacProcessService: Send + Sync {
-    fn find(&self) -> Option<IsaacProcess>;
+    fn find_all(&self) -> Vec<IsaacProcess>;
     fn is_running(&self, process: &IsaacProcess) -> bool;
 }
 
 struct SystemIsaacProcesses;
 
 impl IsaacProcessService for SystemIsaacProcesses {
-    fn find(&self) -> Option<IsaacProcess> {
-        tractor_beam_isaac_injector::find_isaac_process()
+    fn find_all(&self) -> Vec<IsaacProcess> {
+        tractor_beam_isaac_injector::find_isaac_processes()
     }
 
     fn is_running(&self, process: &IsaacProcess) -> bool {
@@ -58,13 +61,33 @@ impl IsaacProcessService for SystemIsaacProcesses {
 }
 
 enum ProcessWait {
-    Bound(IsaacProcess),
+    Bound {
+        process: IsaacProcess,
+        source: ProcessBindingSource,
+        candidate_count: usize,
+    },
     Cancelled,
     TimedOut,
 }
 
+#[derive(Clone, Copy)]
+enum ProcessBindingSource {
+    NewLaunch,
+    PreexistingFallback,
+}
+
+impl std::fmt::Display for ProcessBindingSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NewLaunch => formatter.write_str("new_launch"),
+            Self::PreexistingFallback => formatter.write_str("preexisting_fallback"),
+        }
+    }
+}
+
 pub(super) async fn run(
     hook_paths: Option<NativeHookPaths>,
+    preexisting_processes: Vec<IsaacProcess>,
     event_tx: RuntimeEventSender,
     cancellation: CancellationToken,
 ) -> io::Result<()> {
@@ -74,6 +97,7 @@ pub(super) async fn run(
         cancellation,
         Arc::new(SystemIsaacProcesses),
         ProcessLifecycleSettings::default(),
+        preexisting_processes,
     )
     .await;
     Ok(())
@@ -85,10 +109,22 @@ async fn run_with(
     cancellation: CancellationToken,
     processes: Arc<dyn IsaacProcessService>,
     settings: ProcessLifecycleSettings,
+    preexisting_processes: Vec<IsaacProcess>,
 ) {
     send_event(
         &event_tx,
         log_event(LogLevel::Info, "Waiting for Isaac process"),
+    );
+    send_event(
+        &event_tx,
+        log_event(
+            LogLevel::Info,
+            format!(
+                "Isaac process baseline count={} pids={}",
+                preexisting_processes.len(),
+                process_ids(&preexisting_processes)
+            ),
+        ),
     );
     if let Some(paths) = &hook_paths {
         hook_lifecycle::report_waiting_for_isaac(paths, &event_tx, "Waiting for Isaac process");
@@ -111,10 +147,27 @@ async fn run_with(
         &cancellation,
         hook_paths.as_ref(),
         settings,
+        &preexisting_processes,
     )
     .await
     {
-        ProcessWait::Bound(process) => process,
+        ProcessWait::Bound {
+            process,
+            source,
+            candidate_count,
+        } => {
+            send_event(
+                &event_tx,
+                log_event(
+                    LogLevel::Info,
+                    format!(
+                        "Isaac process selected source={source} pid={} started_at={} candidates={candidate_count}",
+                        process.pid, process.started_at
+                    ),
+                ),
+            );
+            process
+        }
         ProcessWait::Cancelled => {
             if let Some(paths) = &hook_paths {
                 hook_lifecycle::report_isaac_wait_failure(
@@ -186,6 +239,7 @@ async fn wait_for_process(
     cancellation: &CancellationToken,
     hook_paths: Option<&NativeHookPaths>,
     settings: ProcessLifecycleSettings,
+    preexisting_processes: &[IsaacProcess],
 ) -> ProcessWait {
     let started = Instant::now();
     let mut next_notice = settings.wait_notice_interval;
@@ -197,8 +251,32 @@ async fn wait_for_process(
             return ProcessWait::TimedOut;
         }
         let finder = Arc::clone(&processes);
-        if let Ok(Some(process)) = tokio::task::spawn_blocking(move || finder.find()).await {
-            return ProcessWait::Bound(process);
+        if let Ok(candidates) = tokio::task::spawn_blocking(move || finder.find_all()).await {
+            let candidate_count = candidates.len();
+            if let Some(process) = newest_process(
+                candidates
+                    .iter()
+                    .filter(|candidate| !preexisting_processes.contains(candidate)),
+            ) {
+                return ProcessWait::Bound {
+                    process,
+                    source: ProcessBindingSource::NewLaunch,
+                    candidate_count,
+                };
+            }
+            if started.elapsed() >= settings.preexisting_process_grace
+                && let Some(process) = newest_process(
+                    candidates
+                        .iter()
+                        .filter(|candidate| preexisting_processes.contains(candidate)),
+                )
+            {
+                return ProcessWait::Bound {
+                    process,
+                    source: ProcessBindingSource::PreexistingFallback,
+                    candidate_count,
+                };
+            }
         }
         if started.elapsed() >= next_notice {
             let elapsed_seconds = started.elapsed().as_secs();
@@ -215,6 +293,24 @@ async fn wait_for_process(
             () = cancellation.cancelled() => return ProcessWait::Cancelled,
             () = time::sleep(settings.poll_interval) => {}
         }
+    }
+}
+
+fn newest_process<'a>(processes: impl Iterator<Item = &'a IsaacProcess>) -> Option<IsaacProcess> {
+    processes
+        .max_by_key(|process| (process.started_at, process.pid))
+        .cloned()
+}
+
+fn process_ids(processes: &[IsaacProcess]) -> String {
+    let ids = processes
+        .iter()
+        .map(|process| process.pid.to_string())
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        "none".to_owned()
+    } else {
+        ids.join(",")
     }
 }
 
@@ -267,14 +363,14 @@ mod tests {
     use super::*;
 
     struct FakeIsaacProcesses {
-        found: Mutex<VecDeque<Option<IsaacProcess>>>,
+        found: Mutex<VecDeque<Vec<IsaacProcess>>>,
         running: Mutex<VecDeque<bool>>,
         observed: Mutex<Vec<IsaacProcess>>,
         find_calls: AtomicUsize,
     }
 
     impl FakeIsaacProcesses {
-        fn new(found: Vec<Option<IsaacProcess>>, running: Vec<bool>) -> Self {
+        fn new(found: Vec<Vec<IsaacProcess>>, running: Vec<bool>) -> Self {
             Self {
                 found: Mutex::new(found.into()),
                 running: Mutex::new(running.into()),
@@ -285,9 +381,9 @@ mod tests {
     }
 
     impl IsaacProcessService for FakeIsaacProcesses {
-        fn find(&self) -> Option<IsaacProcess> {
+        fn find_all(&self) -> Vec<IsaacProcess> {
             self.find_calls.fetch_add(1, Ordering::SeqCst);
-            self.found.lock().unwrap().pop_front().flatten()
+            self.found.lock().unwrap().pop_front().unwrap_or_default()
         }
 
         fn is_running(&self, process: &IsaacProcess) -> bool {
@@ -301,7 +397,7 @@ mod tests {
         let bound = process(42, 100);
         let later = process(42, 101);
         let processes = Arc::new(FakeIsaacProcesses::new(
-            vec![Some(bound.clone()), Some(later)],
+            vec![vec![bound.clone()], vec![later]],
             vec![false],
         ));
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(16);
@@ -313,6 +409,7 @@ mod tests {
             cancellation.clone(),
             processes.clone(),
             fast_settings(Duration::from_secs(1)),
+            Vec::new(),
         )
         .await;
 
@@ -343,6 +440,7 @@ mod tests {
             cancellation,
             processes.clone(),
             fast_settings(Duration::from_secs(1)),
+            Vec::new(),
         )
         .await;
 
@@ -364,6 +462,7 @@ mod tests {
             cancellation.clone(),
             processes,
             fast_settings(Duration::from_millis(5)),
+            Vec::new(),
         )
         .await;
 
@@ -377,12 +476,89 @@ mod tests {
         }));
     }
 
+    #[tokio::test]
+    async fn new_launch_process_wins_over_preexisting_residue() {
+        let residue = process(17_948, 100);
+        let launched = process(12_348, 200);
+        let processes = Arc::new(FakeIsaacProcesses::new(
+            vec![
+                vec![residue.clone()],
+                vec![residue.clone(), launched.clone()],
+            ],
+            vec![false],
+        ));
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(32);
+        let cancellation = CancellationToken::new();
+        let mut settings = fast_settings(Duration::from_secs(1));
+        settings.preexisting_process_grace = Duration::from_millis(5);
+
+        run_with(
+            None,
+            event_tx,
+            cancellation.clone(),
+            processes.clone(),
+            settings,
+            vec![residue],
+        )
+        .await;
+
+        assert_eq!(*processes.observed.lock().unwrap(), vec![launched]);
+        assert!(received(&mut event_rx, |event| {
+            matches!(
+                event,
+                RuntimeEvent::Log(LogLevel::Info, message)
+                    if message.contains("source=new_launch")
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn existing_game_is_used_only_after_new_launch_grace() {
+        let existing = process(42, 100);
+        let processes = Arc::new(FakeIsaacProcesses::new(
+            vec![vec![existing.clone()]; 8],
+            vec![false],
+        ));
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(32);
+        let cancellation = CancellationToken::new();
+        let mut settings = fast_settings(Duration::from_secs(1));
+        settings.preexisting_process_grace = Duration::from_millis(5);
+
+        run_with(
+            None,
+            event_tx,
+            cancellation.clone(),
+            processes.clone(),
+            settings,
+            vec![existing.clone()],
+        )
+        .await;
+
+        assert_eq!(*processes.observed.lock().unwrap(), vec![existing]);
+        assert!(processes.find_calls.load(Ordering::SeqCst) > 1);
+        assert!(received(&mut event_rx, |event| {
+            matches!(
+                event,
+                RuntimeEvent::Log(LogLevel::Info, message)
+                    if message.contains("source=preexisting_fallback")
+            )
+        }));
+    }
+
+    #[test]
+    fn newest_process_is_deterministic() {
+        let candidates = [process(7, 101), process(9, 101), process(42, 100)];
+
+        assert_eq!(newest_process(candidates.iter()), Some(process(9, 101)));
+    }
+
     fn fast_settings(wait_timeout: Duration) -> ProcessLifecycleSettings {
         ProcessLifecycleSettings {
             wait_timeout,
             poll_interval: Duration::from_millis(1),
             wait_notice_interval: Duration::from_secs(60),
             watch_interval: Duration::from_millis(1),
+            preexisting_process_grace: Duration::ZERO,
         }
     }
 

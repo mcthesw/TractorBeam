@@ -355,6 +355,7 @@ impl BridgeClient {
         });
 
         let native_hook = if config.mode != SessionMode::Official {
+            let preexisting_processes = tractor_beam_isaac_injector::find_isaac_processes();
             let native_hook_paths = match tractor_beam_isaac_injector::resolve_native_hook_paths() {
                 Ok(paths) => paths,
                 Err(error) => {
@@ -395,7 +396,11 @@ impl BridgeClient {
                     write.path.display()
                 ),
             );
-            Some(session::SessionNativeHook::new(native_hook_paths, ipc))
+            Some(session::SessionNativeHook::new(
+                native_hook_paths,
+                ipc,
+                preexisting_processes,
+            ))
         } else {
             self.state.hook_launch_parameters_path_written = None;
             None
@@ -410,15 +415,13 @@ impl BridgeClient {
         } else {
             None
         };
-        let session =
-            session::spawn_bridge_worker_background(config.clone(), native_hook, relay_data_plane);
-
         if let Err(error) = crate::steam::launch_isaac() {
-            self.apply_stopped_session_events(session.stop());
             self.cleanup_hook_launch_parameters("Steam launch failed");
             self.active_log_context = None;
             return Err(error.into());
         }
+        let session =
+            session::spawn_bridge_worker_background(config.clone(), native_hook, relay_data_plane);
 
         self.session = Some(session);
         self.state.status = state::SessionStatus::Running;

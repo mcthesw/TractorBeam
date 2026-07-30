@@ -12,5 +12,6 @@ pub use paths::{
 };
 pub use platform::inject;
 pub use process::{
-    ISAAC_PROCESS_NAME, IsaacProcess, find_isaac_process, is_process_running, wait_for_isaac,
+    ISAAC_PROCESS_NAME, IsaacProcess, find_isaac_process, find_isaac_processes, is_process_running,
+    wait_for_isaac,
 };

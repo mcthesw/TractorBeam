@@ -19,7 +19,12 @@ pub struct IsaacProcess {
 
 #[must_use]
 pub fn find_isaac_process() -> Option<IsaacProcess> {
-    find_process_by_name(ISAAC_PROCESS_NAME)
+    find_isaac_processes().into_iter().next()
+}
+
+#[must_use]
+pub fn find_isaac_processes() -> Vec<IsaacProcess> {
+    find_processes_by_name(ISAAC_PROCESS_NAME)
 }
 
 #[must_use]
@@ -50,18 +55,25 @@ pub fn wait_for_isaac(
     Err(InjectorError::ProcessNotFound)
 }
 
-fn find_process_by_name(name: &str) -> Option<IsaacProcess> {
+fn find_processes_by_name(name: &str) -> Vec<IsaacProcess> {
     let mut system = System::new();
     system.refresh_processes(ProcessesToUpdate::All, true);
-    system
+    let mut processes = system
         .processes()
         .values()
-        .find(|process| process.name().to_string_lossy().eq_ignore_ascii_case(name))
+        .filter(|process| process.name().to_string_lossy().eq_ignore_ascii_case(name))
         .map(|process| IsaacProcess {
             pid: process.pid().as_u32(),
             name: process.name().to_string_lossy().into_owned(),
             started_at: process.start_time(),
         })
+        .collect::<Vec<_>>();
+    sort_newest_first(&mut processes);
+    processes
+}
+
+fn sort_newest_first(processes: &mut [IsaacProcess]) {
+    processes.sort_by_key(|process| std::cmp::Reverse((process.started_at, process.pid)));
 }
 
 fn process_identity_matches(
@@ -99,5 +111,33 @@ mod tests {
             ISAAC_PROCESS_NAME,
             101
         ));
+    }
+
+    #[test]
+    fn process_candidates_are_sorted_by_newest_start_then_pid() {
+        let mut processes = vec![
+            process(42, 100),
+            process(7, 101),
+            process(9, 101),
+            process(100, 99),
+        ];
+
+        sort_newest_first(&mut processes);
+
+        assert_eq!(
+            processes
+                .iter()
+                .map(|process| (process.pid, process.started_at))
+                .collect::<Vec<_>>(),
+            [(9, 101), (7, 101), (42, 100), (100, 99)]
+        );
+    }
+
+    fn process(pid: u32, started_at: u64) -> IsaacProcess {
+        IsaacProcess {
+            pid,
+            name: ISAAC_PROCESS_NAME.to_owned(),
+            started_at,
+        }
     }
 }

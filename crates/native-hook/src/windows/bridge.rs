@@ -7,11 +7,10 @@ use std::{
     os::windows::ffi::OsStringExt,
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
         mpsc::{SyncSender, TrySendError, sync_channel},
     },
-    thread::JoinHandle,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -32,6 +31,7 @@ static LOG_LOCK: Mutex<()> = Mutex::new(());
 static LOG_DATE: Mutex<Option<String>> = Mutex::new(None);
 static NEXT_SEQUENCE: AtomicU32 = AtomicU32::new(1);
 static MODULE_HANDLE: AtomicUsize = AtomicUsize::new(0);
+static WORKER_RUNNING: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HookLogLevel {
@@ -73,8 +73,6 @@ struct BridgeState {
     fallback_to_steam: bool,
     data_tx: SyncSender<GamePacket>,
     queue: Arc<Mutex<VecDeque<GamePacket>>>,
-    running: Arc<AtomicBool>,
-    worker: Option<JoinHandle<()>>,
     counters: Arc<WorkerCounters>,
 }
 
@@ -104,15 +102,16 @@ pub fn initialize() {
     }
 
     let queue = Arc::new(Mutex::new(VecDeque::new()));
-    let running = Arc::new(AtomicBool::new(true));
+    let running = Arc::clone(WORKER_RUNNING.get_or_init(|| Arc::new(AtomicBool::new(false))));
+    running.store(true, Ordering::Release);
     let counters = Arc::new(WorkerCounters::default());
     let (data_tx, data_rx) = sync_channel(tractor_beam_hook_ipc::HOOK_DATA_QUEUE_CAPACITY);
-    let worker = ipc_worker::spawn(
+    let _worker = ipc_worker::spawn(
         config.ipc_endpoint,
         config.ipc_session,
         data_rx,
         Arc::clone(&queue),
-        Arc::clone(&running),
+        running,
         Arc::clone(&counters),
     );
 
@@ -121,13 +120,12 @@ pub fn initialize() {
         fallback_to_steam: config.fallback_to_steam,
         data_tx,
         queue,
-        running,
-        worker: Some(worker),
         counters,
     };
     *STATE.lock().expect("bridge state lock poisoned") = Some(state);
     log_info(format!(
-        "bridge_initialized mode={:?} fallback_to_steam={} ipc_version={}.{} data_queue_capacity={} control_queue_capacity={}",
+        "bridge_initialized pid={} mode={:?} fallback_to_steam={} ipc_version={}.{} data_queue_capacity={} control_queue_capacity={}",
+        std::process::id(),
         config.mode,
         config.fallback_to_steam,
         tractor_beam_hook_ipc::PROTOCOL_MAJOR,
@@ -137,13 +135,9 @@ pub fn initialize() {
     ));
 }
 
-pub fn shutdown() {
-    if let Some(mut state) = STATE.lock().expect("bridge state lock poisoned").take() {
-        log_info("bridge_shutdown");
-        state.running.store(false, Ordering::Relaxed);
-        if let Some(worker) = state.worker.take() {
-            let _ = worker.join();
-        }
+pub fn request_process_detach() {
+    if let Some(running) = WORKER_RUNNING.get() {
+        running.store(false, Ordering::Release);
     }
 }
 

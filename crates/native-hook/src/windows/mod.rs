@@ -40,7 +40,9 @@ pub unsafe extern "system" fn DllMain(
             }
         },
         DLL_PROCESS_DETACH => {
-            bridge::shutdown();
+            // DllMain runs under the Windows loader lock. Only publish cancellation here:
+            // locking shared state, writing logs, or joining the IPC worker can deadlock exit.
+            bridge::request_process_detach();
         }
         _ => {}
     }

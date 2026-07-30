@@ -1,6 +1,7 @@
 use std::{
     collections::VecDeque,
     io::{self, Write},
+    os::windows::io::OwnedHandle,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -10,8 +11,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use interprocess::TryClone as _;
-use interprocess::local_socket::{GenericNamespaced, prelude::*};
+use interprocess::local_socket::prelude::*;
+use interprocess::os::windows::named_pipe::{
+    DuplexPipeStream, local_socket::Stream as WindowsLocalSocketStream, pipe_mode::Bytes,
+};
+use interprocess::{ConnectWaitMode, TryClone as _};
 use tractor_beam_hook_ipc::{
     ClientToHook, ErrorCode, FrameDecoder, GamePacket, Handshake, HookToClient, InputDelayCommand,
     IpcHealth, PeerRole, ProtocolError, SessionId,
@@ -20,6 +24,7 @@ use tractor_beam_hook_ipc::{
 use super::{bridge, input_delay::InputDelayMemoryError};
 
 const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(50);
 const INITIAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(40);
 const RECONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -46,10 +51,19 @@ pub(super) fn spawn(
     counters: Arc<WorkerCounters>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        if let Err(error) = run(
+        bridge::log_info(format!("ipc_worker_started pid={}", std::process::id()));
+        let result = run(
             &endpoint, session_id, &data_rx, &inbound, &running, &counters,
-        ) {
-            bridge::log_error(format!("ipc_worker_terminal error={error}"));
+        );
+        match result {
+            Ok(()) => bridge::log_info(format!(
+                "ipc_worker_stopped pid={} reason=shutdown",
+                std::process::id()
+            )),
+            Err(error) => bridge::log_error(format!(
+                "ipc_worker_terminal pid={} error={error}",
+                std::process::id()
+            )),
         }
     })
 }
@@ -76,7 +90,7 @@ fn run(
                 },
             ));
         }
-        match connect(endpoint, session_id) {
+        match connect(endpoint, session_id, running) {
             Ok(mut stream) => {
                 if connected_once {
                     saturating_increment_u32(&counters.reconnects);
@@ -106,6 +120,7 @@ fn run(
                 }
             }
             Err(error) if is_protocol_error(&error) => return Err(error),
+            Err(_) if !running.load(Ordering::Acquire) => break,
             Err(_) => thread::sleep(CONNECT_RETRY_INTERVAL),
         }
     }
@@ -124,12 +139,12 @@ fn connect_window_expired(
     }
 }
 
-fn connect(endpoint: &str, session_id: SessionId) -> io::Result<LocalSocketStream> {
-    let name = endpoint
-        .to_ns_name::<GenericNamespaced>()
-        .map_err(io::Error::other)?;
-    let mut stream = LocalSocketStream::connect(name)?;
-    stream.set_nonblocking(true)?;
+fn connect(
+    endpoint: &str,
+    session_id: SessionId,
+    running: &AtomicBool,
+) -> io::Result<LocalSocketStream> {
+    let mut stream = connect_stream(endpoint)?;
     write_message(
         &mut stream,
         &HookToClient::Handshake(Handshake::new(PeerRole::NativeHook, session_id)),
@@ -138,6 +153,12 @@ fn connect(endpoint: &str, session_id: SessionId) -> io::Result<LocalSocketStrea
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     let mut decoder = FrameDecoder::new();
     loop {
+        if !running.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "local IPC connection cancelled",
+            ));
+        }
         if Instant::now() >= deadline {
             return Err(protocol_io("local IPC handshake timed out"));
         }
@@ -157,6 +178,21 @@ fn connect(endpoint: &str, session_id: SessionId) -> io::Result<LocalSocketStrea
             Err(error) => return Err(error),
         }
     }
+}
+
+fn connect_stream(endpoint: &str) -> io::Result<LocalSocketStream> {
+    let path = format!(r"\\.\pipe\{endpoint}");
+    let pipe = DuplexPipeStream::<Bytes>::connect_by_path_with_wait_mode(
+        path,
+        ConnectWaitMode::Timeout(CONNECT_ATTEMPT_TIMEOUT),
+    )?;
+    let handle = OwnedHandle::try_from(pipe)
+        .map_err(|_| io::Error::other("connected Named Pipe handle is unexpectedly shared"))?;
+    let stream = WindowsLocalSocketStream::try_from(handle)
+        .map_err(|error| io::Error::other(format!("invalid local IPC pipe handle: {error}")))?;
+    let stream = LocalSocketStream::from(stream);
+    stream.set_nonblocking(true)?;
+    Ok(stream)
 }
 
 enum ConnectionEnd {
@@ -427,7 +463,14 @@ fn saturating_increment_u32(counter: &AtomicU32) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+    use interprocess::local_socket::{GenericNamespaced, Listener, ListenerOptions};
+
     use super::*;
+
+    const TEST_TIMEOUT: Duration = Duration::from_secs(1);
+    static TEST_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
     struct ZeroThenWrite {
         returned_zero: bool,
@@ -465,5 +508,165 @@ mod tests {
         assert!(pending.try_flush(&mut writer).unwrap());
 
         assert_eq!(writer.bytes, b"game-packet");
+    }
+
+    #[test]
+    fn busy_named_pipe_connect_attempt_is_bounded() {
+        let (endpoint, _) = test_session();
+        let name = endpoint.clone().to_ns_name::<GenericNamespaced>().unwrap();
+        let _listener = ListenerOptions::new()
+            .name(name.clone())
+            .create_sync()
+            .unwrap();
+        let _occupied = LocalSocketStream::connect(name.clone()).unwrap();
+
+        let started = Instant::now();
+        let error = connect_stream(&endpoint)
+            .expect_err("second client should time out while the pipe instance is occupied");
+
+        assert!(is_transient(&error), "unexpected connect error: {error}");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "busy pipe connect exceeded its bounded attempt"
+        );
+    }
+
+    #[test]
+    fn shutdown_during_initial_connect_is_bounded() {
+        let (endpoint, session_id) = test_session();
+        let running = Arc::new(AtomicBool::new(true));
+        let (data_tx, data_rx) = std::sync::mpsc::sync_channel(1);
+        let handle = spawn(
+            endpoint,
+            session_id,
+            data_rx,
+            Arc::new(Mutex::new(VecDeque::new())),
+            Arc::clone(&running),
+            Arc::new(WorkerCounters::default()),
+        );
+
+        thread::sleep(Duration::from_millis(10));
+        running.store(false, Ordering::Release);
+        wait_for_worker(handle);
+        drop(data_tx);
+    }
+
+    #[test]
+    fn shutdown_while_connected_is_bounded() {
+        let (endpoint, session_id) = test_session();
+        let listener = test_listener(&endpoint);
+        let running = Arc::new(AtomicBool::new(true));
+        let (data_tx, data_rx) = std::sync::mpsc::sync_channel(1);
+        let handle = spawn(
+            endpoint,
+            session_id,
+            data_rx,
+            Arc::new(Mutex::new(VecDeque::new())),
+            Arc::clone(&running),
+            Arc::new(WorkerCounters::default()),
+        );
+        let stream = accept_hook(&listener, session_id);
+
+        running.store(false, Ordering::Release);
+        wait_for_worker(handle);
+        drop(stream);
+        drop(data_tx);
+    }
+
+    #[test]
+    fn shutdown_during_reconnect_is_bounded() {
+        let (endpoint, session_id) = test_session();
+        let listener = test_listener(&endpoint);
+        let running = Arc::new(AtomicBool::new(true));
+        let (data_tx, data_rx) = std::sync::mpsc::sync_channel(1);
+        let handle = spawn(
+            endpoint,
+            session_id,
+            data_rx,
+            Arc::new(Mutex::new(VecDeque::new())),
+            Arc::clone(&running),
+            Arc::new(WorkerCounters::default()),
+        );
+        let stream = accept_hook(&listener, session_id);
+        drop(stream);
+        drop(listener);
+        thread::sleep(Duration::from_millis(100));
+
+        running.store(false, Ordering::Release);
+        wait_for_worker(handle);
+        drop(data_tx);
+    }
+
+    fn test_session() -> (String, SessionId) {
+        let counter = TEST_SESSION_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+        let mut bytes = [0_u8; 16];
+        bytes[..4].copy_from_slice(&std::process::id().to_le_bytes());
+        bytes[8..].copy_from_slice(&counter.to_le_bytes());
+        let session_id = SessionId::new(bytes);
+        (tractor_beam_hook_ipc::endpoint_name(session_id), session_id)
+    }
+
+    fn test_listener(endpoint: &str) -> Listener {
+        let name = endpoint
+            .to_ns_name::<GenericNamespaced>()
+            .map_err(io::Error::other)
+            .unwrap();
+        ListenerOptions::new().name(name).create_sync().unwrap()
+    }
+
+    fn accept_hook(listener: &Listener, session_id: SessionId) -> LocalSocketStream {
+        let mut stream = listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let mut decoder = FrameDecoder::new();
+        let deadline = Instant::now() + TEST_TIMEOUT;
+        let mut sent_handshake = false;
+        loop {
+            assert!(Instant::now() < deadline, "Native Hook handshake timed out");
+            match tractor_beam_hook_ipc::sync_io::read_messages::<_, HookToClient>(
+                &mut stream,
+                &mut decoder,
+            ) {
+                Ok(messages) => {
+                    for message in messages {
+                        match message {
+                            HookToClient::Handshake(handshake) => {
+                                handshake
+                                    .validate(PeerRole::NativeHook, session_id)
+                                    .unwrap();
+                                tractor_beam_hook_ipc::sync_io::write_message(
+                                    &mut stream,
+                                    &ClientToHook::Handshake(Handshake::new(
+                                        PeerRole::BridgeClient,
+                                        session_id,
+                                    )),
+                                    WRITE_TIMEOUT,
+                                    IO_POLL_INTERVAL,
+                                )
+                                .unwrap();
+                                sent_handshake = true;
+                            }
+                            HookToClient::Ready if sent_handshake => return stream,
+                            _ => {}
+                        }
+                    }
+                }
+                Err(error) if is_transient(&error) => {
+                    thread::sleep(IDLE_WAIT_INTERVAL);
+                }
+                Err(error) => panic!("Native Hook handshake failed: {error}"),
+            }
+        }
+    }
+
+    fn wait_for_worker(handle: JoinHandle<()>) {
+        let deadline = Instant::now() + TEST_TIMEOUT;
+        while !handle.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            handle.is_finished(),
+            "Native Hook IPC worker did not stop within the bounded window"
+        );
+        handle.join().unwrap();
     }
 }

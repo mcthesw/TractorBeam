@@ -50,6 +50,18 @@ pub fn injector_args(pid: u32, dll_path: &Path) -> [OsString; 4] {
     ]
 }
 
+#[cfg(windows)]
+fn elevated_injector_args(pid: u32, dll_path: &Path, result_path: &Path) -> [OsString; 6] {
+    [
+        "--pid".into(),
+        pid.to_string().into(),
+        "--dll".into(),
+        dll_path.as_os_str().to_owned(),
+        "--result-file".into(),
+        result_path.as_os_str().to_owned(),
+    ]
+}
+
 pub fn run_injector(paths: &NativeHookPaths, pid: u32) -> Result<(), InjectorError> {
     let output = Command::new(&paths.injector)
         .args(injector_args(pid, &paths.hook))

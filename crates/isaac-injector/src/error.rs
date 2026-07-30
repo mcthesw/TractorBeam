@@ -86,7 +86,6 @@ impl InjectorError {
     #[must_use]
     pub fn is_access_denied(&self) -> bool {
         match self {
-            Self::AdminPermissionCancelled | Self::ElevatedRetryFailed { .. } => true,
             Self::Io(error) | Self::StepIo { source: error, .. } => {
                 error.raw_os_error() == Some(5) || error.kind() == io::ErrorKind::PermissionDenied
             }
@@ -147,8 +146,17 @@ mod tests {
         let error = InjectorError::AdminPermissionCancelled;
 
         assert!(error.is_admin_permission_cancelled());
-        assert!(error.is_access_denied());
+        assert!(!error.is_access_denied());
         assert_eq!(error.to_string(), "Admin permission was cancelled");
+    }
+
+    #[test]
+    fn elevated_helper_infrastructure_failure_is_not_access_denied() {
+        let error = InjectorError::elevated_retry_failed(
+            "could not read elevated injector helper exit code",
+        );
+
+        assert!(!error.is_access_denied());
     }
 
     #[test]

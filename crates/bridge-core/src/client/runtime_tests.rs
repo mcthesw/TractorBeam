@@ -251,6 +251,101 @@ fn diagnostics_include_native_hook_startup_evidence() {
 }
 
 #[test]
+fn terminal_hook_ipc_failure_replaces_waiting_startup_state() {
+    let mut client = BridgeClient::new();
+    client.state.hook_startup = state::HookStartupState {
+        phase: state::HookStartupPhase::WaitingForHookEndpoint,
+        process_name: Some("isaac-ng.exe".to_owned()),
+        pid: Some(42),
+        injector_path: Some(PathBuf::from("bundle/tractor-beam-isaac-injector.exe")),
+        hook_path: Some(PathBuf::from("bundle/tractor_beam_native_hook.dll")),
+        injected: true,
+        message: Some("waiting for endpoint".to_owned()),
+        ..state::HookStartupState::default()
+    };
+    client.session = Some(session::SessionHandle::with_test_events(vec![
+        state::RuntimeEvent::HookIpc(Box::new(state::HookIpcState {
+            connection: state::HookIpcConnectionState::Failed,
+            last_error: Some("connection timed out".to_owned()),
+            ..state::HookIpcState::default()
+        })),
+    ]));
+
+    assert!(client.poll_events());
+    assert_eq!(
+        client.state.hook_startup.phase,
+        state::HookStartupPhase::Failed
+    );
+    assert!(client.state.hook_startup.injected);
+    assert!(!client.state.hook_startup.endpoint_ready);
+    assert_eq!(client.state.hook_startup.pid, Some(42));
+    assert_eq!(
+        client.state.hook_startup.hook_path.as_deref(),
+        Some(PathBuf::from("bundle/tractor_beam_native_hook.dll").as_path())
+    );
+    assert_eq!(
+        client.state.hook_startup.message.as_deref(),
+        Some("Native Hook local IPC failed: connection timed out")
+    );
+}
+
+#[test]
+fn hook_ipc_failure_does_not_replace_a_specific_startup_failure() {
+    let mut client = BridgeClient::new();
+    client.state.hook_startup = state::HookStartupState {
+        phase: state::HookStartupPhase::Failed,
+        injected: true,
+        message: Some("specific startup failure".to_owned()),
+        ..state::HookStartupState::default()
+    };
+    client.session = Some(session::SessionHandle::with_test_events(vec![
+        state::RuntimeEvent::HookIpc(Box::new(state::HookIpcState {
+            connection: state::HookIpcConnectionState::Failed,
+            last_error: Some("generic IPC failure".to_owned()),
+            ..state::HookIpcState::default()
+        })),
+    ]));
+
+    assert!(client.poll_events());
+    assert_eq!(
+        client.state.hook_startup.phase,
+        state::HookStartupPhase::Failed
+    );
+    assert_eq!(
+        client.state.hook_startup.message.as_deref(),
+        Some("specific startup failure")
+    );
+}
+
+#[test]
+fn stopped_session_hook_ipc_failure_updates_startup_state() {
+    let mut client = BridgeClient::new();
+    client.state.hook_startup = state::HookStartupState {
+        phase: state::HookStartupPhase::WaitingForHookEndpoint,
+        injected: true,
+        message: Some("waiting for endpoint".to_owned()),
+        ..state::HookStartupState::default()
+    };
+
+    client.apply_stopped_session_events(vec![state::RuntimeEvent::HookIpc(Box::new(
+        state::HookIpcState {
+            connection: state::HookIpcConnectionState::Failed,
+            last_error: Some("connection timed out during stop".to_owned()),
+            ..state::HookIpcState::default()
+        },
+    ))]);
+
+    assert_eq!(
+        client.state.hook_startup.phase,
+        state::HookStartupPhase::Failed
+    );
+    assert_eq!(
+        client.state.hook_startup.message.as_deref(),
+        Some("Native Hook local IPC failed: connection timed out during stop")
+    );
+}
+
+#[test]
 fn cleanup_hook_launch_parameters_keeps_first_successful_result() {
     let directory = tempfile::tempdir().expect("create test directory");
     let path = directory.path().join("hook-runtime.txt");

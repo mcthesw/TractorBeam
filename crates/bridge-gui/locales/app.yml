@@ -612,8 +612,8 @@ hook.ready:
   zh_CN: "Hook 已就绪"
   en_US: "Hook ready"
 hook.failed:
-  zh_CN: "注入失败"
-  en_US: "Injection failed"
+  zh_CN: "Hook 启动失败"
+  en_US: "Hook startup failed"
 hook.cancelled:
   zh_CN: "已取消"
   en_US: "Cancelled"

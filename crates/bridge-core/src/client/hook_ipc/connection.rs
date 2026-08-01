@@ -1,41 +1,63 @@
 use super::*;
 
 pub(super) fn server_handshake(
-    stream: &mut LocalSocketStream,
+    stream: &mut TcpStream,
     session_id: SessionId,
-) -> io::Result<(
-    tractor_beam_hook_ipc::NegotiatedProtocol,
-    FrameDecoder,
-    Vec<HookToClient>,
-)> {
-    stream.set_nonblocking(true)?;
+) -> Result<
+    (
+        tractor_beam_hook_ipc::NegotiatedProtocol,
+        FrameDecoder,
+        Vec<HookToClient>,
+    ),
+    ServerHandshakeError,
+> {
+    stream
+        .set_nonblocking(true)
+        .map_err(ServerHandshakeError::Terminal)?;
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     let mut decoder = FrameDecoder::new();
     let negotiated = 'handshake: loop {
         if Instant::now() >= deadline {
-            return Err(protocol_io("local IPC handshake timed out"));
+            return Err(ServerHandshakeError::Unauthenticated(protocol_io(
+                "local IPC handshake timed out",
+            )));
         }
         match read_messages::<HookToClient>(stream, &mut decoder) {
             Ok(messages) => match messages.as_slice() {
                 [HookToClient::Handshake(handshake)] => {
-                    break 'handshake (*handshake)
-                        .validate(PeerRole::NativeHook, session_id)
-                        .map_err(protocol_io)?;
+                    break 'handshake match (*handshake).validate(PeerRole::NativeHook, session_id) {
+                        Ok(negotiated) => negotiated,
+                        Err(ProtocolError::SessionMismatch) => {
+                            return Err(ServerHandshakeError::Unauthenticated(protocol_io(
+                                ProtocolError::SessionMismatch,
+                            )));
+                        }
+                        Err(error) => {
+                            return Err(ServerHandshakeError::Terminal(protocol_io(error)));
+                        }
+                    };
                 }
                 [] => {}
-                _ => return Err(protocol_io("expected one Native Hook handshake")),
+                _ => {
+                    return Err(ServerHandshakeError::Unauthenticated(protocol_io(
+                        "expected one Native Hook handshake",
+                    )));
+                }
             },
             Err(error) if is_transient(&error) => thread::sleep(IO_POLL_INTERVAL),
-            Err(error) => return Err(error),
+            Err(error) => return Err(ServerHandshakeError::Unauthenticated(error)),
         }
     };
     write_message(
         stream,
         &ClientToHook::Handshake(Handshake::new(PeerRole::BridgeClient, session_id)),
-    )?;
+    )
+    .map_err(ServerHandshakeError::Terminal)?;
     loop {
         if Instant::now() >= deadline {
-            return Err(protocol_io("local IPC ready acknowledgement timed out"));
+            return Err(ServerHandshakeError::Terminal(protocol_io(
+                "local IPC ready acknowledgement timed out",
+            )));
         }
         match read_messages::<HookToClient>(stream, &mut decoder) {
             Ok(messages) => {
@@ -44,13 +66,20 @@ pub(super) fn server_handshake(
                     if message == HookToClient::Ready {
                         return Ok((negotiated, decoder, messages.collect()));
                     }
-                    return Err(protocol_io("expected Native Hook ready acknowledgement"));
+                    return Err(ServerHandshakeError::Terminal(protocol_io(
+                        "expected Native Hook ready acknowledgement",
+                    )));
                 }
             }
             Err(error) if is_transient(&error) => thread::sleep(IO_POLL_INTERVAL),
-            Err(error) => return Err(error),
+            Err(error) => return Err(ServerHandshakeError::Terminal(error)),
         }
     }
+}
+
+pub(super) enum ServerHandshakeError {
+    Unauthenticated(io::Error),
+    Terminal(io::Error),
 }
 
 pub(super) enum ConnectionEnd {
@@ -59,7 +88,7 @@ pub(super) enum ConnectionEnd {
 }
 
 pub(super) fn run_connection(
-    stream: &mut LocalSocketStream,
+    stream: &mut TcpStream,
     context: &ConnectionContext<'_>,
     reconnects: u32,
     decoder: FrameDecoder,
@@ -332,15 +361,12 @@ pub(super) fn status(connection: HookIpcConnectionState) -> HookIpcState {
     }
 }
 
-pub(super) fn write_message(
-    stream: &mut LocalSocketStream,
-    message: &ClientToHook,
-) -> io::Result<()> {
+pub(super) fn write_message(stream: &mut TcpStream, message: &ClientToHook) -> io::Result<()> {
     tractor_beam_hook_ipc::sync_io::write_message(stream, message, WRITE_TIMEOUT, IO_POLL_INTERVAL)
 }
 
 pub(super) fn read_messages<T: tractor_beam_hook_ipc::WireMessage>(
-    stream: &mut LocalSocketStream,
+    stream: &mut TcpStream,
     decoder: &mut FrameDecoder,
 ) -> io::Result<Vec<T>> {
     tractor_beam_hook_ipc::sync_io::read_messages(stream, decoder)

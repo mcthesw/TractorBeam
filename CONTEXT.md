@@ -35,7 +35,7 @@ The versioned message language and packet formats at one component boundary. Loc
 _Avoid_: transport, runtime, socket loop
 
 **Local IPC Protocol**:
-The typed `TBI2` message contract used only between one Bridge Client session and its Native Hook over a Local Socket/Windows Named Pipe.
+The typed `TBI2` message contract used only between one Bridge Client session and its Native Hook over an IPv4 loopback TCP connection.
 _Avoid_: Relay Protocol, UDP protocol, socket loop
 
 **Relay Protocol v2**:

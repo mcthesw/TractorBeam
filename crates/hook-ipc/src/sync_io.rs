@@ -63,7 +63,7 @@ where
         #[cfg(windows)]
         Ok(0) => Err(io::Error::new(
             io::ErrorKind::WouldBlock,
-            "local IPC named pipe has no bytes available",
+            "local IPC stream has no bytes available",
         )),
         #[cfg(not(windows))]
         Ok(0) => Err(io::Error::new(
@@ -117,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn retries_zero_progress_windows_named_pipe_write() {
+    fn retries_zero_progress_stream_write() {
         let mut writer = ZeroThenWrite {
             returned_zero: false,
             bytes: Vec::new(),

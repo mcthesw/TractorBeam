@@ -175,19 +175,7 @@ impl BridgeClient {
                     }
                     self.state.hook_startup = startup;
                 }
-                state::RuntimeEvent::HookIpc(ipc) => {
-                    let ipc = *ipc;
-                    if ipc.connection == state::HookIpcConnectionState::Connected
-                        && self.state.hook_startup.injected
-                    {
-                        self.state.hook_startup.phase = state::HookStartupPhase::Ready;
-                        self.state.hook_startup.endpoint_ready = true;
-                        self.state.hook_startup.message =
-                            Some("Native Hook local IPC is ready".to_owned());
-                        self.state.hook_startup.updated_at = state::unix_seconds();
-                    }
-                    self.state.hook_ipc = ipc;
-                }
+                state::RuntimeEvent::HookIpc(ipc) => self.apply_hook_ipc_state(*ipc),
                 state::RuntimeEvent::SessionHealthSnapshot(snapshot) => {
                     if let Some(incident) = self.state.record_session_health_incident(&snapshot) {
                         self.log(
@@ -365,7 +353,15 @@ impl BridgeClient {
                     return Err(io::Error::other(message).into());
                 }
             };
-            let ipc = hook_ipc::HookIpcSession::generate();
+            let ipc = match hook_ipc::HookIpcSession::bind() {
+                Ok(ipc) => ipc,
+                Err(error) => {
+                    let message = format!("Native Hook local IPC bind failed: {error}");
+                    self.record_hook_startup_failure(Some(&native_hook_paths), message.clone());
+                    self.active_log_context = None;
+                    return Err(io::Error::new(error.kind(), message).into());
+                }
+            };
             let write = match hook_config::write_hook_config(config, &native_hook_paths, &ipc) {
                 Ok(write) => write,
                 Err(error) => {

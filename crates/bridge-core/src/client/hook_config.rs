@@ -28,7 +28,7 @@ pub(super) fn write_hook_config(
 
 fn hook_config_contents(fallback_to_steam: u8, ipc: &HookIpcSession) -> String {
     format!(
-        "mode=replace\nfallback_to_steam={fallback_to_steam}\nipc_endpoint={}\nipc_session={}\n",
+        "mode=replace\nfallback_to_steam={fallback_to_steam}\nipc_transport=tcp\nipc_endpoint={}\nipc_session={}\n",
         ipc.endpoint,
         ipc.session_id.to_hex()
     )
@@ -76,6 +76,7 @@ mod tests {
 
         assert!(contents.contains(&format!("ipc_endpoint={}\n", ipc.endpoint)));
         assert!(contents.contains(&format!("ipc_session={}\n", ipc.session_id.to_hex())));
+        assert!(contents.contains("ipc_transport=tcp\n"));
         assert!(!contents.contains("sidecar="));
         assert!(!contents.contains("control="));
     }

@@ -2,13 +2,9 @@ use super::*;
 
 pub(super) const TEST_TIMEOUT: Duration = Duration::from_secs(3);
 
-pub(super) fn connect_fake_hook(session: &HookIpcSession) -> LocalSocketStream {
-    let name = session
-        .endpoint
-        .clone()
-        .to_ns_name::<GenericNamespaced>()
-        .unwrap();
-    let mut stream = connect_with_retry(name);
+pub(super) fn connect_fake_hook(session: &HookIpcSession) -> TcpStream {
+    let mut stream = connect_with_retry(session.endpoint);
+    stream.set_nodelay(true).unwrap();
     stream.set_nonblocking(true).unwrap();
     write_hook_message(
         &mut stream,
@@ -38,12 +34,10 @@ pub(super) fn connect_fake_hook(session: &HookIpcSession) -> LocalSocketStream {
     }
 }
 
-pub(super) fn connect_with_retry(
-    name: interprocess::local_socket::Name<'static>,
-) -> LocalSocketStream {
+pub(super) fn connect_with_retry(endpoint: SocketAddr) -> TcpStream {
     let deadline = Instant::now() + TEST_TIMEOUT;
     loop {
-        match LocalSocketStream::connect(name.clone()) {
+        match TcpStream::connect(endpoint) {
             Ok(stream) => return stream,
             Err(error) if Instant::now() < deadline => {
                 let _ = error;
@@ -55,7 +49,7 @@ pub(super) fn connect_with_retry(
 }
 
 pub(super) fn read_client_messages(
-    stream: &mut LocalSocketStream,
+    stream: &mut TcpStream,
     decoder: &mut FrameDecoder,
 ) -> io::Result<Vec<ClientToHook>> {
     match read_messages(stream, decoder) {
@@ -64,14 +58,11 @@ pub(super) fn read_client_messages(
     }
 }
 
-pub(super) fn write_hook_message(
-    stream: &mut LocalSocketStream,
-    message: &HookToClient,
-) -> io::Result<()> {
+pub(super) fn write_hook_message(stream: &mut TcpStream, message: &HookToClient) -> io::Result<()> {
     tractor_beam_hook_ipc::sync_io::write_message(stream, message, WRITE_TIMEOUT, IO_POLL_INTERVAL)
 }
 
-pub(super) fn wait_for_shutdown(stream: &mut LocalSocketStream) {
+pub(super) fn wait_for_shutdown(stream: &mut TcpStream) {
     let mut decoder = FrameDecoder::new();
     let deadline = Instant::now() + TEST_TIMEOUT;
     loop {

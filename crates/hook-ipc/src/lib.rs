@@ -282,11 +282,6 @@ pub enum ProtocolError {
     Postcard(#[from] postcard::Error),
 }
 
-#[must_use]
-pub fn endpoint_name(session_id: SessionId) -> String {
-    format!("tractor-beam-{}", session_id.to_hex())
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
@@ -299,7 +294,6 @@ mod tests {
     fn session_id_roundtrips_config_representation() {
         let encoded = SESSION.to_hex();
         assert_eq!(encoded.parse::<SessionId>().unwrap(), SESSION);
-        assert_eq!(endpoint_name(SESSION), format!("tractor-beam-{encoded}"));
     }
 
     #[test]

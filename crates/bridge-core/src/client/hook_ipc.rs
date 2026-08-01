@@ -3,6 +3,7 @@ use std::{
     future::Future,
     io::{self, Write},
     mem,
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -12,16 +13,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use interprocess::TryClone as _;
-use interprocess::local_socket::{
-    GenericNamespaced, ListenerNonblockingMode, ListenerOptions, prelude::*,
-};
 use rand::RngExt as _;
 use tokio::sync::mpsc::{Receiver as TokioReceiver, Sender as TokioSender};
 use tokio_util::sync::CancellationToken;
 use tractor_beam_hook_ipc::{
     ClientToHook, ErrorCode, FrameDecoder, GamePacket, Handshake, HookToClient, InputDelayCommand,
-    PeerRole, SessionId,
+    PeerRole, ProtocolError, SessionId,
 };
 
 use super::state::{
@@ -58,21 +55,30 @@ impl Default for ListenerSettings {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(super) struct HookIpcSession {
-    pub(super) endpoint: String,
+    pub(super) endpoint: SocketAddr,
     pub(super) session_id: SessionId,
+    listener: Arc<TcpListener>,
 }
 
 impl HookIpcSession {
-    pub(super) fn generate() -> Self {
+    pub(super) fn bind() -> io::Result<Self> {
         let mut bytes = [0_u8; 16];
         rand::rng().fill(&mut bytes);
         let session_id = SessionId::new(bytes);
-        Self {
-            endpoint: tractor_beam_hook_ipc::endpoint_name(session_id),
+        Self::bind_with_session(session_id)
+    }
+
+    fn bind_with_session(session_id: SessionId) -> io::Result<Self> {
+        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
+        listener.set_nonblocking(true)?;
+        let endpoint = listener.local_addr()?;
+        Ok(Self {
+            endpoint,
             session_id,
-        }
+            listener: Arc::new(listener),
+        })
     }
 
     #[cfg(test)]
@@ -86,10 +92,7 @@ impl HookIpcSession {
                 .to_le_bytes(),
         );
         let session_id = SessionId::new(bytes);
-        Self {
-            endpoint: tractor_beam_hook_ipc::endpoint_name(session_id),
-            session_id,
-        }
+        Self::bind_with_session(session_id).expect("test loopback listener binds")
     }
 }
 
@@ -217,14 +220,7 @@ fn start_with_settings(
     ClientIpcSender,
     impl Future<Output = io::Result<()>> + Send + 'static,
 )> {
-    let name = session
-        .endpoint
-        .to_ns_name::<GenericNamespaced>()
-        .map_err(io::Error::other)?;
-    let listener = ListenerOptions::new()
-        .name(name)
-        .nonblocking(ListenerNonblockingMode::Accept)
-        .create_sync()?;
+    let listener = Arc::clone(&session.listener);
     let (from_hook_tx, from_hook_rx) =
         tokio::sync::mpsc::channel(tractor_beam_hook_ipc::HOOK_DATA_QUEUE_CAPACITY);
     let (to_hook_tx, to_hook_rx) =
@@ -258,7 +254,7 @@ fn start_with_settings(
     Ok((from_hook_rx, sender, worker))
 }
 
-fn run_listener(listener: LocalSocketListener, context: ListenerContext) -> io::Result<()> {
+fn run_listener(listener: Arc<TcpListener>, context: ListenerContext) -> io::Result<()> {
     let ListenerContext {
         session_id,
         from_hook_tx,
@@ -273,6 +269,8 @@ fn run_listener(listener: LocalSocketListener, context: ListenerContext) -> io::
     let mut disconnected_at = started;
     let mut connected_once = false;
     let mut reconnects = 0_u32;
+    let mut last_rejection = None::<String>;
+    let mut rejected_connections = 0_u32;
     loop {
         if cancellation.is_cancelled() {
             reject_pending_controls(&control_rx);
@@ -284,32 +282,59 @@ fn run_listener(listener: LocalSocketListener, context: ListenerContext) -> io::
             started.elapsed() >= settings.initial_connect_timeout
         };
         if expired {
-            let message = if connected_once {
+            let stage = if connected_once {
                 "Native Hook local IPC reconnect timed out"
             } else {
                 "Native Hook local IPC connection timed out"
             };
-            publish_failure(&event_tx, message);
+            let message = last_rejection.as_ref().map_or_else(
+                || stage.to_owned(),
+                |error| format!("{stage}; last rejected connection: {error}"),
+            );
+            publish_failure(&event_tx, &message);
             reject_pending_controls(&control_rx);
             return Err(io::Error::new(io::ErrorKind::TimedOut, message));
         }
 
         match listener.accept() {
-            Ok(mut stream) => {
+            Ok((mut stream, source)) => {
+                if !source.ip().is_loopback() {
+                    continue;
+                }
+                stream.set_nodelay(true)?;
+                drain_data(&to_hook_rx, &client_dropped);
+                let (negotiated, decoder, pending_messages) = match server_handshake(
+                    &mut stream,
+                    session_id,
+                ) {
+                    Ok(handshake) => handshake,
+                    Err(ServerHandshakeError::Unauthenticated(error)) => {
+                        last_rejection = Some(error.to_string());
+                        rejected_connections = rejected_connections.saturating_add(1);
+                        if rejected_connections == 1 || rejected_connections.is_multiple_of(16) {
+                            send_event(
+                                &event_tx,
+                                log_event(
+                                    LogLevel::Warn,
+                                    format!(
+                                        "Rejected unauthenticated local IPC connection: count={rejected_connections} error={error}"
+                                    ),
+                                ),
+                            );
+                        }
+                        continue;
+                    }
+                    Err(ServerHandshakeError::Terminal(error)) => {
+                        publish_failure(&event_tx, &error.to_string());
+                        reject_pending_controls(&control_rx);
+                        return Err(error);
+                    }
+                };
                 if connected_once {
                     reconnects = reconnects.saturating_add(1);
                 }
-                drain_data(&to_hook_rx, &client_dropped);
-                let (negotiated, decoder, pending_messages) =
-                    match server_handshake(&mut stream, session_id) {
-                        Ok(handshake) => handshake,
-                        Err(error) => {
-                            publish_failure(&event_tx, &error.to_string());
-                            reject_pending_controls(&control_rx);
-                            return Err(error);
-                        }
-                    };
                 connected_once = true;
+                last_rejection = None;
                 publish_status(
                     &event_tx,
                     HookIpcState {

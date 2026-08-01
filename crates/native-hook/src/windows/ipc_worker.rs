@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     io::{self, Write},
-    os::windows::io::OwnedHandle,
+    net::{SocketAddr, TcpStream},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -11,11 +11,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use interprocess::local_socket::prelude::*;
-use interprocess::os::windows::named_pipe::{
-    DuplexPipeStream, local_socket::Stream as WindowsLocalSocketStream, pipe_mode::Bytes,
-};
-use interprocess::{ConnectWaitMode, TryClone as _};
 use tractor_beam_hook_ipc::{
     ClientToHook, ErrorCode, FrameDecoder, GamePacket, Handshake, HookToClient, InputDelayCommand,
     IpcHealth, PeerRole, ProtocolError, SessionId,
@@ -43,7 +38,7 @@ pub(super) struct WorkerCounters {
 }
 
 pub(super) fn spawn(
-    endpoint: String,
+    endpoint: SocketAddr,
     session_id: SessionId,
     data_rx: Receiver<GamePacket>,
     inbound: Arc<Mutex<VecDeque<GamePacket>>>,
@@ -53,7 +48,7 @@ pub(super) fn spawn(
     thread::spawn(move || {
         bridge::log_info(format!("ipc_worker_started pid={}", std::process::id()));
         let result = run(
-            &endpoint, session_id, &data_rx, &inbound, &running, &counters,
+            endpoint, session_id, &data_rx, &inbound, &running, &counters,
         );
         match result {
             Ok(()) => bridge::log_info(format!(
@@ -69,7 +64,7 @@ pub(super) fn spawn(
 }
 
 fn run(
-    endpoint: &str,
+    endpoint: SocketAddr,
     session_id: SessionId,
     data_rx: &Receiver<GamePacket>,
     inbound: &Arc<Mutex<VecDeque<GamePacket>>>,
@@ -79,19 +74,23 @@ fn run(
     let started = Instant::now();
     let mut disconnected_at = started;
     let mut connected_once = false;
+    let mut last_connect_error = None::<String>;
     while running.load(Ordering::Relaxed) {
         if connect_window_expired(started, disconnected_at, connected_once) {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                if connected_once {
-                    "local IPC reconnect timed out"
-                } else {
-                    "initial local IPC connection timed out"
-                },
-            ));
+            let stage = if connected_once {
+                "local IPC reconnect timed out"
+            } else {
+                "initial local IPC connection timed out"
+            };
+            let message = last_connect_error.as_ref().map_or_else(
+                || stage.to_owned(),
+                |error| format!("{stage}; last TCP connect error: {error}"),
+            );
+            return Err(io::Error::new(io::ErrorKind::TimedOut, message));
         }
         match connect(endpoint, session_id, running) {
             Ok(mut stream) => {
+                last_connect_error = None;
                 if connected_once {
                     saturating_increment_u32(&counters.reconnects);
                 }
@@ -120,8 +119,11 @@ fn run(
                 }
             }
             Err(error) if is_protocol_error(&error) => return Err(error),
-            Err(_) if !running.load(Ordering::Acquire) => break,
-            Err(_) => thread::sleep(CONNECT_RETRY_INTERVAL),
+            Err(_error) if !running.load(Ordering::Acquire) => break,
+            Err(error) => {
+                last_connect_error = Some(error.to_string());
+                thread::sleep(CONNECT_RETRY_INTERVAL);
+            }
         }
     }
     Ok(())
@@ -140,10 +142,10 @@ fn connect_window_expired(
 }
 
 fn connect(
-    endpoint: &str,
+    endpoint: SocketAddr,
     session_id: SessionId,
     running: &AtomicBool,
-) -> io::Result<LocalSocketStream> {
+) -> io::Result<TcpStream> {
     let mut stream = connect_stream(endpoint)?;
     write_message(
         &mut stream,
@@ -180,17 +182,15 @@ fn connect(
     }
 }
 
-fn connect_stream(endpoint: &str) -> io::Result<LocalSocketStream> {
-    let path = format!(r"\\.\pipe\{endpoint}");
-    let pipe = DuplexPipeStream::<Bytes>::connect_by_path_with_wait_mode(
-        path,
-        ConnectWaitMode::Timeout(CONNECT_ATTEMPT_TIMEOUT),
-    )?;
-    let handle = OwnedHandle::try_from(pipe)
-        .map_err(|_| io::Error::other("connected Named Pipe handle is unexpectedly shared"))?;
-    let stream = WindowsLocalSocketStream::try_from(handle)
-        .map_err(|error| io::Error::other(format!("invalid local IPC pipe handle: {error}")))?;
-    let stream = LocalSocketStream::from(stream);
+fn connect_stream(endpoint: SocketAddr) -> io::Result<TcpStream> {
+    if !endpoint.is_ipv4() || !endpoint.ip().is_loopback() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "local IPC endpoint must be an IPv4 loopback address",
+        ));
+    }
+    let stream = TcpStream::connect_timeout(&endpoint, CONNECT_ATTEMPT_TIMEOUT)?;
+    stream.set_nodelay(true)?;
     stream.set_nonblocking(true)?;
     Ok(stream)
 }
@@ -206,7 +206,7 @@ enum ConnectionError {
 }
 
 fn run_connection(
-    stream: &mut LocalSocketStream,
+    stream: &mut TcpStream,
     data_rx: &Receiver<GamePacket>,
     inbound: &Arc<Mutex<VecDeque<GamePacket>>>,
     running: &AtomicBool,
@@ -416,12 +416,12 @@ fn health(counters: &WorkerCounters) -> IpcHealth {
     }
 }
 
-fn write_message(stream: &mut LocalSocketStream, message: &HookToClient) -> io::Result<()> {
+fn write_message(stream: &mut TcpStream, message: &HookToClient) -> io::Result<()> {
     tractor_beam_hook_ipc::sync_io::write_message(stream, message, WRITE_TIMEOUT, IO_POLL_INTERVAL)
 }
 
 fn read_messages<T: tractor_beam_hook_ipc::WireMessage>(
-    stream: &mut LocalSocketStream,
+    stream: &mut TcpStream,
     decoder: &mut FrameDecoder,
 ) -> io::Result<Vec<T>> {
     tractor_beam_hook_ipc::sync_io::read_messages(stream, decoder)
@@ -463,9 +463,10 @@ fn saturating_increment_u32(counter: &AtomicU32) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-
-    use interprocess::local_socket::{GenericNamespaced, Listener, ListenerOptions};
+    use std::{
+        net::{Ipv4Addr, SocketAddrV4, TcpListener},
+        sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
+    };
 
     use super::*;
 
@@ -511,24 +512,25 @@ mod tests {
     }
 
     #[test]
-    fn busy_named_pipe_connect_attempt_is_bounded() {
+    fn refused_tcp_connect_attempt_is_bounded() {
         let (endpoint, _) = test_session();
-        let name = endpoint.clone().to_ns_name::<GenericNamespaced>().unwrap();
-        let _listener = ListenerOptions::new()
-            .name(name.clone())
-            .create_sync()
-            .unwrap();
-        let _occupied = LocalSocketStream::connect(name.clone()).unwrap();
 
         let started = Instant::now();
-        let error = connect_stream(&endpoint)
-            .expect_err("second client should time out while the pipe instance is occupied");
+        let error = connect_stream(endpoint)
+            .expect_err("unused loopback endpoint should refuse the connection");
 
-        assert!(is_transient(&error), "unexpected connect error: {error}");
+        assert_ne!(error.kind(), io::ErrorKind::InvalidInput);
         assert!(
             started.elapsed() < Duration::from_millis(500),
-            "busy pipe connect exceeded its bounded attempt"
+            "refused TCP connect exceeded its bounded attempt"
         );
+    }
+
+    #[test]
+    fn non_loopback_endpoint_is_rejected() {
+        let endpoint = "192.0.2.1:25910".parse().unwrap();
+        let error = connect_stream(endpoint).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]
@@ -553,8 +555,7 @@ mod tests {
 
     #[test]
     fn shutdown_while_connected_is_bounded() {
-        let (endpoint, session_id) = test_session();
-        let listener = test_listener(&endpoint);
+        let (listener, endpoint, session_id) = test_listener();
         let running = Arc::new(AtomicBool::new(true));
         let (data_tx, data_rx) = std::sync::mpsc::sync_channel(1);
         let handle = spawn(
@@ -575,8 +576,7 @@ mod tests {
 
     #[test]
     fn shutdown_during_reconnect_is_bounded() {
-        let (endpoint, session_id) = test_session();
-        let listener = test_listener(&endpoint);
+        let (listener, endpoint, session_id) = test_listener();
         let running = Arc::new(AtomicBool::new(true));
         let (data_tx, data_rx) = std::sync::mpsc::sync_channel(1);
         let handle = spawn(
@@ -597,25 +597,29 @@ mod tests {
         drop(data_tx);
     }
 
-    fn test_session() -> (String, SessionId) {
+    fn test_session() -> (SocketAddr, SessionId) {
+        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        drop(listener);
         let counter = TEST_SESSION_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
         let mut bytes = [0_u8; 16];
         bytes[..4].copy_from_slice(&std::process::id().to_le_bytes());
         bytes[8..].copy_from_slice(&counter.to_le_bytes());
         let session_id = SessionId::new(bytes);
-        (tractor_beam_hook_ipc::endpoint_name(session_id), session_id)
+        (endpoint, session_id)
     }
 
-    fn test_listener(endpoint: &str) -> Listener {
-        let name = endpoint
-            .to_ns_name::<GenericNamespaced>()
-            .map_err(io::Error::other)
-            .unwrap();
-        ListenerOptions::new().name(name).create_sync().unwrap()
+    fn test_listener() -> (TcpListener, SocketAddr, SessionId) {
+        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let (_, session_id) = test_session();
+        (listener, endpoint, session_id)
     }
 
-    fn accept_hook(listener: &Listener, session_id: SessionId) -> LocalSocketStream {
-        let mut stream = listener.accept().unwrap();
+    fn accept_hook(listener: &TcpListener, session_id: SessionId) -> TcpStream {
+        let (mut stream, source) = listener.accept().unwrap();
+        assert!(source.ip().is_loopback());
+        stream.set_nodelay(true).unwrap();
         stream.set_nonblocking(true).unwrap();
         let mut decoder = FrameDecoder::new();
         let deadline = Instant::now() + TEST_TIMEOUT;

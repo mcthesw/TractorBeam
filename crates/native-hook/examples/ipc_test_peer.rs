@@ -1,9 +1,10 @@
 use std::{
-    io, thread,
+    io,
+    net::{SocketAddr, TcpStream},
+    thread,
     time::{Duration, Instant},
 };
 
-use interprocess::local_socket::{GenericNamespaced, prelude::*};
 use tractor_beam_hook_ipc::{
     ClientToHook, FrameDecoder, GamePacket, Handshake, HookToClient, IpcHealth, PeerRole,
     SessionId, WireMessage,
@@ -17,7 +18,15 @@ fn main() -> io::Result<()> {
     let mut arguments = std::env::args().skip(1);
     let endpoint = arguments
         .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing endpoint"))?;
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing endpoint"))?
+        .parse::<SocketAddr>()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    if !endpoint.is_ipv4() || !endpoint.ip().is_loopback() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "endpoint must be an IPv4 loopback address",
+        ));
+    }
     let session_id = arguments
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing session identity"))?
@@ -30,7 +39,7 @@ fn main() -> io::Result<()> {
         ));
     }
 
-    let mut stream = connect(&endpoint)?;
+    let mut stream = connect(endpoint)?;
     handshake(&mut stream, session_id)?;
     write_message(&mut stream, &HookToClient::Health(IpcHealth::default()))?;
     write_message(
@@ -92,15 +101,12 @@ fn main() -> io::Result<()> {
     }
 }
 
-fn connect(endpoint: &str) -> io::Result<LocalSocketStream> {
-    let name = endpoint
-        .to_owned()
-        .to_ns_name::<GenericNamespaced>()
-        .map_err(io::Error::other)?;
+fn connect(endpoint: SocketAddr) -> io::Result<TcpStream> {
     let deadline = Instant::now() + TEST_TIMEOUT;
     loop {
-        match LocalSocketStream::connect(name.clone()) {
+        match TcpStream::connect(endpoint) {
             Ok(stream) => {
+                stream.set_nodelay(true)?;
                 stream.set_nonblocking(true)?;
                 return Ok(stream);
             }
@@ -110,7 +116,7 @@ fn connect(endpoint: &str) -> io::Result<LocalSocketStream> {
     }
 }
 
-fn handshake(stream: &mut LocalSocketStream, session_id: SessionId) -> io::Result<()> {
+fn handshake(stream: &mut TcpStream, session_id: SessionId) -> io::Result<()> {
     write_message(
         stream,
         &HookToClient::Handshake(Handshake::new(PeerRole::NativeHook, session_id)),
@@ -136,12 +142,12 @@ fn handshake(stream: &mut LocalSocketStream, session_id: SessionId) -> io::Resul
     }
 }
 
-fn write_message(stream: &mut LocalSocketStream, message: &HookToClient) -> io::Result<()> {
+fn write_message(stream: &mut TcpStream, message: &HookToClient) -> io::Result<()> {
     tractor_beam_hook_ipc::sync_io::write_message(stream, message, WRITE_TIMEOUT, POLL_INTERVAL)
 }
 
 fn read_messages<T: WireMessage>(
-    stream: &mut LocalSocketStream,
+    stream: &mut TcpStream,
     decoder: &mut FrameDecoder,
 ) -> io::Result<Vec<T>> {
     match tractor_beam_hook_ipc::sync_io::read_messages(stream, decoder) {

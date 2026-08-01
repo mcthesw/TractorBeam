@@ -69,7 +69,7 @@ pub(super) struct SessionHandle {
     worker: Option<JoinHandle<()>>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(super) struct SessionNativeHook {
     pub(super) paths: tractor_beam_isaac_injector::NativeHookPaths,
     pub(super) ipc: HookIpcSession,

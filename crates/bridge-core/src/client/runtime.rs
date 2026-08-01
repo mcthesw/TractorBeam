@@ -306,7 +306,15 @@ impl BridgeClient {
                     return Err(io::Error::other(message).into());
                 }
             };
-            let ipc = hook_ipc::HookIpcSession::generate();
+            let ipc = match hook_ipc::HookIpcSession::bind() {
+                Ok(ipc) => ipc,
+                Err(error) => {
+                    let message = format!("Native Hook local IPC bind failed: {error}");
+                    self.record_hook_startup_failure(Some(&native_hook_paths), message.clone());
+                    self.active_log_context = None;
+                    return Err(io::Error::new(error.kind(), message).into());
+                }
+            };
             let write = match hook_config::write_hook_config(config, &native_hook_paths, &ipc) {
                 Ok(write) => write,
                 Err(error) => {

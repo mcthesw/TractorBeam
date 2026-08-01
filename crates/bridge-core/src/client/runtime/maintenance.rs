@@ -46,7 +46,7 @@ impl BridgeClient {
                     }
                     self.state.hook_startup = startup;
                 }
-                state::RuntimeEvent::HookIpc(ipc) => self.state.hook_ipc = *ipc,
+                state::RuntimeEvent::HookIpc(ipc) => self.apply_hook_ipc_state(*ipc),
                 state::RuntimeEvent::SessionEnded(reason)
                     if self.state.last_stop_reason.is_none() =>
                 {
@@ -62,6 +62,43 @@ impl BridgeClient {
                 | state::RuntimeEvent::RelayLinkChanged(_) => {}
             }
         }
+    }
+
+    pub(super) fn apply_hook_ipc_state(&mut self, ipc: state::HookIpcState) {
+        if self.state.hook_startup.injected {
+            match ipc.connection {
+                state::HookIpcConnectionState::Connected
+                    if !matches!(
+                        self.state.hook_startup.phase,
+                        state::HookStartupPhase::Failed | state::HookStartupPhase::Cancelled
+                    ) =>
+                {
+                    self.state.hook_startup.phase = state::HookStartupPhase::Ready;
+                    self.state.hook_startup.endpoint_ready = true;
+                    self.state.hook_startup.message =
+                        Some("Native Hook local IPC is ready".to_owned());
+                    self.state.hook_startup.updated_at = state::unix_seconds();
+                }
+                state::HookIpcConnectionState::Failed
+                    if matches!(
+                        self.state.hook_startup.phase,
+                        state::HookStartupPhase::WaitingForHookEndpoint
+                            | state::HookStartupPhase::EndpointReady
+                            | state::HookStartupPhase::Ready
+                    ) =>
+                {
+                    self.state.hook_startup.phase = state::HookStartupPhase::Failed;
+                    self.state.hook_startup.endpoint_ready = false;
+                    self.state.hook_startup.message = Some(ipc.last_error.as_ref().map_or_else(
+                        || "Native Hook local IPC failed".to_owned(),
+                        |message| format!("Native Hook local IPC failed: {message}"),
+                    ));
+                    self.state.hook_startup.updated_at = state::unix_seconds();
+                }
+                _ => {}
+            }
+        }
+        self.state.hook_ipc = ipc;
     }
 
     pub(super) fn record_hook_startup_failure(

@@ -19,7 +19,6 @@ chrono = { version = "0.4.42", default-features = false, features = ["clock", "s
 directories = "6.0.0"
 futures-util = { version = "0.3.31", features = ["sink"] }
 hex = "0.4.3"
-interprocess = "2.4.2"
 keyvalues-serde = "0.2.4"
 network-interface = "2.0.5"
 open = { version = "5.3.5", features = ["shellexecute-on-windows"] }

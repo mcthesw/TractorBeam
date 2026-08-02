@@ -158,6 +158,7 @@ async fn lan_mode_attaches_existing_room_without_relay() {
         Some(SessionNativeHook::new(
             test_native_hook_paths(),
             HookIpcSession::test(),
+            Vec::new(),
         )),
         Some(control_rx),
         &cancellation,

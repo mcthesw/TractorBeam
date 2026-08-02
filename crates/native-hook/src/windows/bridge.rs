@@ -7,11 +7,10 @@ use std::{
     os::windows::ffi::OsStringExt,
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
         mpsc::{SyncSender, TrySendError, sync_channel},
     },
-    thread::JoinHandle,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -32,6 +31,7 @@ static LOG_LOCK: Mutex<()> = Mutex::new(());
 static LOG_DATE: Mutex<Option<String>> = Mutex::new(None);
 static NEXT_SEQUENCE: AtomicU32 = AtomicU32::new(1);
 static MODULE_HANDLE: AtomicUsize = AtomicUsize::new(0);
+static WORKER_RUNNING: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HookLogLevel {
@@ -64,7 +64,7 @@ pub enum BridgeMode {
 struct BridgeConfig {
     mode: BridgeMode,
     fallback_to_steam: bool,
-    ipc_endpoint: String,
+    ipc_endpoint: std::net::SocketAddr,
     ipc_session: SessionId,
 }
 
@@ -73,8 +73,6 @@ struct BridgeState {
     fallback_to_steam: bool,
     data_tx: SyncSender<GamePacket>,
     queue: Arc<Mutex<VecDeque<GamePacket>>>,
-    running: Arc<AtomicBool>,
-    worker: Option<JoinHandle<()>>,
     counters: Arc<WorkerCounters>,
 }
 
@@ -91,12 +89,15 @@ pub fn initialize() {
         "bridge_config_path_attempted path={}",
         config_path.display()
     ));
-    let Ok(config) = read_config(&config_path) else {
-        log_warn(format!(
-            "bridge_config_missing path={}",
-            config_path.display()
-        ));
-        return;
+    let config = match read_config(&config_path) {
+        Ok(config) => config,
+        Err(error) => {
+            log_error(format!(
+                "bridge_config_invalid path={} error={error}",
+                config_path.display()
+            ));
+            return;
+        }
     };
     if config.mode == BridgeMode::Off {
         log_info("bridge_mode_off");
@@ -104,15 +105,16 @@ pub fn initialize() {
     }
 
     let queue = Arc::new(Mutex::new(VecDeque::new()));
-    let running = Arc::new(AtomicBool::new(true));
+    let running = Arc::clone(WORKER_RUNNING.get_or_init(|| Arc::new(AtomicBool::new(false))));
+    running.store(true, Ordering::Release);
     let counters = Arc::new(WorkerCounters::default());
     let (data_tx, data_rx) = sync_channel(tractor_beam_hook_ipc::HOOK_DATA_QUEUE_CAPACITY);
-    let worker = ipc_worker::spawn(
+    let _worker = ipc_worker::spawn(
         config.ipc_endpoint,
         config.ipc_session,
         data_rx,
         Arc::clone(&queue),
-        Arc::clone(&running),
+        running,
         Arc::clone(&counters),
     );
 
@@ -121,13 +123,12 @@ pub fn initialize() {
         fallback_to_steam: config.fallback_to_steam,
         data_tx,
         queue,
-        running,
-        worker: Some(worker),
         counters,
     };
     *STATE.lock().expect("bridge state lock poisoned") = Some(state);
     log_info(format!(
-        "bridge_initialized mode={:?} fallback_to_steam={} ipc_version={}.{} data_queue_capacity={} control_queue_capacity={}",
+        "bridge_initialized pid={} mode={:?} fallback_to_steam={} ipc_version={}.{} data_queue_capacity={} control_queue_capacity={}",
+        std::process::id(),
         config.mode,
         config.fallback_to_steam,
         tractor_beam_hook_ipc::PROTOCOL_MAJOR,
@@ -137,13 +138,9 @@ pub fn initialize() {
     ));
 }
 
-pub fn shutdown() {
-    if let Some(mut state) = STATE.lock().expect("bridge state lock poisoned").take() {
-        log_info("bridge_shutdown");
-        state.running.store(false, Ordering::Relaxed);
-        if let Some(worker) = state.worker.take() {
-            let _ = worker.join();
-        }
+pub fn request_process_detach() {
+    if let Some(running) = WORKER_RUNNING.get() {
+        running.store(false, Ordering::Release);
     }
 }
 
@@ -304,8 +301,13 @@ pub fn log(level: HookLogLevel, message: impl Display) {
 fn read_config(path: &std::path::Path) -> io::Result<BridgeConfig> {
     let mut contents = String::new();
     fs::File::open(path)?.read_to_string(&mut contents)?;
+    parse_config(&contents)
+}
+
+fn parse_config(contents: &str) -> io::Result<BridgeConfig> {
     let mut mode = BridgeMode::Off;
     let mut fallback_to_steam = true;
+    let mut ipc_transport = None;
     let mut ipc_endpoint = None;
     let mut ipc_session = None;
 
@@ -321,15 +323,24 @@ fn read_config(path: &std::path::Path) -> io::Result<BridgeConfig> {
                 };
             }
             "fallback_to_steam" => fallback_to_steam = parse_bool(value, true),
-            "ipc_endpoint" => ipc_endpoint = Some(value.trim().to_owned()),
+            "ipc_transport" => ipc_transport = Some(value.trim().to_ascii_lowercase()),
+            "ipc_endpoint" => ipc_endpoint = value.trim().parse::<std::net::SocketAddr>().ok(),
             "ipc_session" => ipc_session = value.trim().parse().ok(),
             _ => {}
         }
     }
 
+    if ipc_transport.as_deref() != Some("tcp") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "missing or unsupported IPC transport",
+        ));
+    }
     let ipc_endpoint = ipc_endpoint
-        .filter(|endpoint| !endpoint.is_empty())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing IPC endpoint"))?;
+        .filter(|endpoint| endpoint.is_ipv4() && endpoint.ip().is_loopback())
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "invalid loopback IPC endpoint")
+        })?;
     let ipc_session = ipc_session
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid IPC session"))?;
 
@@ -339,6 +350,40 @@ fn read_config(path: &std::path::Path) -> io::Result<BridgeConfig> {
         ipc_endpoint,
         ipc_session,
     })
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    const SESSION: &str = "00112233445566778899aabbccddeeff";
+
+    #[test]
+    fn accepts_explicit_ipv4_loopback_tcp_endpoint() {
+        let config = parse_config(&format!(
+            "mode=replace\nfallback_to_steam=0\nipc_transport=tcp\nipc_endpoint=127.0.0.1:41000\nipc_session={SESSION}\n"
+        ))
+        .unwrap();
+
+        assert_eq!(config.mode, BridgeMode::Replace);
+        assert!(!config.fallback_to_steam);
+        assert_eq!(config.ipc_endpoint, "127.0.0.1:41000".parse().unwrap());
+    }
+
+    #[test]
+    fn rejects_missing_transport_and_non_loopback_endpoints() {
+        let missing_transport = parse_config(&format!(
+            "ipc_endpoint=127.0.0.1:41000\nipc_session={SESSION}\n"
+        ))
+        .unwrap_err();
+        assert!(missing_transport.to_string().contains("IPC transport"));
+
+        let non_loopback = parse_config(&format!(
+            "ipc_transport=tcp\nipc_endpoint=192.0.2.1:41000\nipc_session={SESSION}\n"
+        ))
+        .unwrap_err();
+        assert!(non_loopback.to_string().contains("loopback IPC endpoint"));
+    }
 }
 
 fn default_runtime_path() -> Option<PathBuf> {

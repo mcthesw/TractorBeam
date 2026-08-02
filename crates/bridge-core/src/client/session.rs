@@ -69,18 +69,24 @@ pub(super) struct SessionHandle {
     worker: Option<JoinHandle<()>>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(super) struct SessionNativeHook {
     pub(super) paths: tractor_beam_isaac_injector::NativeHookPaths,
     pub(super) ipc: HookIpcSession,
+    pub(super) preexisting_processes: Vec<tractor_beam_isaac_injector::IsaacProcess>,
 }
 
 impl SessionNativeHook {
     pub(super) fn new(
         paths: tractor_beam_isaac_injector::NativeHookPaths,
         ipc: HookIpcSession,
+        preexisting_processes: Vec<tractor_beam_isaac_injector::IsaacProcess>,
     ) -> Self {
-        Self { paths, ipc }
+        Self {
+            paths,
+            ipc,
+            preexisting_processes,
+        }
     }
 }
 
@@ -103,6 +109,7 @@ pub(super) fn spawn_bridge_worker(
         Some(SessionNativeHook::new(
             native_hook_paths,
             HookIpcSession::test(),
+            Vec::new(),
         )),
     );
     let cancellation = handle.cancellation.clone();

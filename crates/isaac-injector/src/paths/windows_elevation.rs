@@ -1,7 +1,11 @@
 use std::{
     ffi::{OsStr, OsString},
+    fs::{self, OpenOptions},
     io, iter,
     os::windows::ffi::{OsStrExt, OsStringExt},
+    path::{Path, PathBuf},
+    process,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use windows_sys::Win32::{
@@ -10,8 +14,8 @@ use windows_sys::Win32::{
     UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW},
 };
 
-use super::{NativeHookPaths, injector_args};
-use crate::InjectorError;
+use super::{NativeHookPaths, elevated_injector_args};
+use crate::{InjectorError, read_failure_report};
 
 const SW_SHOWNORMAL: i32 = 1;
 
@@ -19,9 +23,18 @@ pub(super) fn run_elevated_injector(
     paths: &NativeHookPaths,
     pid: u32,
 ) -> Result<(), InjectorError> {
+    let result_file = ElevatedResultFile::create().map_err(|error| {
+        InjectorError::elevated_retry_failed(format!(
+            "could not create elevated injector result file: {error}"
+        ))
+    })?;
     let verb = wide_null(OsStr::new("runas"));
     let file = wide_null(paths.injector.as_os_str());
-    let parameters = wide_null(&shell_parameters(&injector_args(pid, &paths.hook)));
+    let parameters = wide_null(&shell_parameters(&elevated_injector_args(
+        pid,
+        &paths.hook,
+        result_file.path(),
+    )));
     let mut info = SHELLEXECUTEINFOW {
         cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
         fMask: SEE_MASK_NOCLOSEPROCESS,
@@ -45,10 +58,10 @@ pub(super) fn run_elevated_injector(
             "elevated injector helper did not return a process handle",
         ));
     };
-    wait_for_process(&process)
+    wait_for_process(&process, result_file.path())
 }
 
-fn wait_for_process(process: &OwnedHandle) -> Result<(), InjectorError> {
+fn wait_for_process(process: &OwnedHandle, result_path: &Path) -> Result<(), InjectorError> {
     match unsafe { WaitForSingleObject(process.raw(), INFINITE) } {
         WAIT_OBJECT_0 => {}
         WAIT_FAILED => {
@@ -72,10 +85,44 @@ fn wait_for_process(process: &OwnedHandle) -> Result<(), InjectorError> {
     }
     if exit_code == 0 {
         Ok(())
+    } else if let Ok(Some(error)) = read_failure_report(result_path) {
+        Err(error)
     } else {
         Err(InjectorError::elevated_retry_failed(format!(
             "elevated injector helper exited with exit code {exit_code}"
         )))
+    }
+}
+
+struct ElevatedResultFile {
+    path: PathBuf,
+}
+
+impl ElevatedResultFile {
+    fn create() -> io::Result<Self> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "tractor-beam-injector-result-{}-{nonce}.txt",
+            process::id()
+        ));
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ElevatedResultFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
     }
 }
 

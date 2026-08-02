@@ -1,6 +1,7 @@
 use std::{
     collections::VecDeque,
     io::{self, Write},
+    net::{SocketAddr, TcpStream},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -10,8 +11,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use interprocess::TryClone as _;
-use interprocess::local_socket::{GenericNamespaced, prelude::*};
 use tractor_beam_hook_ipc::{
     ClientToHook, ErrorCode, FrameDecoder, GamePacket, Handshake, HookToClient, InputDelayCommand,
     IpcHealth, PeerRole, ProtocolError, SessionId,
@@ -20,6 +19,7 @@ use tractor_beam_hook_ipc::{
 use super::{bridge, input_delay::InputDelayMemoryError};
 
 const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(50);
 const INITIAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(40);
 const RECONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -38,7 +38,7 @@ pub(super) struct WorkerCounters {
 }
 
 pub(super) fn spawn(
-    endpoint: String,
+    endpoint: SocketAddr,
     session_id: SessionId,
     data_rx: Receiver<GamePacket>,
     inbound: Arc<Mutex<VecDeque<GamePacket>>>,
@@ -46,16 +46,25 @@ pub(super) fn spawn(
     counters: Arc<WorkerCounters>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        if let Err(error) = run(
-            &endpoint, session_id, &data_rx, &inbound, &running, &counters,
-        ) {
-            bridge::log_error(format!("ipc_worker_terminal error={error}"));
+        bridge::log_info(format!("ipc_worker_started pid={}", std::process::id()));
+        let result = run(
+            endpoint, session_id, &data_rx, &inbound, &running, &counters,
+        );
+        match result {
+            Ok(()) => bridge::log_info(format!(
+                "ipc_worker_stopped pid={} reason=shutdown",
+                std::process::id()
+            )),
+            Err(error) => bridge::log_error(format!(
+                "ipc_worker_terminal pid={} error={error}",
+                std::process::id()
+            )),
         }
     })
 }
 
 fn run(
-    endpoint: &str,
+    endpoint: SocketAddr,
     session_id: SessionId,
     data_rx: &Receiver<GamePacket>,
     inbound: &Arc<Mutex<VecDeque<GamePacket>>>,
@@ -65,19 +74,23 @@ fn run(
     let started = Instant::now();
     let mut disconnected_at = started;
     let mut connected_once = false;
+    let mut last_connect_error = None::<String>;
     while running.load(Ordering::Relaxed) {
         if connect_window_expired(started, disconnected_at, connected_once) {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                if connected_once {
-                    "local IPC reconnect timed out"
-                } else {
-                    "initial local IPC connection timed out"
-                },
-            ));
+            let stage = if connected_once {
+                "local IPC reconnect timed out"
+            } else {
+                "initial local IPC connection timed out"
+            };
+            let message = last_connect_error.as_ref().map_or_else(
+                || stage.to_owned(),
+                |error| format!("{stage}; last TCP connect error: {error}"),
+            );
+            return Err(io::Error::new(io::ErrorKind::TimedOut, message));
         }
-        match connect(endpoint, session_id) {
+        match connect(endpoint, session_id, running) {
             Ok(mut stream) => {
+                last_connect_error = None;
                 if connected_once {
                     saturating_increment_u32(&counters.reconnects);
                 }
@@ -106,7 +119,11 @@ fn run(
                 }
             }
             Err(error) if is_protocol_error(&error) => return Err(error),
-            Err(_) => thread::sleep(CONNECT_RETRY_INTERVAL),
+            Err(_error) if !running.load(Ordering::Acquire) => break,
+            Err(error) => {
+                last_connect_error = Some(error.to_string());
+                thread::sleep(CONNECT_RETRY_INTERVAL);
+            }
         }
     }
     Ok(())
@@ -124,12 +141,12 @@ fn connect_window_expired(
     }
 }
 
-fn connect(endpoint: &str, session_id: SessionId) -> io::Result<LocalSocketStream> {
-    let name = endpoint
-        .to_ns_name::<GenericNamespaced>()
-        .map_err(io::Error::other)?;
-    let mut stream = LocalSocketStream::connect(name)?;
-    stream.set_nonblocking(true)?;
+fn connect(
+    endpoint: SocketAddr,
+    session_id: SessionId,
+    running: &AtomicBool,
+) -> io::Result<TcpStream> {
+    let mut stream = connect_stream(endpoint)?;
     write_message(
         &mut stream,
         &HookToClient::Handshake(Handshake::new(PeerRole::NativeHook, session_id)),
@@ -138,6 +155,12 @@ fn connect(endpoint: &str, session_id: SessionId) -> io::Result<LocalSocketStrea
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     let mut decoder = FrameDecoder::new();
     loop {
+        if !running.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "local IPC connection cancelled",
+            ));
+        }
         if Instant::now() >= deadline {
             return Err(protocol_io("local IPC handshake timed out"));
         }
@@ -159,6 +182,19 @@ fn connect(endpoint: &str, session_id: SessionId) -> io::Result<LocalSocketStrea
     }
 }
 
+fn connect_stream(endpoint: SocketAddr) -> io::Result<TcpStream> {
+    if !endpoint.is_ipv4() || !endpoint.ip().is_loopback() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "local IPC endpoint must be an IPv4 loopback address",
+        ));
+    }
+    let stream = TcpStream::connect_timeout(&endpoint, CONNECT_ATTEMPT_TIMEOUT)?;
+    stream.set_nodelay(true)?;
+    stream.set_nonblocking(true)?;
+    Ok(stream)
+}
+
 enum ConnectionEnd {
     Shutdown,
     Disconnected,
@@ -170,7 +206,7 @@ enum ConnectionError {
 }
 
 fn run_connection(
-    stream: &mut LocalSocketStream,
+    stream: &mut TcpStream,
     data_rx: &Receiver<GamePacket>,
     inbound: &Arc<Mutex<VecDeque<GamePacket>>>,
     running: &AtomicBool,
@@ -380,12 +416,12 @@ fn health(counters: &WorkerCounters) -> IpcHealth {
     }
 }
 
-fn write_message(stream: &mut LocalSocketStream, message: &HookToClient) -> io::Result<()> {
+fn write_message(stream: &mut TcpStream, message: &HookToClient) -> io::Result<()> {
     tractor_beam_hook_ipc::sync_io::write_message(stream, message, WRITE_TIMEOUT, IO_POLL_INTERVAL)
 }
 
 fn read_messages<T: tractor_beam_hook_ipc::WireMessage>(
-    stream: &mut LocalSocketStream,
+    stream: &mut TcpStream,
     decoder: &mut FrameDecoder,
 ) -> io::Result<Vec<T>> {
     tractor_beam_hook_ipc::sync_io::read_messages(stream, decoder)
@@ -427,7 +463,15 @@ fn saturating_increment_u32(counter: &AtomicU32) {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        net::{Ipv4Addr, SocketAddrV4, TcpListener},
+        sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
+    };
+
     use super::*;
+
+    const TEST_TIMEOUT: Duration = Duration::from_secs(1);
+    static TEST_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
     struct ZeroThenWrite {
         returned_zero: bool,
@@ -465,5 +509,168 @@ mod tests {
         assert!(pending.try_flush(&mut writer).unwrap());
 
         assert_eq!(writer.bytes, b"game-packet");
+    }
+
+    #[test]
+    fn refused_tcp_connect_attempt_is_bounded() {
+        let (endpoint, _) = test_session();
+
+        let started = Instant::now();
+        let error = connect_stream(endpoint)
+            .expect_err("unused loopback endpoint should refuse the connection");
+
+        assert_ne!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "refused TCP connect exceeded its bounded attempt"
+        );
+    }
+
+    #[test]
+    fn non_loopback_endpoint_is_rejected() {
+        let endpoint = "192.0.2.1:25910".parse().unwrap();
+        let error = connect_stream(endpoint).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn shutdown_during_initial_connect_is_bounded() {
+        let (endpoint, session_id) = test_session();
+        let running = Arc::new(AtomicBool::new(true));
+        let (data_tx, data_rx) = std::sync::mpsc::sync_channel(1);
+        let handle = spawn(
+            endpoint,
+            session_id,
+            data_rx,
+            Arc::new(Mutex::new(VecDeque::new())),
+            Arc::clone(&running),
+            Arc::new(WorkerCounters::default()),
+        );
+
+        thread::sleep(Duration::from_millis(10));
+        running.store(false, Ordering::Release);
+        wait_for_worker(handle);
+        drop(data_tx);
+    }
+
+    #[test]
+    fn shutdown_while_connected_is_bounded() {
+        let (listener, endpoint, session_id) = test_listener();
+        let running = Arc::new(AtomicBool::new(true));
+        let (data_tx, data_rx) = std::sync::mpsc::sync_channel(1);
+        let handle = spawn(
+            endpoint,
+            session_id,
+            data_rx,
+            Arc::new(Mutex::new(VecDeque::new())),
+            Arc::clone(&running),
+            Arc::new(WorkerCounters::default()),
+        );
+        let stream = accept_hook(&listener, session_id);
+
+        running.store(false, Ordering::Release);
+        wait_for_worker(handle);
+        drop(stream);
+        drop(data_tx);
+    }
+
+    #[test]
+    fn shutdown_during_reconnect_is_bounded() {
+        let (listener, endpoint, session_id) = test_listener();
+        let running = Arc::new(AtomicBool::new(true));
+        let (data_tx, data_rx) = std::sync::mpsc::sync_channel(1);
+        let handle = spawn(
+            endpoint,
+            session_id,
+            data_rx,
+            Arc::new(Mutex::new(VecDeque::new())),
+            Arc::clone(&running),
+            Arc::new(WorkerCounters::default()),
+        );
+        let stream = accept_hook(&listener, session_id);
+        drop(stream);
+        drop(listener);
+        thread::sleep(Duration::from_millis(100));
+
+        running.store(false, Ordering::Release);
+        wait_for_worker(handle);
+        drop(data_tx);
+    }
+
+    fn test_session() -> (SocketAddr, SessionId) {
+        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        drop(listener);
+        let counter = TEST_SESSION_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+        let mut bytes = [0_u8; 16];
+        bytes[..4].copy_from_slice(&std::process::id().to_le_bytes());
+        bytes[8..].copy_from_slice(&counter.to_le_bytes());
+        let session_id = SessionId::new(bytes);
+        (endpoint, session_id)
+    }
+
+    fn test_listener() -> (TcpListener, SocketAddr, SessionId) {
+        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let (_, session_id) = test_session();
+        (listener, endpoint, session_id)
+    }
+
+    fn accept_hook(listener: &TcpListener, session_id: SessionId) -> TcpStream {
+        let (mut stream, source) = listener.accept().unwrap();
+        assert!(source.ip().is_loopback());
+        stream.set_nodelay(true).unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let mut decoder = FrameDecoder::new();
+        let deadline = Instant::now() + TEST_TIMEOUT;
+        let mut sent_handshake = false;
+        loop {
+            assert!(Instant::now() < deadline, "Native Hook handshake timed out");
+            match tractor_beam_hook_ipc::sync_io::read_messages::<_, HookToClient>(
+                &mut stream,
+                &mut decoder,
+            ) {
+                Ok(messages) => {
+                    for message in messages {
+                        match message {
+                            HookToClient::Handshake(handshake) => {
+                                handshake
+                                    .validate(PeerRole::NativeHook, session_id)
+                                    .unwrap();
+                                tractor_beam_hook_ipc::sync_io::write_message(
+                                    &mut stream,
+                                    &ClientToHook::Handshake(Handshake::new(
+                                        PeerRole::BridgeClient,
+                                        session_id,
+                                    )),
+                                    WRITE_TIMEOUT,
+                                    IO_POLL_INTERVAL,
+                                )
+                                .unwrap();
+                                sent_handshake = true;
+                            }
+                            HookToClient::Ready if sent_handshake => return stream,
+                            _ => {}
+                        }
+                    }
+                }
+                Err(error) if is_transient(&error) => {
+                    thread::sleep(IDLE_WAIT_INTERVAL);
+                }
+                Err(error) => panic!("Native Hook handshake failed: {error}"),
+            }
+        }
+    }
+
+    fn wait_for_worker(handle: JoinHandle<()>) {
+        let deadline = Instant::now() + TEST_TIMEOUT;
+        while !handle.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            handle.is_finished(),
+            "Native Hook IPC worker did not stop within the bounded window"
+        );
+        handle.join().unwrap();
     }
 }

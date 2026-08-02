@@ -4,7 +4,7 @@ use super::test_support::*;
 use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn real_local_socket_roundtrips_game_control_and_shutdown() {
+async fn loopback_tcp_roundtrips_maximum_game_payload_control_and_shutdown() {
     let session = HookIpcSession::test();
     let (control_tx, control_rx) = control_channel();
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
@@ -12,15 +12,14 @@ async fn real_local_socket_roundtrips_game_control_and_shutdown() {
     let (mut from_hook, to_hook, worker) =
         start(session.clone(), control_rx, event_tx, cancellation.clone()).unwrap();
     let worker = tokio::spawn(worker);
-    let expected_to_hook = packet(41, 7, b"client-to-hook");
+    let maximum_payload = vec![0xA5; tractor_beam_hook_ipc::MAX_GAME_PAYLOAD_SIZE];
+    let expected_to_hook = packet(41, 7, &maximum_payload);
     let fake_expected = expected_to_hook.clone();
+    let expected_from_hook = packet(42, 8, &maximum_payload);
+    let fake_from_hook = expected_from_hook.clone();
     let fake = thread::spawn(move || {
         let mut stream = connect_fake_hook(&session);
-        write_hook_message(
-            &mut stream,
-            &HookToClient::Game(packet(42, 8, b"hook-to-client")),
-        )
-        .unwrap();
+        write_hook_message(&mut stream, &HookToClient::Game(fake_from_hook)).unwrap();
         let mut decoder = FrameDecoder::new();
         let mut saw_game = false;
         let mut saw_control = false;
@@ -58,7 +57,7 @@ async fn real_local_socket_roundtrips_game_control_and_shutdown() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(received, packet(42, 8, b"hook-to-client"));
+    assert_eq!(received, expected_from_hook);
     assert!(to_hook.try_send(expected_to_hook));
     let control = tokio::task::spawn_blocking(move || {
         request_input_delay(&control_tx, 19, InputDelayCommand::Read)
@@ -248,7 +247,7 @@ async fn input_delay_control_is_not_starved_by_game_burst() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn real_local_socket_survives_temporary_write_backpressure() {
+async fn loopback_tcp_survives_temporary_write_backpressure() {
     const PACKET_COUNT: u32 = 64;
     const PAYLOAD_BYTES: usize = 4_096;
     let session = HookIpcSession::test();
@@ -334,7 +333,7 @@ async fn i686_peer_roundtrips_with_x64_client() {
         start(session.clone(), control_rx, event_tx, cancellation.clone()).unwrap();
     let worker = tokio::spawn(worker);
     let mut peer = std::process::Command::new(peer_path)
-        .arg(&session.endpoint)
+        .arg(session.endpoint.to_string())
         .arg(session.session_id.to_hex())
         .spawn()
         .unwrap();
@@ -400,7 +399,7 @@ async fn packaged_i686_hook_handshakes_with_x64_client() {
     std::fs::write(
         hook_logs.join("hook-runtime.txt"),
         format!(
-            "mode=replace\nfallback_to_steam=1\nipc_endpoint={}\nipc_session={}\n",
+            "mode=replace\nfallback_to_steam=1\nipc_transport=tcp\nipc_endpoint={}\nipc_session={}\n",
             session.endpoint,
             session.session_id.to_hex()
         ),
@@ -451,17 +450,17 @@ async fn packaged_i686_hook_handshakes_with_x64_client() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn wrong_session_is_terminal_without_fallback() {
+async fn wrong_session_is_rejected_without_blocking_the_real_hook() {
     let session = HookIpcSession::test();
     let (_control_tx, control_rx) = control_channel();
     let (event_tx, _event_rx) = tokio::sync::mpsc::channel(16);
     let cancellation = CancellationToken::new();
     let (_from_hook, _to_hook, worker) =
-        start(session.clone(), control_rx, event_tx, cancellation).unwrap();
+        start(session.clone(), control_rx, event_tx, cancellation.clone()).unwrap();
     let worker = tokio::spawn(worker);
+    let wrong_session = session.clone();
     let fake = thread::spawn(move || {
-        let name = session.endpoint.to_ns_name::<GenericNamespaced>().unwrap();
-        let mut stream = connect_with_retry(name);
+        let mut stream = connect_with_retry(wrong_session.endpoint);
         let wrong = SessionId::new([0xff; 16]);
         write_hook_message(
             &mut stream,
@@ -470,13 +469,44 @@ async fn wrong_session_is_terminal_without_fallback() {
         .unwrap();
     });
 
+    fake.join().unwrap();
+    let mut stream = connect_fake_hook(&session);
+    cancellation.cancel();
+    wait_for_shutdown(&mut stream);
+    time::timeout(TEST_TIMEOUT, worker)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authenticated_incompatible_protocol_is_terminal() {
+    let session = HookIpcSession::test();
+    let (_control_tx, control_rx) = control_channel();
+    let (event_tx, _event_rx) = tokio::sync::mpsc::channel(16);
+    let cancellation = CancellationToken::new();
+    let (_from_hook, _to_hook, worker) =
+        start(session.clone(), control_rx, event_tx, cancellation).unwrap();
+    let worker = tokio::spawn(worker);
+    let fake = thread::spawn(move || {
+        let mut stream = connect_with_retry(session.endpoint);
+        let mut handshake = Handshake::new(PeerRole::NativeHook, session.session_id);
+        handshake.major = handshake.major.saturating_add(1);
+        write_hook_message(&mut stream, &HookToClient::Handshake(handshake)).unwrap();
+    });
+
     let error = time::timeout(TEST_TIMEOUT, worker)
         .await
         .unwrap()
         .unwrap()
         .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-    assert!(error.to_string().contains("session identity mismatch"));
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported local IPC major version")
+    );
     fake.join().unwrap();
 }
 

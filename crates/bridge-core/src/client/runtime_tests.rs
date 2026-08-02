@@ -8,6 +8,36 @@ use crate::client::{
 };
 
 use super::*;
+use crate::client::test_relay::TestRelay;
+
+#[test]
+fn relay_room_can_be_joined_without_starting_gameplay() {
+    let relay = TestRelay::spawn();
+    let mut client = BridgeClient::new();
+    let route = ExternalRelayConfig {
+        relay: RelayEndpoint::new("127.0.0.1", relay.address.port()),
+        relay_name: None,
+        transport: TransportChoice::Tcp,
+        session_credential: crate::SessionCredential::from_bytes([42; 16]),
+    };
+
+    client
+        .join_relay_room(&route, "76561198000000001", "Player")
+        .unwrap();
+
+    assert!(client.relay_room_active());
+    assert_eq!(client.state().status, state::SessionStatus::Idle);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while client.state().room_peers.is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        client.poll_events();
+    }
+    assert!(!client.state().room_peers.is_empty());
+    client.leave_relay_room();
+    assert!(!client.relay_room_active());
+    assert!(client.state().room_peers.is_empty());
+    relay.stop();
+}
 
 #[test]
 fn exposes_runtime_name() {

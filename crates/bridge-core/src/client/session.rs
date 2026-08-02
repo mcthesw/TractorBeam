@@ -2,6 +2,7 @@ use std::{
     io,
     sync::{
         Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
     thread::{self, JoinHandle},
@@ -14,7 +15,7 @@ use std::path::PathBuf;
 use tokio::{
     runtime::Builder,
     sync::mpsc::{self as tokio_mpsc, Receiver as TokioReceiver, Sender as TokioSender},
-    task::JoinSet,
+    task::{JoinHandle as TokioJoinHandle, JoinSet},
     time::{self, MissedTickBehavior},
 };
 use tokio_util::sync::CancellationToken;
@@ -22,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use crate::protocol::{ClientControl, PeerPresenceInfo, ProbePhase};
 
 use super::{
-    LogLevel, SessionConfig, SessionMode, SessionRouteConfig,
+    ExternalRelayConfig, LogLevel, SessionConfig, SessionMode, SessionRouteConfig,
     hook_ipc::{self, HookIpcSession, InputDelayCall},
     packet_flow::{
         DeliveryStreamAllocator, InboundGamePacket, InboundRelayDatagram, OutboundGamePacket,
@@ -69,6 +70,191 @@ pub(super) struct SessionHandle {
     worker: Option<JoinHandle<()>>,
 }
 
+#[derive(Debug)]
+pub(super) struct RelayRoomHandle {
+    cancellation: CancellationToken,
+    pub(super) events: Receiver<RuntimeEvent>,
+    outbound_tx: TokioSender<OutboundGamePacket>,
+    inbound_slot: RelayInboundSlot,
+    worker: Option<TokioJoinHandle<io::Result<()>>>,
+    event_forwarder: Option<TokioJoinHandle<()>>,
+    runtime: tokio::runtime::Runtime,
+}
+
+type ActiveRelayInbound = Option<(u64, TokioSender<InboundGamePacket>)>;
+
+#[derive(Clone, Debug)]
+pub(super) struct RelayInboundSlot {
+    sender: Arc<Mutex<ActiveRelayInbound>>,
+    next_generation: Arc<AtomicU64>,
+}
+
+impl RelayInboundSlot {
+    fn new() -> Self {
+        Self {
+            sender: Arc::new(Mutex::new(None)),
+            next_generation: Arc::new(AtomicU64::new(1)),
+        }
+    }
+
+    fn attach(&self, sender: TokioSender<InboundGamePacket>) -> io::Result<u64> {
+        let mut current = self
+            .sender
+            .lock()
+            .expect("Relay inbound slot lock poisoned");
+        if current.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "Relay room gameplay is already attached",
+            ));
+        }
+        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
+        *current = Some((generation, sender));
+        Ok(generation)
+    }
+
+    fn detach(&self, generation: u64) {
+        let mut current = self
+            .sender
+            .lock()
+            .expect("Relay inbound slot lock poisoned");
+        if current
+            .as_ref()
+            .is_some_and(|(active, _)| *active == generation)
+        {
+            *current = None;
+        }
+    }
+
+    fn try_send(&self, packet: InboundGamePacket) -> bool {
+        let sender = self
+            .sender
+            .lock()
+            .expect("Relay inbound slot lock poisoned")
+            .as_ref()
+            .map(|(_, sender)| sender.clone());
+        sender.is_none_or(|sender| sender.try_send(packet).is_ok())
+    }
+}
+
+pub(super) enum RelayInboundTarget {
+    Fixed(TokioSender<InboundGamePacket>),
+    Room(RelayInboundSlot),
+}
+
+impl RelayInboundTarget {
+    pub(super) fn try_send(&self, packet: InboundGamePacket) -> bool {
+        match self {
+            Self::Fixed(sender) => sender.try_send(packet).is_ok(),
+            Self::Room(slot) => slot.try_send(packet),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct RelayRoomDataPlane {
+    pub(super) outbound_tx: TokioSender<OutboundGamePacket>,
+    pub(super) inbound_rx: Option<TokioReceiver<InboundGamePacket>>,
+    inbound_slot: RelayInboundSlot,
+    generation: u64,
+}
+
+impl Drop for RelayRoomDataPlane {
+    fn drop(&mut self) {
+        self.inbound_slot.detach(self.generation);
+    }
+}
+
+impl RelayRoomHandle {
+    pub(super) fn join(
+        route: &ExternalRelayConfig,
+        steam_id64: &str,
+        display_name: &str,
+    ) -> io::Result<Self> {
+        let runtime = Builder::new_multi_thread()
+            .enable_all()
+            .worker_threads(2)
+            .thread_name("tractor-beam-room")
+            .build()?;
+        let (std_event_tx, std_event_rx) = mpsc::channel();
+        let (event_tx, event_rx) = tokio_mpsc::channel(EVENT_QUEUE_CAPACITY);
+        let event_forwarder = runtime.spawn(supervisor::forward_events(event_rx, std_event_tx));
+        let cancellation = CancellationToken::new();
+        let (relay, peers) = runtime.block_on(RelayTransport::connect_session(
+            route,
+            steam_id64,
+            display_name,
+        ))?;
+        send_event(&event_tx, RuntimeEvent::RoomPeersUpdated(peers.clone()));
+        send_event(
+            &event_tx,
+            RuntimeEvent::RelayLinkChanged(RelayLinkState::Connected),
+        );
+        send_event(
+            &event_tx,
+            log_event(
+                LogLevel::Info,
+                format!("Joined relay room with {} peer(s)", peers.len()),
+            ),
+        );
+        let (outbound_tx, outbound_rx) = tokio_mpsc::channel(PACKET_QUEUE_CAPACITY);
+        let inbound_slot = RelayInboundSlot::new();
+        let worker = runtime.spawn(relay_transport_task(
+            relay,
+            outbound_rx,
+            RelayInboundTarget::Room(inbound_slot.clone()),
+            RelayTransportTaskContext {
+                event_tx,
+                cancellation: cancellation.clone(),
+                health: None,
+                runtime_rtt_interval: Duration::from_secs(1),
+                initial_peers: peers,
+            },
+        ));
+        Ok(Self {
+            cancellation,
+            events: std_event_rx,
+            outbound_tx,
+            inbound_slot,
+            worker: Some(worker),
+            event_forwarder: Some(event_forwarder),
+            runtime,
+        })
+    }
+
+    pub(super) fn attach(&self) -> io::Result<RelayRoomDataPlane> {
+        let (inbound_tx, inbound_rx) = tokio_mpsc::channel(PACKET_QUEUE_CAPACITY);
+        let generation = self.inbound_slot.attach(inbound_tx)?;
+        Ok(RelayRoomDataPlane {
+            outbound_tx: self.outbound_tx.clone(),
+            inbound_rx: Some(inbound_rx),
+            inbound_slot: self.inbound_slot.clone(),
+            generation,
+        })
+    }
+
+    fn finish(&mut self) {
+        self.cancellation.cancel();
+        let Some(worker) = self.worker.take() else {
+            return;
+        };
+        let _ = self
+            .runtime
+            .block_on(async { time::timeout(RUNTIME_SHUTDOWN_TIMEOUT, worker).await });
+        if let Some(forwarder) = self.event_forwarder.take() {
+            let _ = self
+                .runtime
+                .block_on(async { time::timeout(RUNTIME_SHUTDOWN_TIMEOUT, forwarder).await });
+        }
+    }
+}
+
+impl Drop for RelayRoomHandle {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SessionNativeHook {
     pub(super) paths: tractor_beam_isaac_injector::NativeHookPaths,
@@ -91,6 +277,8 @@ struct RuntimeTasks {
     support: JoinSet<io::Result<()>>,
     health: Option<SharedSessionHealth>,
     direct_monitor: Option<crate::client::lan::LanDataPlaneMonitor>,
+    _relay_data_plane: Option<RelayRoomDataPlane>,
+    _lan_data_plane: Option<crate::client::lan::LanDataPlaneAttachment>,
 }
 
 #[cfg(test)]
@@ -104,6 +292,7 @@ pub(super) fn spawn_bridge_worker(
             native_hook_paths,
             HookIpcSession::test(),
         )),
+        None,
     );
     let cancellation = handle.cancellation.clone();
 
@@ -142,14 +331,16 @@ pub(super) fn spawn_bridge_worker(
 pub(super) fn spawn_bridge_worker_background(
     config: SessionConfig,
     native_hook: Option<SessionNativeHook>,
+    relay_data_plane: Option<RelayRoomDataPlane>,
 ) -> SessionHandle {
-    let (handle, _startup_rx) = spawn_bridge_worker_handle(config, native_hook);
+    let (handle, _startup_rx) = spawn_bridge_worker_handle(config, native_hook, relay_data_plane);
     handle
 }
 
 fn spawn_bridge_worker_handle(
     config: SessionConfig,
     native_hook: Option<SessionNativeHook>,
+    relay_data_plane: Option<RelayRoomDataPlane>,
 ) -> (SessionHandle, Receiver<io::Result<()>>) {
     let cancellation = CancellationToken::new();
     let (event_tx, event_rx) = mpsc::channel();
@@ -204,6 +395,7 @@ fn spawn_bridge_worker_handle(
             worker_cancellation,
             event_tx,
             startup_tx,
+            relay_data_plane,
         ));
         runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
     });

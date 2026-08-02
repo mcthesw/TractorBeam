@@ -134,6 +134,31 @@ impl PathManager {
         self.inbound_notify.notify_waiters();
     }
 
+    pub(in crate::client::lan) fn clear_inbound(&self) {
+        let dropped = {
+            let mut state = self.inner.lock().expect("LAN path lock poisoned");
+            state
+                .peers
+                .values_mut()
+                .filter_map(|path| {
+                    let count = u64::try_from(path.data.inbound.len()).unwrap_or(u64::MAX);
+                    path.data.inbound.clear();
+                    (count > 0).then_some((path.data.key, count))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (key, count) in dropped {
+            self.ledger.record_dropped_batch(
+                key,
+                LanDataDirection::Receive,
+                LanDataStage::InboundQueue,
+                LanDataDropReason::SessionClosed,
+                count,
+                0,
+            );
+        }
+    }
+
     pub(super) fn pop_next_inbound(&self, cursor: &mut usize) -> Option<LanInboundDelivery> {
         let mut state = self.inner.lock().expect("LAN path lock poisoned");
         let peer_count = state.peer_order.len();
@@ -338,6 +363,32 @@ mod tests {
         assert_eq!(snapshot.send.queued, 257);
         assert_eq!(snapshot.send.dropped, 1);
 
+        cancellation.cancel();
+    }
+
+    #[tokio::test]
+    async fn clear_inbound_discards_packets_between_gameplay_sessions() {
+        let cancellation = CancellationToken::new();
+        let (manager, mut receiver, monitor) =
+            PathManager::new(identity(1), Vec::new(), cancellation.clone())
+                .await
+                .unwrap();
+        let _peer_receiver = install_test_peer(&manager, identity(2), PeerLifecycleEpoch::test(1));
+        manager
+            .inner
+            .lock()
+            .unwrap()
+            .peers
+            .get_mut(&identity(2))
+            .unwrap()
+            .data
+            .inbound
+            .push_back(inbound(2, 1));
+
+        manager.clear_inbound();
+
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(monitor.snapshot().receive.dropped, 1);
         cancellation.cancel();
     }
 

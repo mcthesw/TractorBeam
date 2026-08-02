@@ -77,8 +77,27 @@ pub struct LanControlPlane {
     cancellation: CancellationToken,
     listener_tasks: Vec<JoinHandle<()>>,
     background_tasks: Vec<JoinHandle<()>>,
-    inbound: Mutex<Option<LanInboundReceiver>>,
+    inbound: Arc<Mutex<Option<LanInboundReceiver>>>,
     data_monitor: LanDataPlaneMonitor,
+}
+
+pub(in crate::client) struct LanDataPlaneAttachment {
+    inbound: Arc<Mutex<Option<LanInboundReceiver>>>,
+    paths: Arc<PathManager>,
+}
+
+impl Drop for LanDataPlaneAttachment {
+    fn drop(&mut self) {
+        self.paths.detach_send_observer();
+        self.paths.clear_inbound();
+        let mut inbound = self
+            .inbound
+            .lock()
+            .expect("LAN inbound queue lock poisoned");
+        if inbound.is_none() {
+            *inbound = Some(LanInboundReceiver::new(self.paths.clone()));
+        }
+    }
 }
 
 pub(super) struct ControlShared {
@@ -213,7 +232,7 @@ impl LanControlPlane {
             cancellation,
             listener_tasks,
             background_tasks,
-            inbound: Mutex::new(Some(inbound)),
+            inbound: Arc::new(Mutex::new(Some(inbound))),
             data_monitor,
         })
     }
@@ -320,7 +339,11 @@ impl LanControlPlane {
     pub(in crate::client) fn take_data_plane(
         &self,
         send_observer: Arc<dyn LanGameSendObserver>,
-    ) -> Option<(LanInboundReceiver, LanDataPlaneMonitor)> {
+    ) -> Option<(
+        LanInboundReceiver,
+        LanDataPlaneMonitor,
+        LanDataPlaneAttachment,
+    )> {
         let mut inbound = self
             .inbound
             .lock()
@@ -335,7 +358,14 @@ impl LanControlPlane {
             *inbound = Some(receiver);
             return None;
         }
-        Some((receiver, self.data_monitor.clone()))
+        Some((
+            receiver,
+            self.data_monitor.clone(),
+            LanDataPlaneAttachment {
+                inbound: self.inbound.clone(),
+                paths: self.shared.paths.clone(),
+            },
+        ))
     }
 
     #[must_use]

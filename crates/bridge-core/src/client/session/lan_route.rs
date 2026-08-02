@@ -60,13 +60,9 @@ pub(super) async fn direct_hook_in_task(
     let mut delivery_streams = DeliveryStreamAllocator::default();
     loop {
         tokio::select! {
-            () = cancellation.cancelled() => {
-                room.stop().await;
-                return Ok(());
-            },
+            () = cancellation.cancelled() => return Ok(()),
             packet = hook_packets_rx.recv() => {
                 let Some(packet) = packet else {
-                    room.stop().await;
                     return Ok(());
                 };
                 let size = packet.payload.len();

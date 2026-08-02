@@ -69,6 +69,12 @@ secret. Join Code v5 packages the Relay endpoint/profile and exactly one Session
 Credential as an opaque copy/paste value. Secrets, connection ids, resume keys,
 and path tokens must never enter logs or diagnostics.
 
+Room membership is independent from gameplay. **New Room** and **Import** complete
+admission before reporting success, so players can see members and Room Path
+Quality before launching Isaac. Gameplay attaches to the existing Room data plane
+and may end without leaving. **Leave Room** or Client shutdown ends membership;
+Room state is neither persisted nor restored on restart.
+
 ## Recovery
 
 An unexpected Relay failure changes the local state to Reconnecting. Bridge

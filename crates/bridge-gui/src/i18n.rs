@@ -115,9 +115,9 @@ mod tests {
     fn rust_i18n_uses_current_locale_for_t_macro() {
         with_locale_lock(|| {
             set_language(Language::Chinese);
-            assert_eq!(t!("start"), "启动");
+            assert_eq!(t!("start"), "启动游戏");
             set_language(Language::English);
-            assert_eq!(t!("start"), "Start");
+            assert_eq!(t!("start"), "Launch Game");
         });
     }
 

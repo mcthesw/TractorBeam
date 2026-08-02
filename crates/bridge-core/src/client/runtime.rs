@@ -1,8 +1,8 @@
 use std::{fs, io};
 
 use super::{
-    ConfigError, InputDelayError, LoadedClientConfig, RelayEndpoint, SessionConfig, SessionMode,
-    SessionRouteConfig, hook_config, hook_ipc,
+    ConfigError, ExternalRelayConfig, InputDelayError, LoadedClientConfig, RelayEndpoint,
+    SessionConfig, SessionMode, SessionRouteConfig, hook_config, hook_ipc,
     logging::{
         ClientLogSink, ClientSessionLogContext, ClientSessionLogRoute, TracingClientLogSink,
     },
@@ -17,6 +17,7 @@ use crate::client::{LogLevel, RuntimeState};
 pub struct BridgeClient {
     pub(super) state: RuntimeState,
     pub(super) session: Option<session::SessionHandle>,
+    relay_room: Option<session::RelayRoomHandle>,
     pub(super) loaded_config: LoadedClientConfig,
     pub(super) log_sink: Box<dyn ClientLogSink>,
     active_log_context: Option<ClientSessionLogContext>,
@@ -44,6 +45,7 @@ impl BridgeClient {
         let mut client = Self {
             state: RuntimeState::default(),
             session: None,
+            relay_room: None,
             loaded_config,
             log_sink,
             active_log_context: None,
@@ -108,8 +110,14 @@ impl BridgeClient {
         let mut should_clear = false;
         let mut readiness_finished = false;
         let mut hook_probe_finished = false;
+        let mut relay_recovery_exhausted = None;
         let mut events = Vec::new();
         if let Some(handle) = &self.session {
+            while let Ok(event) = handle.events.try_recv() {
+                events.push(event);
+            }
+        }
+        if let Some(handle) = &self.relay_room {
             while let Ok(event) = handle.events.try_recv() {
                 events.push(event);
             }
@@ -237,6 +245,9 @@ impl BridgeClient {
                     self.refresh_smoothness();
                 }
                 state::RuntimeEvent::RelayLinkChanged(link) => {
+                    if let state::RelayLinkState::RecoveryExhausted { reason, .. } = &link {
+                        relay_recovery_exhausted = Some(reason.clone());
+                    }
                     self.state.relay_link = link;
                 }
             }
@@ -245,6 +256,17 @@ impl BridgeClient {
             self.session = None;
             self.cleanup_hook_launch_parameters("session ended");
         }
+        if let Some(reason) = relay_recovery_exhausted {
+            if self.session.is_some() {
+                self.state.last_stop_reason = Some(state::SessionStopReason::RuntimeEnded {
+                    message: format!("relay room recovery exhausted: {reason}"),
+                });
+                self.stop_session();
+            }
+            self.relay_room = None;
+            self.state.room_peers.clear();
+            self.state.room_path_quality.clear();
+        }
         if readiness_finished && let Some(handle) = self.readiness_probe.take() {
             handle.finish();
         }
@@ -252,6 +274,41 @@ impl BridgeClient {
             handle.finish();
         }
         processed
+    }
+
+    pub fn join_relay_room(
+        &mut self,
+        route: &ExternalRelayConfig,
+        steam_id64: &str,
+        display_name: &str,
+    ) -> Result<(), ClientError> {
+        route.relay.validate()?;
+        if steam_id64.trim().is_empty() {
+            return Err(ConfigError::MissingSteamId.into());
+        }
+        if !steam_id64.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(ConfigError::InvalidSteamId.into());
+        }
+        self.leave_relay_room();
+        self.relay_room = Some(session::RelayRoomHandle::join(
+            route,
+            steam_id64,
+            display_name,
+        )?);
+        self.poll_events();
+        Ok(())
+    }
+
+    pub fn leave_relay_room(&mut self) {
+        self.relay_room = None;
+        self.state.room_peers.clear();
+        self.state.room_path_quality.clear();
+        self.state.relay_link = state::RelayLinkState::Inactive;
+    }
+
+    #[must_use]
+    pub fn relay_room_active(&self) -> bool {
+        self.relay_room.is_some()
     }
 
     pub fn refresh_steam_accounts(&mut self) {
@@ -287,9 +344,11 @@ impl BridgeClient {
         self.state.hook_startup = state::HookStartupState::default();
         self.state.hook_ipc = state::HookIpcState::default();
         self.state.client_incidents.clear();
-        self.state.room_peers.clear();
-        self.state.room_path_quality.clear();
-        self.state.relay_link = state::RelayLinkState::Inactive;
+        if self.relay_room.is_none() {
+            self.state.room_peers.clear();
+            self.state.room_path_quality.clear();
+            self.state.relay_link = state::RelayLinkState::Inactive;
+        }
         self.active_log_context = Some(ClientSessionLogContext {
             route: log_route,
             mode: config.mode,
@@ -341,7 +400,18 @@ impl BridgeClient {
             self.state.hook_launch_parameters_path_written = None;
             None
         };
-        let session = session::spawn_bridge_worker_background(config.clone(), native_hook);
+        let relay_data_plane = if config.mode != SessionMode::Official
+            && matches!(config.route, SessionRouteConfig::ExternalRelay(_))
+        {
+            self.relay_room
+                .as_ref()
+                .map(session::RelayRoomHandle::attach)
+                .transpose()?
+        } else {
+            None
+        };
+        let session =
+            session::spawn_bridge_worker_background(config.clone(), native_hook, relay_data_plane);
 
         if let Err(error) = crate::steam::launch_isaac() {
             self.apply_stopped_session_events(session.stop());
@@ -391,6 +461,7 @@ impl BridgeClient {
 
     pub fn shutdown(&mut self) {
         self.stop_session();
+        self.leave_relay_room();
         if let Some(handle) = self.readiness_probe.take() {
             handle.finish();
         }

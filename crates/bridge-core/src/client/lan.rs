@@ -12,6 +12,7 @@ pub use adapter::{
     default_lan_adapters, enumerate_lan_adapter_addresses, enumerate_lan_adapters,
     lan_candidate_addresses,
 };
+pub(in crate::client) use control::LanDataPlaneAttachment;
 pub use control::{LanControlPlane, LanPeerConnectionState, LanPeerState, LanProbeResult};
 pub(in crate::client) use path::{
     LanDataDropReason, LanDataPlaneMonitor, LanDataPlaneSnapshot, LanDataStage,

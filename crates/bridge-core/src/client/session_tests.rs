@@ -11,6 +11,27 @@ use super::*;
 static SESSION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
+fn relay_room_data_plane_can_be_reattached_after_drop() {
+    let slot = RelayInboundSlot::new();
+    let (outbound_tx, _outbound_rx) = tokio_mpsc::channel(1);
+    let (first_tx, first_rx) = tokio_mpsc::channel(1);
+    let first_generation = slot.attach(first_tx).unwrap();
+    let first = RelayRoomDataPlane {
+        outbound_tx: outbound_tx.clone(),
+        inbound_rx: Some(first_rx),
+        inbound_slot: slot.clone(),
+        generation: first_generation,
+    };
+    let (blocked_tx, _blocked_rx) = tokio_mpsc::channel(1);
+    assert!(slot.attach(blocked_tx).is_err());
+
+    drop(first);
+
+    let (second_tx, _second_rx) = tokio_mpsc::channel(1);
+    assert!(slot.attach(second_tx).is_ok());
+}
+
+#[test]
 fn session_start_reports_relay_join_timeout() {
     let _guard = SESSION_TEST_LOCK
         .lock()
@@ -105,7 +126,7 @@ async fn official_mode_owns_a_cancellable_process_lifecycle_task() {
     let cancellation = CancellationToken::new();
     let (event_tx, _event_rx) = tokio_mpsc::channel(EVENT_QUEUE_CAPACITY);
 
-    let tasks = start_runtime_tasks_inner(&config, None, None, &cancellation, &event_tx)
+    let tasks = start_runtime_tasks_inner(&config, None, None, &cancellation, &event_tx, None)
         .await
         .expect("Official lifecycle should start without Hook or Relay sockets");
 
@@ -114,6 +135,35 @@ async fn official_mode_owns_a_cancellable_process_lifecycle_task() {
     assert!(tasks.health.is_none());
     cancellation.cancel();
     shutdown_tasks(tasks.support, &event_tx).await;
+}
+
+#[tokio::test]
+async fn lan_room_data_plane_can_be_reattached_after_drop() {
+    let credential = super::super::SessionCredential::from_bytes([20; 16]);
+    let room = super::super::LanControlPlane::create(
+        tractor_beam_direct_protocol::PeerIdentity::new(
+            76_561_198_000_000_001,
+            tractor_beam_direct_protocol::InstanceId::from_bytes([2; 16]),
+        ),
+        "Test".to_owned(),
+        credential,
+        &[super::super::LanAdapterAddress {
+            adapter_id: "test-loopback".to_owned(),
+            name: "Loopback".to_owned(),
+            address: "127.0.0.1".parse().unwrap(),
+            interface_index: 1,
+        }],
+    )
+    .await
+    .unwrap();
+    let (event_tx, _event_rx) = tokio_mpsc::channel(EVENT_QUEUE_CAPACITY);
+    let observer = Arc::new(DirectSendObserver::new(event_tx, None));
+
+    let first = room.take_data_plane(observer.clone()).unwrap();
+    assert!(room.take_data_plane(observer.clone()).is_none());
+    drop(first);
+    assert!(room.take_data_plane(observer).is_some());
+    room.stop().await;
 }
 
 #[tokio::test]
@@ -162,6 +212,7 @@ async fn lan_mode_attaches_existing_room_without_relay() {
         Some(control_rx),
         &cancellation,
         &event_tx,
+        None,
     )
     .await
     .unwrap();

@@ -59,12 +59,20 @@ impl BridgeApp {
         } else {
             self.join_code_input.trim().to_owned()
         };
-        match JoinCode::decode(&input) {
-            Ok(JoinCode::ExternalRelay(code)) => {
-                if self.application_snapshot.lan_room.is_some() {
-                    self.join_code_message = Some(t!("lan.stop_before_switch").into_owned());
-                    return false;
-                }
+        let decoded = match JoinCode::decode(&input) {
+            Ok(code) => code,
+            Err(error) => {
+                self.join_code_message = Some(format!("{}: {error}", t!("join_code.invalid")));
+                return false;
+            }
+        };
+        if self.application_snapshot.room_active() {
+            self.pending_room_action = Some(PendingRoomAction::Import(input));
+            self.room_switch_dialog_open = true;
+            return true;
+        }
+        match decoded {
+            JoinCode::ExternalRelay(code) => {
                 self.route = RouteChoice::ExternalRelay;
                 self.pending_lan_invitation = None;
                 self.lan_probe_results.clear();
@@ -88,16 +96,11 @@ impl BridgeApp {
                     self.relay_port = code.relay_port;
                 }
                 self.session_credential = code.session_credential;
-                self.join_code_message = Some(t!("join_code.imported").into_owned());
                 self.status_message = None;
                 self.persist_selection();
-                true
+                self.enter_relay_room()
             }
-            Ok(JoinCode::LanDirect(code)) => {
-                if self.application_snapshot.lan_room.is_some() {
-                    self.join_code_message = Some(t!("lan.stop_before_switch").into_owned());
-                    return false;
-                }
+            JoinCode::LanDirect(code) => {
                 self.lan_probe_results.clear();
                 self.selected_lan_probe = None;
                 self.pending_lan_invitation = None;
@@ -108,10 +111,6 @@ impl BridgeApp {
                     self.show_busy_status();
                     false
                 }
-            }
-            Err(error) => {
-                self.join_code_message = Some(format!("{}: {error}", t!("join_code.invalid")));
-                false
             }
         }
     }
@@ -258,6 +257,35 @@ impl BridgeApp {
         if let Err(error) = open::that_detached(target) {
             tracing::warn!(error = %error, path = %path.display(), "Could not reveal Diagnostics Bundle");
             self.status_message = Some(StatusMessage::LogOpenFailed);
+        }
+    }
+
+    pub(super) fn room_switch_dialog(&mut self, context: &egui::Context) {
+        if !self.room_switch_dialog_open {
+            return;
+        }
+        let mut open = true;
+        let mut confirm = false;
+        let mut cancel = false;
+        egui::Window::new(t!("room.switch_title"))
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(context, |ui| {
+                ui.label(t!("room.switch_confirm"));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    confirm = ui.button(t!("room.switch")).clicked();
+                    cancel = ui.button(t!("join_code.cancel")).clicked();
+                });
+            });
+        if confirm {
+            self.room_switch_dialog_open = false;
+            self.leave_room();
+        } else if cancel || !open {
+            self.room_switch_dialog_open = false;
+            self.pending_room_action = None;
         }
     }
 

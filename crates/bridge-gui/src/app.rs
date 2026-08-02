@@ -116,6 +116,11 @@ fn route_switch_allowed(lan_room_active: bool, status: SessionStatus) -> bool {
     !lan_room_active && status == SessionStatus::Idle
 }
 
+enum PendingRoomAction {
+    NewRoom,
+    Import(String),
+}
+
 pub struct BridgeApp {
     application: ApplicationHandle,
     application_snapshot: ApplicationSnapshot,
@@ -141,6 +146,8 @@ pub struct BridgeApp {
     join_code_dialog_open: bool,
     join_code_input: String,
     join_code_message: Option<String>,
+    pending_room_action: Option<PendingRoomAction>,
+    room_switch_dialog_open: bool,
     lan_create_dialog_open: bool,
     lan_adapters: Vec<(LanAdapter, bool)>,
     pending_lan_invitation: Option<LanJoinCode>,
@@ -184,6 +191,8 @@ impl BridgeApp {
             join_code_dialog_open: false,
             join_code_input: String::new(),
             join_code_message: None,
+            pending_room_action: None,
+            room_switch_dialog_open: false,
             lan_create_dialog_open: false,
             lan_adapters: Vec::new(),
             pending_lan_invitation: None,
@@ -241,15 +250,19 @@ impl BridgeApp {
         )
     }
 
+    fn relay_config(&self) -> ExternalRelayConfig {
+        ExternalRelayConfig {
+            relay: RelayEndpoint::new(self.relay_host.trim(), self.relay_port),
+            relay_name: self.selected_relay_preset().map(|relay| relay.name.clone()),
+            transport: self.transport,
+            session_credential: self.session_credential,
+        }
+    }
+
     fn session_config(&self) -> SessionConfig {
         let (steam_id64, display_name) = self.current_identity();
         let route = match self.route {
-            RouteChoice::ExternalRelay => SessionRouteConfig::ExternalRelay(ExternalRelayConfig {
-                relay: RelayEndpoint::new(self.relay_host.trim(), self.relay_port),
-                relay_name: self.selected_relay_preset().map(|relay| relay.name.clone()),
-                transport: self.transport,
-                session_credential: self.session_credential,
-            }),
+            RouteChoice::ExternalRelay => SessionRouteConfig::ExternalRelay(self.relay_config()),
             RouteChoice::LanDirect => SessionRouteConfig::LanDirect(LanDirectConfig {
                 session_credential: self
                     .pending_lan_invitation
@@ -273,6 +286,21 @@ impl BridgeApp {
         match self.transport {
             TransportChoice::Tcp => ConnectionProfile::Tcp,
             TransportChoice::Udp => ConnectionProfile::Udp,
+        }
+    }
+
+    fn enter_relay_room(&mut self) -> bool {
+        let (steam_id64, display_name) = self.current_identity();
+        if self
+            .application
+            .join_relay_room(self.relay_config(), steam_id64, display_name)
+        {
+            self.join_code_message = Some(t!("room.joining").into_owned());
+            self.status_message = None;
+            true
+        } else {
+            self.show_busy_status();
+            false
         }
     }
 
@@ -377,8 +405,8 @@ impl BridgeApp {
         self.startup_light_ping();
     }
 
-    fn stop(&mut self) {
-        self.application.request_stop();
+    fn leave_room(&mut self) {
+        self.application.leave_room();
         self.status_message = None;
     }
 
@@ -484,6 +512,7 @@ impl eframe::App for BridgeApp {
 
         self.start_error_dialog(ui.ctx());
         self.join_code_dialog(ui.ctx());
+        self.room_switch_dialog(ui.ctx());
         self.lan_create_dialog(ui.ctx());
     }
 }

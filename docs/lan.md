@@ -6,7 +6,7 @@ discover public Internet peers, traverse NAT, or fall back to a Relay.
 
 ## Player flow
 
-1. Select a Steam account and choose **LAN Direct**. Press **Copy** and review
+1. Select a Steam account and choose **LAN Direct**. Press **New Room** and review
    the adapter list. Adapters with at least one non-link-local address are
    selected by default; link-local-only fallback adapters remain available for
    unusual networks.
@@ -14,8 +14,9 @@ discover public Internet peers, traverse NAT, or fall back to a Relay.
    gives every selected adapter one candidate before adding a second address,
    and stays inside the bounded eight-candidate protocol budget. It then binds
    TCP control and UDP gameplay sockets, ignores individual addresses that the
-   operating system no longer considers available, and copies a Join Code only
+   operating system no longer considers available, and enters the Room only
    after at least one address binds. If none bind, no room or code is created.
+   After joining, press **Copy** to share the Join Code.
 3. Another player imports the code. If one advertised address is reachable it
    is used automatically; if several are reachable, the player chooses the
    initial entry point. That choice is only an admission preference.
@@ -24,8 +25,9 @@ discover public Internet peers, traverse NAT, or fall back to a Relay.
    names itself as Introducer. The original Room Creator is not an authority and
    may leave without ending the Room.
 
-External Relay and Direct LAN are mutually exclusive. Stop the current session
-before switching routes.
+External Relay and Direct LAN are mutually exclusive. Creating or importing a
+new Room leaves the current Room first. Gameplay may start and stop independently;
+the Client remains in the Room until **Leave Room** or application shutdown.
 
 ## Network and security boundary
 

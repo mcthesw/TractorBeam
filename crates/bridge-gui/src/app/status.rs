@@ -114,7 +114,7 @@ impl BridgeApp {
         if let Some(operation) = self.application_snapshot.operation {
             return match operation {
                 ApplicationOperation::Starting => t!("status.starting"),
-                ApplicationOperation::Stopping => t!("status.stopping"),
+                ApplicationOperation::LeavingRoom => t!("status.leaving_room"),
                 ApplicationOperation::ShuttingDown => t!("status.shutting_down"),
                 ApplicationOperation::RefreshingAccounts
                 | ApplicationOperation::Probing
@@ -123,7 +123,7 @@ impl BridgeApp {
                 | ApplicationOperation::OpeningLogs
                 | ApplicationOperation::ExportingDiagnosticsBundle
                 | ApplicationOperation::ReadingClipboard
-                | ApplicationOperation::ConfiguringLan => t!("status.working"),
+                | ApplicationOperation::ConfiguringRoom => t!("status.working"),
             };
         }
         match &self.client_state().relay_link {

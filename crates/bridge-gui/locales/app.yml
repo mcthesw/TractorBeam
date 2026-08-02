@@ -171,11 +171,8 @@ manual:
   zh_CN: "手动填写"
   en_US: "Manual"
 start:
-  zh_CN: "启动"
-  en_US: "Start"
-stop:
-  zh_CN: "停止"
-  en_US: "Stop"
+  zh_CN: "启动游戏"
+  en_US: "Launch Game"
 start.failed:
   zh_CN: "启动失败"
   en_US: "Start failed"
@@ -221,9 +218,9 @@ status.initialization_retry_hint:
 status.starting:
   zh_CN: "正在启动"
   en_US: "Starting"
-status.stopping:
-  zh_CN: "正在停止"
-  en_US: "Stopping"
+status.leaving_room:
+  zh_CN: "正在离开房间"
+  en_US: "Leaving room"
 status.shutting_down:
   zh_CN: "正在退出"
   en_US: "Shutting down"
@@ -554,9 +551,39 @@ clipboard.empty:
 room.generate:
   zh_CN: "新房间"
   en_US: "New Room"
+room.joining:
+  zh_CN: "正在进入房间…"
+  en_US: "Joining room…"
+room.joined:
+  zh_CN: "已进入房间"
+  en_US: "Joined room"
+room.join_failed:
+  zh_CN: "进入房间失败"
+  en_US: "Could not join room"
+room.leave:
+  zh_CN: "离开房间"
+  en_US: "Leave Room"
+room.left:
+  zh_CN: "已离开房间"
+  en_US: "Left room"
+room.not_joined:
+  zh_CN: "尚未进入房间"
+  en_US: "Not in a room"
+room.switch_title:
+  zh_CN: "切换房间"
+  en_US: "Switch Room"
+room.switch_confirm:
+  zh_CN: "将先离开当前房间，再进入新房间。是否继续？"
+  en_US: "Leave the current room before joining the new room?"
+room.switch:
+  zh_CN: "切换"
+  en_US: "Switch"
 room.generated:
   zh_CN: "已创建新房间，请重新分享联机码"
   en_US: "New room created. Share the new Join Code."
+room.connected:
+  zh_CN: "已连接"
+  en_US: "Connected"
 room.reconnecting:
   zh_CN: "重连中"
   en_US: "Reconnecting"

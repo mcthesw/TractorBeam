@@ -173,7 +173,7 @@ pub(in crate::client) struct LanInboundReceiver {
 }
 
 impl LanInboundReceiver {
-    pub(super) fn new(manager: Arc<PathManager>) -> Self {
+    pub(in crate::client::lan) fn new(manager: Arc<PathManager>) -> Self {
         Self { manager, cursor: 0 }
     }
 

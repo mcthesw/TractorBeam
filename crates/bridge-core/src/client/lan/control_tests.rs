@@ -335,9 +335,11 @@ async fn direct_gameplay_is_targeted_bounded_and_accepts_delivery_reordering() {
     let alice_observer = Arc::new(TestSendObserver::default());
     let bob_observer = Arc::new(TestSendObserver::default());
     let carol_observer = Arc::new(TestSendObserver::default());
-    let (mut alice_inbound, _) = alice.take_data_plane(alice_observer.clone()).unwrap();
-    let (mut bob_inbound, _) = bob.take_data_plane(bob_observer.clone()).unwrap();
-    let (mut carol_inbound, _) = carol.take_data_plane(carol_observer.clone()).unwrap();
+    let (mut alice_inbound, _, _alice_attachment) =
+        alice.take_data_plane(alice_observer.clone()).unwrap();
+    let (mut bob_inbound, _, _bob_attachment) = bob.take_data_plane(bob_observer.clone()).unwrap();
+    let (mut carol_inbound, _, _carol_attachment) =
+        carol.take_data_plane(carol_observer.clone()).unwrap();
     let invitation = alice.invitation();
     bob.join(&invitation, invitation.control_endpoints[0])
         .await

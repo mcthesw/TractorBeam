@@ -17,7 +17,7 @@ use tractor_beam_core::{
 use helpers::*;
 
 use super::{
-    BridgeApp, RouteChoice, route_switch_allowed,
+    BridgeApp, PendingRoomAction, RouteChoice, route_switch_allowed,
     status::{connection_profile_label, quality_label, smoothness_summary},
     widgets::{account_label, detail_counters, help_icon, label_with_help, selected_account_label},
 };
@@ -31,7 +31,7 @@ impl BridgeApp {
             label_with_help(ui, t!("route"), t!("help.route"));
             let route_before = self.route;
             let can_switch = route_switch_allowed(
-                self.application_snapshot.lan_room.is_some(),
+                self.application_snapshot.room_active(),
                 self.client_state().status,
             );
             ui.add_enabled_ui(can_switch, |ui| {
@@ -49,20 +49,18 @@ impl BridgeApp {
                 self.join_code_message = None;
             }
             ui.add_space(6.0);
-            if self.route == RouteChoice::ExternalRelay {
-                self.relay_section(ui);
-            }
-            ui.add_space(8.0);
-
-            self.steam_section(ui);
+            ui.add_enabled_ui(!self.application_snapshot.room_active(), |ui| {
+                if self.route == RouteChoice::ExternalRelay {
+                    self.relay_section(ui);
+                }
+                ui.add_space(8.0);
+                self.steam_section(ui);
+            });
             ui.add_space(8.0);
 
             self.join_code_ui(ui);
             ui.add_space(8.0);
         });
-
-        self.action_row(ui);
-        ui.add_space(8.0);
 
         self.hook_progress_ui(ui);
         ui.add_space(8.0);
@@ -175,7 +173,9 @@ impl BridgeApp {
 
     fn join_code_ui(&mut self, ui: &mut egui::Ui) {
         let lan_direct = self.route == RouteChoice::LanDirect;
-        let lan_room_active = self.application_snapshot.lan_room.is_some();
+        let room_active = self.application_snapshot.room_active();
+        let running = self.client_state().status == SessionStatus::Running;
+        let mutation_enabled = self.mutations_enabled();
         let join_code_label = if lan_direct {
             t!("lan.join_code")
         } else {
@@ -188,32 +188,43 @@ impl BridgeApp {
         };
         label_with_help(ui, join_code_label, join_code_help);
         ui.horizontal(|ui| {
-            if lan_direct {
-                if ui
-                    .add_enabled(
-                        lan_room_active || self.mutations_enabled(),
-                        egui::Button::new(t!("join_code.copy")),
-                    )
-                    .clicked()
-                {
-                    if let Some(room) = &self.application_snapshot.lan_room {
-                        ui.ctx().copy_text(room.invitation_code.clone());
-                        self.join_code_message = Some(t!("join_code.copied").into_owned());
-                    } else if !self.application.enumerate_lan_adapters() {
+            if ui
+                .add_enabled(
+                    self.mutations_enabled(),
+                    egui::Button::new(t!("room.generate")),
+                )
+                .clicked()
+            {
+                if room_active {
+                    self.pending_room_action = Some(PendingRoomAction::NewRoom);
+                    self.room_switch_dialog_open = true;
+                } else if lan_direct {
+                    if !self.application.enumerate_lan_adapters() {
                         self.show_busy_status();
                     }
+                } else {
+                    self.session_credential = SessionCredential::generate();
+                    self.join_code_input.clear();
+                    let _ = self.enter_relay_room();
                 }
-                if ui
-                    .add_enabled(
-                        !lan_room_active && self.mutations_enabled(),
-                        egui::Button::new(t!("join_code.import")),
-                    )
-                    .clicked()
-                {
-                    self.read_join_code_from_clipboard();
-                }
-            } else {
-                if ui.button(t!("join_code.copy")).clicked() {
+            }
+            if ui
+                .add_enabled(
+                    self.mutations_enabled(),
+                    egui::Button::new(t!("join_code.import")),
+                )
+                .clicked()
+            {
+                self.read_join_code_from_clipboard();
+            }
+            if ui
+                .add_enabled(room_active, egui::Button::new(t!("join_code.copy")))
+                .clicked()
+            {
+                if let Some(room) = &self.application_snapshot.lan_room {
+                    ui.ctx().copy_text(room.invitation_code.clone());
+                    self.join_code_message = Some(t!("join_code.copied").into_owned());
+                } else {
                     match self.copy_join_code() {
                         Ok(code) => {
                             ui.ctx().copy_text(code);
@@ -225,20 +236,21 @@ impl BridgeApp {
                         }
                     }
                 }
-                if ui.button(t!("join_code.import")).clicked() {
-                    self.read_join_code_from_clipboard();
-                }
-                if ui
-                    .add_enabled(
-                        self.mutations_enabled(),
-                        egui::Button::new(t!("room.generate")),
-                    )
-                    .clicked()
-                {
-                    self.session_credential = SessionCredential::generate();
-                    self.join_code_input.clear();
-                    self.join_code_message = Some(t!("room.generated").into_owned());
-                }
+            }
+            if ui
+                .add_enabled(
+                    room_active && !running && mutation_enabled,
+                    egui::Button::new(t!("start")),
+                )
+                .clicked()
+            {
+                self.start();
+            }
+            if ui
+                .add_enabled(room_active, egui::Button::new(t!("room.leave")))
+                .clicked()
+            {
+                self.leave_room();
             }
         });
         if let Some(message) = &self.join_code_message {
@@ -303,29 +315,6 @@ impl BridgeApp {
         }
     }
 
-    fn action_row(&mut self, ui: &mut egui::Ui) {
-        let running = self.client_state().status == SessionStatus::Running;
-        let starting =
-            self.application_snapshot.operation == Some(super::ApplicationOperation::Starting);
-        let mutation_enabled = self.mutations_enabled();
-        let start_label = t!("start");
-        let stop_label = t!("stop");
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(!running && mutation_enabled, egui::Button::new(start_label))
-                .clicked()
-            {
-                self.start();
-            }
-            if ui
-                .add_enabled(running || starting, egui::Button::new(stop_label))
-                .clicked()
-            {
-                self.stop();
-            }
-        });
-    }
-
     fn hook_progress_ui(&self, ui: &mut egui::Ui) {
         let startup = &self.client_state().hook_startup;
         if startup.phase == HookStartupPhase::NotStarted {
@@ -375,6 +364,10 @@ impl BridgeApp {
     }
 
     fn room_members_ui(&self, ui: &mut egui::Ui) {
+        if !self.application_snapshot.relay_room_active {
+            ui.label(t!("room.not_joined"));
+            return;
+        }
         let peers = &self.client_state().room_peers;
         let members_label = t!("room.members");
         ui.separator();
@@ -421,7 +414,7 @@ impl BridgeApp {
                                 t!("room.reconnecting"),
                             );
                         } else {
-                            ui.label(t!("status.running"));
+                            ui.label(t!("room.connected"));
                         }
                         let quality = self
                             .client_state()
@@ -454,12 +447,14 @@ impl BridgeApp {
             label_with_help(ui, profile_label, t!("help.connection_profile"));
             let profile_before = self.current_connection_profile();
             let mut selected_profile = profile_before;
-            ui.horizontal(|ui| {
-                ui.add_enabled_ui(self.preset_supports_transport(TransportChoice::Tcp), |ui| {
-                    ui.radio_value(&mut selected_profile, ConnectionProfile::Tcp, tcp);
-                });
-                ui.add_enabled_ui(self.preset_supports_transport(TransportChoice::Udp), |ui| {
-                    ui.radio_value(&mut selected_profile, ConnectionProfile::Udp, udp);
+            ui.add_enabled_ui(!self.application_snapshot.room_active(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(self.preset_supports_transport(TransportChoice::Tcp), |ui| {
+                        ui.radio_value(&mut selected_profile, ConnectionProfile::Tcp, tcp);
+                    });
+                    ui.add_enabled_ui(self.preset_supports_transport(TransportChoice::Udp), |ui| {
+                        ui.radio_value(&mut selected_profile, ConnectionProfile::Udp, udp);
+                    });
                 });
             });
             if selected_profile != profile_before {

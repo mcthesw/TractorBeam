@@ -33,6 +33,28 @@ pub(super) fn handle_command(
             set_operation(snapshot, client, None);
             send_application_event(event_tx, snapshot, ApplicationEvent::StartFinished(result));
         }
+        ApplicationCommand::JoinRelayRoom {
+            route,
+            steam_id64,
+            display_name,
+        } => {
+            set_operation(
+                snapshot,
+                client,
+                Some(ApplicationOperation::ConfiguringRoom),
+            );
+            let result = client.join_relay_room(&route, &steam_id64, &display_name);
+            if result.is_ok() {
+                *lan_room = None;
+                publish_lan_room(snapshot, client, None);
+            }
+            set_operation(snapshot, client, None);
+            send_application_event(
+                event_tx,
+                snapshot,
+                ApplicationEvent::RelayRoomJoined(result),
+            );
+        }
         ApplicationCommand::RefreshAccounts => {
             set_operation(
                 snapshot,
@@ -153,7 +175,11 @@ pub(super) fn handle_command(
             );
         }
         ApplicationCommand::EnumerateLanAdapters => {
-            set_operation(snapshot, client, Some(ApplicationOperation::ConfiguringLan));
+            set_operation(
+                snapshot,
+                client,
+                Some(ApplicationOperation::ConfiguringRoom),
+            );
             let result = enumerate_lan_adapters().map_err(|error| error.to_string());
             set_operation(snapshot, client, None);
             send_application_event(
@@ -167,7 +193,11 @@ pub(super) fn handle_command(
             display_name,
             adapters,
         } => {
-            set_operation(snapshot, client, Some(ApplicationOperation::ConfiguringLan));
+            set_operation(
+                snapshot,
+                client,
+                Some(ApplicationOperation::ConfiguringRoom),
+            );
             let result = lan_candidate_addresses(&adapters)
                 .map_err(|error| error.to_string())
                 .and_then(|addresses| {
@@ -181,7 +211,7 @@ pub(super) fn handle_command(
                 })
                 .and_then(|room| {
                     let code = room.invitation_code().map_err(|error| error.to_string())?;
-                    write_clipboard_text(&code)?;
+                    client.leave_relay_room();
                     *lan_room = Some(room);
                     Ok(code)
                 });
@@ -191,7 +221,11 @@ pub(super) fn handle_command(
             send_application_event(event_tx, snapshot, ApplicationEvent::LanRoomCreated(result));
         }
         ApplicationCommand::ProbeLanJoin(invitation) => {
-            set_operation(snapshot, client, Some(ApplicationOperation::ConfiguringLan));
+            set_operation(
+                snapshot,
+                client,
+                Some(ApplicationOperation::ConfiguringRoom),
+            );
             let result = LanRoomHandle::probe(&invitation)
                 .map(|results| (invitation, results))
                 .map_err(|error| error.to_string());
@@ -219,7 +253,11 @@ pub(super) fn handle_command(
             invitation,
             endpoint,
         } => {
-            set_operation(snapshot, client, Some(ApplicationOperation::ConfiguringLan));
+            set_operation(
+                snapshot,
+                client,
+                Some(ApplicationOperation::ConfiguringRoom),
+            );
             let result = enumerate_lan_adapters()
                 .map_err(|error| error.to_string())
                 .and_then(|adapters| {
@@ -230,7 +268,10 @@ pub(super) fn handle_command(
                     LanRoomHandle::join(steam_id64, display_name, &invitation, endpoint, &addresses)
                         .map_err(|error| error.to_string())
                 })
-                .map(|room| *lan_room = Some(room));
+                .map(|room| {
+                    client.leave_relay_room();
+                    *lan_room = Some(room);
+                });
             client.record_lan_stage("admission", if result.is_ok() { "ok" } else { "failed" });
             publish_lan_room(snapshot, client, lan_room.as_ref());
             set_operation(snapshot, client, None);
@@ -260,11 +301,4 @@ fn choose_diagnostics_bundle_path() -> Option<PathBuf> {
 fn read_clipboard_text() -> Result<String, String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|error| error.to_string())?;
     clipboard.get_text().map_err(|error| error.to_string())
-}
-
-fn write_clipboard_text(text: &str) -> Result<(), String> {
-    let mut clipboard = arboard::Clipboard::new().map_err(|error| error.to_string())?;
-    clipboard
-        .set_text(text.to_owned())
-        .map_err(|error| error.to_string())
 }

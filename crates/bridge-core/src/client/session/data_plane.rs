@@ -43,7 +43,7 @@ pub(super) async fn hook_in_task(
 pub(super) async fn relay_transport_task(
     mut relay: RelayTransport,
     mut outbound_rx: TokioReceiver<OutboundGamePacket>,
-    inbound_tx: TokioSender<InboundGamePacket>,
+    inbound_target: RelayInboundTarget,
     context: RelayTransportTaskContext,
 ) -> io::Result<()> {
     let mut observer = PacketObserver::default();
@@ -105,8 +105,7 @@ pub(super) async fn relay_transport_task(
                 };
                 match decode_inbound_relay_datagram(raw) {
                     Ok(Some(InboundRelayDatagram::Game(packet))) => {
-                        let accepted = inbound_tx.try_send(packet).is_ok();
-                        if !accepted {
+                        if !inbound_target.try_send(packet) {
                             send_error(&context.event_tx, "Hook inbound queue is full; dropping relay packet");
                         }
                     }

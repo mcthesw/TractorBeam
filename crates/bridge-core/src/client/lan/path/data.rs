@@ -188,6 +188,11 @@ impl PathManager {
         source: SocketAddr,
         frame: DataFrame,
     ) {
+        let gameplay_attached = self
+            .send_observer
+            .lock()
+            .expect("LAN send observer lock poisoned")
+            .is_some();
         let enqueued = {
             let mut state = self.inner.lock().expect("LAN path lock poisoned");
             let Some(path) = state.peers.get_mut(&frame.path.from) else {
@@ -220,7 +225,16 @@ impl PathManager {
                 payload: frame.payload,
             };
             let key = path.data.key;
-            if path.data.inbound.len() == super::PER_PEER_PACKET_QUEUE_CAPACITY {
+            if !gameplay_attached {
+                self.ledger.record(
+                    key,
+                    LanDataDirection::Receive,
+                    LanDataStage::InboundQueue,
+                    LanDataOutcome::Dropped(LanDataDropReason::SessionClosed),
+                    Some(path.data.inbound.len()),
+                );
+                false
+            } else if path.data.inbound.len() == super::PER_PEER_PACKET_QUEUE_CAPACITY {
                 self.ledger.record(
                     key,
                     LanDataDirection::Receive,
@@ -321,7 +335,7 @@ async fn send_outbound(manager: &PathManager, key: PeerDataKey, packet: Outbound
         outcome,
         None,
     );
-    if succeeded && let Some(observer) = manager.send_observer.get() {
+    if succeeded && let Some(observer) = manager.send_observer() {
         observer.observe(prepared.success, started.elapsed());
     }
 }

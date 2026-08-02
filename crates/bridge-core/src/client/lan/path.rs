@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     io,
     net::SocketAddr,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -62,7 +62,7 @@ pub(super) struct PathManager {
     inbound_notify: Notify,
     ledger: Arc<LanDataPlaneLedger>,
     data_workers: Mutex<Vec<JoinHandle<()>>>,
-    send_observer: OnceLock<Arc<dyn LanGameSendObserver>>,
+    send_observer: Mutex<Option<Arc<dyn LanGameSendObserver>>>,
 }
 
 #[derive(Clone)]
@@ -145,7 +145,7 @@ impl PathManager {
             inbound_notify: Notify::new(),
             ledger,
             data_workers: Mutex::new(Vec::new()),
-            send_observer: OnceLock::new(),
+            send_observer: Mutex::new(None),
         });
         let inbound = LanInboundReceiver::new(manager.clone());
         Ok((manager, inbound, monitor))
@@ -155,7 +155,29 @@ impl PathManager {
         &self,
         observer: Arc<dyn LanGameSendObserver>,
     ) -> Result<(), Arc<dyn LanGameSendObserver>> {
-        self.send_observer.set(observer)
+        let mut current = self
+            .send_observer
+            .lock()
+            .expect("LAN send observer lock poisoned");
+        if current.is_some() {
+            return Err(observer);
+        }
+        *current = Some(observer);
+        Ok(())
+    }
+
+    pub(super) fn detach_send_observer(&self) {
+        *self
+            .send_observer
+            .lock()
+            .expect("LAN send observer lock poisoned") = None;
+    }
+
+    pub(super) fn send_observer(&self) -> Option<Arc<dyn LanGameSendObserver>> {
+        self.send_observer
+            .lock()
+            .expect("LAN send observer lock poisoned")
+            .clone()
     }
 
     pub fn start(self: &Arc<Self>) -> Vec<JoinHandle<()>> {

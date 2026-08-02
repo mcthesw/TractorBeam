@@ -21,7 +21,39 @@ impl BridgeApp {
                     self.start_error_dialog_open = true;
                 }
             },
-            ApplicationEvent::StopFinished => self.status_message = None,
+            ApplicationEvent::RoomLeft => {
+                self.status_message = None;
+                self.join_code_message = Some(t!("room.left").into_owned());
+                if let Some(action) = self.pending_room_action.take() {
+                    match action {
+                        PendingRoomAction::NewRoom => {
+                            self.join_code_input.clear();
+                            if self.route == RouteChoice::LanDirect {
+                                if !self.application.enumerate_lan_adapters() {
+                                    self.show_busy_status();
+                                }
+                            } else {
+                                self.session_credential = SessionCredential::generate();
+                                let _ = self.enter_relay_room();
+                            }
+                        }
+                        PendingRoomAction::Import(code) => {
+                            self.join_code_input = code;
+                            let _ = self.import_join_code();
+                        }
+                    }
+                }
+            }
+            ApplicationEvent::RelayRoomJoined(result) => match result {
+                Ok(()) => {
+                    self.join_code_dialog_open = false;
+                    self.join_code_message = Some(t!("room.joined").into_owned());
+                    self.status_message = None;
+                }
+                Err(error) => {
+                    self.join_code_message = Some(format!("{}: {error}", t!("room.join_failed")));
+                }
+            },
             ApplicationEvent::AccountsRefreshed => {
                 self.selected_account =
                     initial_selected_account(&self.client_state().detected_accounts, None);

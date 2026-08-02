@@ -11,11 +11,11 @@ use std::{
 };
 
 use tractor_beam_core::{
-    BridgeClient, ClientConfigSelection, ClientError, InputDelayError, InputDelayReport,
-    LanAdapter, LanJoinCode, LanPeerPathState, LanPeerState, LanProbeResult, LanRoomHandle,
-    LightPingTarget, LoadedClientConfig, RelayEndpoint, RuntimeState, SessionConfig, SessionStatus,
-    default_lan_adapters, enumerate_lan_adapters, lan_candidate_addresses, load_client_config,
-    save_client_config_selection,
+    BridgeClient, ClientConfigSelection, ClientError, ExternalRelayConfig, InputDelayError,
+    InputDelayReport, LanAdapter, LanJoinCode, LanPeerPathState, LanPeerState, LanProbeResult,
+    LanRoomHandle, LightPingTarget, LoadedClientConfig, RelayEndpoint, RuntimeState, SessionConfig,
+    SessionStatus, default_lan_adapters, enumerate_lan_adapters, lan_candidate_addresses,
+    load_client_config, save_client_config_selection,
 };
 
 use crate::logging::ClientLogFiles;
@@ -27,7 +27,7 @@ use commands::handle_command;
 const COMMAND_QUEUE_CAPACITY: usize = 16;
 const RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const CONTROL_NONE: u8 = 0;
-const CONTROL_STOP: u8 = 1;
+const CONTROL_LEAVE_ROOM: u8 = 1;
 const CONTROL_SHUTDOWN: u8 = 2;
 
 type WakeCallback = Arc<dyn Fn() + Send + Sync>;
@@ -49,7 +49,7 @@ pub(crate) enum BootstrapState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ApplicationOperation {
     Starting,
-    Stopping,
+    LeavingRoom,
     RefreshingAccounts,
     Probing,
     ReadingInputDelay,
@@ -57,7 +57,7 @@ pub(crate) enum ApplicationOperation {
     OpeningLogs,
     ExportingDiagnosticsBundle,
     ReadingClipboard,
-    ConfiguringLan,
+    ConfiguringRoom,
     ShuttingDown,
 }
 
@@ -70,6 +70,7 @@ pub(crate) struct ApplicationSnapshot {
     pub(crate) loaded_config: Option<LoadedClientConfig>,
     pub(crate) shutdown_complete: bool,
     pub(crate) lan_room: Option<LanRoomSnapshot>,
+    pub(crate) relay_room_active: bool,
     command_generation: u64,
 }
 
@@ -81,6 +82,11 @@ pub(crate) struct LanRoomSnapshot {
 }
 
 impl ApplicationSnapshot {
+    #[must_use]
+    pub(crate) fn room_active(&self) -> bool {
+        self.relay_room_active || self.lan_room.is_some()
+    }
+
     #[must_use]
     pub(crate) fn accepts_mutation(&self) -> bool {
         self.bootstrap == BootstrapState::Ready
@@ -99,7 +105,8 @@ impl ApplicationSnapshot {
 #[derive(Debug)]
 pub(crate) enum ApplicationEvent {
     StartFinished(Result<(), ClientError>),
-    StopFinished,
+    RoomLeft,
+    RelayRoomJoined(Result<(), ClientError>),
     AccountsRefreshed,
     ReadinessProbeStarted(Result<(), ClientError>),
     HookReceiveProbeStarted(Result<(), ClientError>),
@@ -122,6 +129,11 @@ pub(crate) enum ApplicationEvent {
 enum ApplicationCommand {
     RetryBootstrap,
     Start(Box<StartRequest>),
+    JoinRelayRoom {
+        route: ExternalRelayConfig,
+        steam_id64: String,
+        display_name: String,
+    },
     RefreshAccounts,
     StartReadinessProbe(RelayEndpoint),
     StartHookReceiveProbe,
@@ -237,8 +249,22 @@ impl ApplicationHandle {
         })))
     }
 
-    pub(crate) fn request_stop(&self) {
-        self.control.fetch_max(CONTROL_STOP, Ordering::Release);
+    pub(crate) fn leave_room(&self) {
+        self.control
+            .fetch_max(CONTROL_LEAVE_ROOM, Ordering::Release);
+    }
+
+    pub(crate) fn join_relay_room(
+        &self,
+        route: ExternalRelayConfig,
+        steam_id64: String,
+        display_name: String,
+    ) -> bool {
+        self.submit(ApplicationCommand::JoinRelayRoom {
+            route,
+            steam_id64,
+            display_name,
+        })
     }
 
     pub(crate) fn request_shutdown(&self) {
@@ -365,13 +391,15 @@ fn run_application(
                 send_application_event(&event_tx, &snapshot, ApplicationEvent::ShutdownComplete);
                 return;
             }
-            CONTROL_STOP => {
+            CONTROL_LEAVE_ROOM => {
                 if let Some(client) = client.as_mut() {
-                    set_operation(&snapshot, client, Some(ApplicationOperation::Stopping));
+                    set_operation(&snapshot, client, Some(ApplicationOperation::LeavingRoom));
                     client.stop_session();
+                    client.leave_relay_room();
                     lan_room = None;
+                    publish_lan_room(&snapshot, client, None);
                     set_operation(&snapshot, client, None);
-                    send_application_event(&event_tx, &snapshot, ApplicationEvent::StopFinished);
+                    send_application_event(&event_tx, &snapshot, ApplicationEvent::RoomLeft);
                 }
             }
             _ => {}
@@ -539,6 +567,7 @@ fn set_operation(
         }
         snapshot.operation = operation;
         snapshot.runtime = client.state().clone();
+        snapshot.relay_room_active = client.relay_room_active();
     });
 }
 
@@ -564,6 +593,7 @@ fn failed_bootstrap_command_is_current(
 fn publish_client(snapshot: &Arc<SnapshotStore>, client: &BridgeClient) {
     update_snapshot(snapshot, |snapshot| {
         snapshot.runtime = client.state().clone();
+        snapshot.relay_room_active = client.relay_room_active();
     });
 }
 

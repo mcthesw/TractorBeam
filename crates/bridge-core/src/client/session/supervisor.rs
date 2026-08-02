@@ -7,6 +7,7 @@ pub(super) async fn supervise_session(
     cancellation: CancellationToken,
     std_event_tx: mpsc::Sender<RuntimeEvent>,
     startup_tx: SyncSender<io::Result<()>>,
+    relay_data_plane: Option<RelayRoomDataPlane>,
 ) {
     let (event_tx, event_rx) = tokio_mpsc::channel(EVENT_QUEUE_CAPACITY);
     let event_forwarder = tokio::spawn(forward_events(event_rx, std_event_tx));
@@ -17,6 +18,7 @@ pub(super) async fn supervise_session(
         ipc_control_rx,
         &cancellation,
         &event_tx,
+        relay_data_plane,
     )
     .await
     {
@@ -110,6 +112,7 @@ async fn start_runtime_tasks(
     ipc_control_rx: Option<Receiver<InputDelayCall>>,
     cancellation: &CancellationToken,
     event_tx: &RuntimeEventSender,
+    relay_data_plane: Option<RelayRoomDataPlane>,
 ) -> io::Result<RuntimeTasks> {
     tokio::select! {
         result = start_runtime_tasks_inner(
@@ -118,6 +121,7 @@ async fn start_runtime_tasks(
             ipc_control_rx,
             cancellation,
             event_tx,
+            relay_data_plane,
         ) => result,
         () = cancellation.cancelled() => Err(io::Error::new(
             io::ErrorKind::Interrupted,
@@ -132,6 +136,7 @@ pub(super) async fn start_runtime_tasks_inner(
     ipc_control_rx: Option<Receiver<InputDelayCall>>,
     cancellation: &CancellationToken,
     event_tx: &RuntimeEventSender,
+    mut relay_data_plane: Option<RelayRoomDataPlane>,
 ) -> io::Result<RuntimeTasks> {
     if config.mode != SessionMode::Official && native_hook.is_none() {
         return Err(io::Error::new(
@@ -152,6 +157,8 @@ pub(super) async fn start_runtime_tasks_inner(
             support,
             health: None,
             direct_monitor: None,
+            _relay_data_plane: None,
+            _lan_data_plane: None,
         });
     }
 
@@ -179,63 +186,87 @@ pub(super) async fn start_runtime_tasks_inner(
     let health = config.session_health.enabled.then(|| {
         Arc::new(Mutex::new(SessionHealth::new(
             config.session_health.runtime_rtt_enabled
+                && relay_data_plane.is_none()
                 && matches!(&config.route, SessionRouteConfig::ExternalRelay(_)),
             Duration::from_secs(config.session_health.runtime_rtt_timeout_seconds),
             Instant::now(),
         )))
     });
-    let direct_monitor = match &config.route {
+    let (direct_monitor, lan_data_plane) = match &config.route {
         SessionRouteConfig::ExternalRelay(relay_route) => {
-            let (outbound_tx, outbound_rx) = tokio_mpsc::channel(PACKET_QUEUE_CAPACITY);
-            tasks.spawn(hook_in_task(
-                hook_packets_rx,
-                outbound_tx,
-                event_tx.clone(),
-                cancellation.clone(),
-                health.clone(),
-            ));
-            let (relay, peers) = RelayTransport::connect_session(
-                relay_route,
-                &config.steam_id64,
-                &config.display_name,
-            )
-            .await?;
-            let peer_count = peers.len();
-            send_event(event_tx, RuntimeEvent::RoomPeersUpdated(peers.clone()));
-            send_event(
-                event_tx,
-                RuntimeEvent::RelayLinkChanged(RelayLinkState::Connected),
-            );
-            send_event(
-                event_tx,
-                log_event(
-                    LogLevel::Info,
-                    format!("Joined relay room with {peer_count} peer(s)"),
-                ),
-            );
-            let (inbound_tx, inbound_rx) = tokio_mpsc::channel(PACKET_QUEUE_CAPACITY);
-            tasks.spawn(relay_transport_task(
-                relay,
-                outbound_rx,
-                inbound_tx,
-                RelayTransportTaskContext {
-                    event_tx: event_tx.clone(),
-                    cancellation: cancellation.clone(),
-                    health: health.clone(),
-                    runtime_rtt_interval: Duration::from_secs(
-                        config.session_health.runtime_rtt_interval_seconds,
+            if let Some(data_plane) = relay_data_plane.as_mut() {
+                let inbound_rx = data_plane.inbound_rx.take().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "Relay room gameplay data plane is already attached",
+                    )
+                })?;
+                tasks.spawn(hook_in_task(
+                    hook_packets_rx,
+                    data_plane.outbound_tx.clone(),
+                    event_tx.clone(),
+                    cancellation.clone(),
+                    health.clone(),
+                ));
+                tasks.spawn(hook_out_task(
+                    to_hook,
+                    inbound_rx,
+                    event_tx.clone(),
+                    cancellation.clone(),
+                    health.clone(),
+                ));
+            } else {
+                let (outbound_tx, outbound_rx) = tokio_mpsc::channel(PACKET_QUEUE_CAPACITY);
+                tasks.spawn(hook_in_task(
+                    hook_packets_rx,
+                    outbound_tx,
+                    event_tx.clone(),
+                    cancellation.clone(),
+                    health.clone(),
+                ));
+                let (relay, peers) = RelayTransport::connect_session(
+                    relay_route,
+                    &config.steam_id64,
+                    &config.display_name,
+                )
+                .await?;
+                let peer_count = peers.len();
+                send_event(event_tx, RuntimeEvent::RoomPeersUpdated(peers.clone()));
+                send_event(
+                    event_tx,
+                    RuntimeEvent::RelayLinkChanged(RelayLinkState::Connected),
+                );
+                send_event(
+                    event_tx,
+                    log_event(
+                        LogLevel::Info,
+                        format!("Joined relay room with {peer_count} peer(s)"),
                     ),
-                    initial_peers: peers,
-                },
-            ));
-            tasks.spawn(hook_out_task(
-                to_hook,
-                inbound_rx,
-                event_tx.clone(),
-                cancellation.clone(),
-                health.clone(),
-            ));
-            None
+                );
+                let (inbound_tx, inbound_rx) = tokio_mpsc::channel(PACKET_QUEUE_CAPACITY);
+                tasks.spawn(relay_transport_task(
+                    relay,
+                    outbound_rx,
+                    RelayInboundTarget::Fixed(inbound_tx),
+                    RelayTransportTaskContext {
+                        event_tx: event_tx.clone(),
+                        cancellation: cancellation.clone(),
+                        health: health.clone(),
+                        runtime_rtt_interval: Duration::from_secs(
+                            config.session_health.runtime_rtt_interval_seconds,
+                        ),
+                        initial_peers: peers,
+                    },
+                ));
+                tasks.spawn(hook_out_task(
+                    to_hook,
+                    inbound_rx,
+                    event_tx.clone(),
+                    cancellation.clone(),
+                    health.clone(),
+                ));
+            }
+            (None, None)
         }
         SessionRouteConfig::LanDirect(lan_route) => {
             let room = lan_route.room.clone().ok_or_else(|| {
@@ -248,12 +279,13 @@ pub(super) async fn start_runtime_tasks_inner(
                 ));
             }
             let send_observer = Arc::new(DirectSendObserver::new(event_tx.clone(), health.clone()));
-            let (inbound, monitor) = room.take_data_plane(send_observer).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "Direct LAN room data plane is already attached",
-                )
-            })?;
+            let (inbound, monitor, attachment) =
+                room.take_data_plane(send_observer).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "Direct LAN room data plane is already attached",
+                    )
+                })?;
             tasks.spawn(direct_hook_in_task(
                 room,
                 hook_packets_rx,
@@ -276,7 +308,7 @@ pub(super) async fn start_runtime_tasks_inner(
                 event_tx,
                 log_event(LogLevel::Info, "Direct LAN route is attached"),
             );
-            Some(monitor)
+            (Some(monitor), Some(attachment))
         }
     };
     if health.is_some() {
@@ -293,6 +325,8 @@ pub(super) async fn start_runtime_tasks_inner(
         support,
         health,
         direct_monitor,
+        _relay_data_plane: relay_data_plane,
+        _lan_data_plane: lan_data_plane,
     })
 }
 
@@ -361,7 +395,7 @@ async fn drain_tasks(tasks: &mut JoinSet<io::Result<()>>) {
     while tasks.join_next().await.is_some() {}
 }
 
-async fn forward_events(
+pub(super) async fn forward_events(
     mut event_rx: tokio_mpsc::Receiver<RuntimeEvent>,
     std_event_tx: mpsc::Sender<RuntimeEvent>,
 ) {

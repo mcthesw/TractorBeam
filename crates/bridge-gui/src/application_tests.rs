@@ -22,9 +22,26 @@ fn snapshot_only_accepts_mutations_when_ready_and_idle() {
 }
 
 #[test]
-fn shutdown_control_takes_priority_over_stop() {
+fn room_activity_covers_relay_and_lan_rooms() {
+    let mut snapshot = ApplicationSnapshot::default();
+    assert!(!snapshot.room_active());
+
+    snapshot.relay_room_active = true;
+    assert!(snapshot.room_active());
+
+    snapshot.relay_room_active = false;
+    snapshot.lan_room = Some(LanRoomSnapshot {
+        invitation_code: String::new(),
+        peers: Vec::new(),
+        paths: Vec::new(),
+    });
+    assert!(snapshot.room_active());
+}
+
+#[test]
+fn shutdown_control_takes_priority_over_leave_room() {
     let control = AtomicU8::new(CONTROL_NONE);
-    control.fetch_max(CONTROL_STOP, Ordering::Release);
+    control.fetch_max(CONTROL_LEAVE_ROOM, Ordering::Release);
     control.store(CONTROL_SHUTDOWN, Ordering::Release);
 
     assert_eq!(

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/mcthesw/TractorBeam/compare/v0.4.0...v0.4.1) (2026-08-03)
+
+
+### Features
+
+* **client:** enter rooms before gameplay ([b43560e](https://github.com/mcthesw/TractorBeam/commit/b43560e8ae46512b112ac9ff8eba49134bcac3bc))
+
 ## [0.4.0](https://github.com/mcthesw/TractorBeam/compare/v0.3.0...v0.4.0) (2026-07-27)
 
 

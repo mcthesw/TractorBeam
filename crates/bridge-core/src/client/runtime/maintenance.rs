@@ -42,6 +42,9 @@ impl BridgeClient {
                     self.apply_hook_startup_state(*startup);
                 }
                 state::RuntimeEvent::HookIpc(ipc) => self.apply_hook_ipc_state(*ipc),
+                state::RuntimeEvent::HookTargetObserved(target) => {
+                    self.observe_game_target(target);
+                }
                 state::RuntimeEvent::SessionEnded(reason)
                     if self.state.last_stop_reason.is_none() =>
                 {
@@ -195,12 +198,59 @@ impl BridgeClient {
         self.state.latest_input_delay_status = None;
         self.state.active_session_mode = None;
         self.state.client_incidents.clear();
+        self.observed_game_targets.clear();
+        self.state.missing_game_targets.clear();
         if self.relay_room.is_none() {
+            self.relay_peers_known = false;
             self.state.room_peers.clear();
             self.state.room_path_quality.clear();
             self.state.relay_link = state::RelayLinkState::Inactive;
         }
         self.active_log_context = Some(ClientSessionLogContext { route, mode });
+    }
+
+    pub(super) fn observe_game_target(&mut self, target: u64) {
+        if !self.observed_game_targets.contains(&target) {
+            self.observed_game_targets.push(target);
+            self.refresh_missing_game_targets();
+        }
+    }
+
+    pub(super) fn refresh_missing_game_targets(&mut self) {
+        if !self.relay_peers_known {
+            return;
+        }
+        let missing = self
+            .observed_game_targets
+            .iter()
+            .copied()
+            .filter(|target| {
+                !self
+                    .state
+                    .room_peers
+                    .iter()
+                    .any(|peer| peer.steam_id64 == *target)
+            })
+            .collect::<Vec<_>>();
+        let newly_missing = missing
+            .iter()
+            .filter(|target| !self.state.missing_game_targets.contains(target))
+            .copied()
+            .collect::<Vec<_>>();
+        self.state.missing_game_targets = missing;
+        if !newly_missing.is_empty() {
+            self.log(
+                LogLevel::Warn,
+                format!(
+                    "Game target SteamID is not in the current Relay room: {}",
+                    newly_missing
+                        .iter()
+                        .map(u64::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+            );
+        }
     }
 
     pub(super) fn log_session_route(&mut self, config: &SessionConfig) {

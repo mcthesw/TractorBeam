@@ -250,6 +250,7 @@ impl BridgeClient {
                 }
             }
         }
+        self.finish_game_exit();
         if should_clear {
             self.session = None;
             self.cleanup_hook_launch_parameters("session ended");

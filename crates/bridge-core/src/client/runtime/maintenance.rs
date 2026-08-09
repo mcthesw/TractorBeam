@@ -61,6 +61,7 @@ impl BridgeClient {
                 | state::RuntimeEvent::RelayLinkChanged(_) => {}
             }
         }
+        self.finish_game_exit();
     }
 
     pub(super) fn apply_hook_startup_state(&mut self, mut startup: state::HookStartupState) {
@@ -126,6 +127,21 @@ impl BridgeClient {
         self.state.hook_startup.endpoint_ready = endpoint_ready;
         self.state.hook_startup.message = Some(message);
         self.state.hook_startup.updated_at = state::unix_seconds();
+    }
+
+    pub(super) fn finish_game_exit(&mut self) {
+        if !matches!(
+            self.state.last_stop_reason,
+            Some(state::SessionStopReason::GameExited { .. })
+        ) {
+            return;
+        }
+        self.state.status = state::SessionStatus::Idle;
+        self.state.active_session_mode = None;
+        self.state.hook_runtime_active = false;
+        self.state.hook_startup = state::HookStartupState::default();
+        self.state.hook_ipc = state::HookIpcState::default();
+        self.active_log_context = None;
     }
 
     pub(super) fn record_hook_startup_failure(

@@ -548,18 +548,113 @@ async fn absent_hook_times_out_with_test_budget() {
         ListenerSettings {
             accept_poll_interval: Duration::from_millis(2),
             initial_connect_timeout: Duration::from_millis(30),
+            installation_timeout: Duration::from_millis(30),
             reconnect_timeout: Duration::from_millis(30),
         },
     )
     .unwrap();
+    let worker = tokio::spawn(worker);
     ready_deadline.arm();
 
     let error = time::timeout(TEST_TIMEOUT, worker)
         .await
         .unwrap()
+        .unwrap()
         .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     assert!(error.to_string().contains("connection timed out"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn connected_hook_gets_a_separate_installation_budget() {
+    let session = HookIpcSession::test();
+    let fake_session = session.clone();
+    let ready_deadline = session.ready_deadline();
+    let (_control_tx, control_rx) = control_channel();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(16);
+    let cancellation = CancellationToken::new();
+    let observed_cancellation = cancellation.clone();
+    let (_from_hook, _to_hook, worker) = start_with_settings(
+        session,
+        control_rx,
+        event_tx,
+        cancellation,
+        ListenerSettings {
+            accept_poll_interval: Duration::from_millis(2),
+            initial_connect_timeout: Duration::from_millis(500),
+            installation_timeout: Duration::from_millis(1_500),
+            reconnect_timeout: Duration::from_millis(30),
+        },
+    )
+    .unwrap();
+    let worker = tokio::spawn(worker);
+    ready_deadline.arm();
+    let fake = thread::spawn(move || {
+        let mut stream =
+            connect_fake_hook_with_startup(&fake_session, HookStartupStatus::Installing);
+        thread::sleep(Duration::from_millis(650));
+        write_hook_message(
+            &mut stream,
+            &HookToClient::Startup(HookStartupStatus::Ready),
+        )
+        .unwrap();
+        wait_for_shutdown(&mut stream);
+    });
+
+    time::timeout(TEST_TIMEOUT, async {
+        loop {
+            if let Some(RuntimeEvent::HookIpc(state)) = event_rx.recv().await
+                && state.installation == HookInstallState::Ready
+            {
+                return;
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    observed_cancellation.cancel();
+    time::timeout(TEST_TIMEOUT, worker)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    fake.join().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn connected_hook_times_out_on_the_installation_budget() {
+    let session = HookIpcSession::test();
+    let fake_session = session.clone();
+    let ready_deadline = session.ready_deadline();
+    let (_control_tx, control_rx) = control_channel();
+    let (event_tx, _event_rx) = tokio::sync::mpsc::channel(16);
+    let cancellation = CancellationToken::new();
+    let (_from_hook, _to_hook, worker) = start_with_settings(
+        session,
+        control_rx,
+        event_tx,
+        cancellation,
+        ListenerSettings {
+            accept_poll_interval: Duration::from_millis(2),
+            initial_connect_timeout: Duration::from_millis(500),
+            installation_timeout: Duration::from_millis(60),
+            reconnect_timeout: Duration::from_millis(500),
+        },
+    )
+    .unwrap();
+    ready_deadline.arm();
+    let fake = thread::spawn(move || {
+        let _stream = connect_fake_hook_with_startup(&fake_session, HookStartupStatus::Installing);
+        thread::sleep(Duration::from_millis(100));
+    });
+
+    let error = time::timeout(TEST_TIMEOUT, worker)
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("finish installing"));
+    fake.join().unwrap();
 }
 
 #[test]

@@ -46,6 +46,8 @@ pub enum InjectorError {
     UnsupportedPlatform,
     #[error("Admin permission was cancelled")]
     AdminPermissionCancelled,
+    #[error("Native Hook injection was cancelled")]
+    InjectionCancelled,
     #[error("Native Hook is already loaded in the Isaac process")]
     NativeHookAlreadyLoaded,
     #[error("{0}")]

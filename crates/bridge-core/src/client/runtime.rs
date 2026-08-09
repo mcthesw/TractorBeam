@@ -339,6 +339,14 @@ impl BridgeClient {
 
         let native_hook = if config.mode != SessionMode::Official {
             let preexisting_processes = tractor_beam_isaac_injector::find_isaac_processes();
+            if !preexisting_processes.is_empty() {
+                let message =
+                    "Isaac is already running. Fully exit Isaac, then click Launch Game again."
+                        .to_owned();
+                self.record_hook_startup_failure(None, message.clone());
+                self.active_log_context = None;
+                return Err(io::Error::new(io::ErrorKind::AlreadyExists, message).into());
+            }
             let native_hook_paths = match tractor_beam_isaac_injector::resolve_native_hook_paths() {
                 Ok(paths) => paths,
                 Err(error) => {

@@ -15,6 +15,7 @@ use super::{
 };
 
 const INJECTOR_HELPER_TIMEOUT: Duration = Duration::from_secs(60);
+const INJECTOR_STOP_TIMEOUT: Duration = Duration::from_millis(250);
 const ADMIN_PERMISSION_REQUEST_MESSAGE: &str = "Requesting admin permission...";
 const ADMIN_PERMISSION_CANCELLED_MESSAGE: &str = "Admin permission was cancelled";
 const ELEVATED_INJECTOR_RETRY_SUCCEEDED_MESSAGE: &str = "Elevated Injector retry succeeded";
@@ -56,10 +57,28 @@ pub(super) async fn inject_process(
     let retry_event_tx = event_tx.clone();
     let retry_paths = paths.clone();
     let retry_process_name = process_name.clone();
-    let injection = tokio::task::spawn_blocking(move || {
+    let guard = match tractor_beam_isaac_injector::InjectionGuard::create() {
+        Ok(guard) => guard,
+        Err(error) => {
+            finish_injection_failure(
+                &paths,
+                &process_name,
+                process_id,
+                &event_tx,
+                &cancellation,
+                format!("Native Hook injection failed: {error}"),
+                error.is_access_denied(),
+            )
+            .await;
+            return;
+        }
+    };
+    let worker_guard = guard.clone();
+    let mut injection = tokio::task::spawn_blocking(move || {
         tractor_beam_isaac_injector::run_injector_with_elevated_retry(
             &injection_paths,
             process_id,
+            &worker_guard,
             |event| {
                 send_injector_launch_event(
                     &retry_event_tx,
@@ -72,8 +91,25 @@ pub(super) async fn inject_process(
         )
     });
 
-    tokio::select! {
-        () = cancellation.cancelled() => {
+    enum Outcome {
+        Completed(
+            Result<Result<(), tractor_beam_isaac_injector::InjectorError>, tokio::task::JoinError>,
+        ),
+        Cancelled,
+        TimedOut,
+    }
+
+    let outcome = tokio::select! {
+        biased;
+        result = &mut injection => Outcome::Completed(result),
+        () = cancellation.cancelled() => Outcome::Cancelled,
+        () = time::sleep(INJECTOR_HELPER_TIMEOUT) => Outcome::TimedOut,
+    };
+
+    match outcome {
+        Outcome::Cancelled => {
+            guard.cancel();
+            let _ = time::timeout(INJECTOR_STOP_TIMEOUT, &mut injection).await;
             send_event(
                 &event_tx,
                 RuntimeEvent::HookStartup(Box::new(hook_startup_state(
@@ -84,97 +120,111 @@ pub(super) async fn inject_process(
                     "Native Hook injection cancelled while injector helper was running",
                 ))),
             );
-            send_event(&event_tx, log_event(LogLevel::Info, "Native Hook injection cancelled"));
+            send_event(
+                &event_tx,
+                log_event(LogLevel::Info, "Native Hook injection cancelled"),
+            );
         }
-        result = time::timeout(INJECTOR_HELPER_TIMEOUT, injection) => {
-            let mut failure_message = None;
-            let injected = match result {
-                Ok(Ok(Ok(()))) => {
-                    send_event(
-                        &event_tx,
-                        log_event(
-                            LogLevel::Info,
-                            format!(
-                                "Native Hook injected into {process_name} ({process_id}) from {}",
-                                hook_path.display()
-                            ),
-                        ),
-                    );
-                    true
-                }
-                Ok(Ok(Err(error))) => {
-                    let message = format!(
-                        "Native Hook injection failed: {}",
-                        injection_support_message(&error)
-                    );
-                    let mut state = hook_startup_state(
-                        HookStartupPhase::Failed,
-                        &paths,
-                        Some(&process_name),
-                        Some(process_id),
-                        message.clone(),
-                    );
-                    state.access_denied = error.is_access_denied();
-                    send_event(&event_tx, RuntimeEvent::HookStartup(Box::new(state)));
-                    send_event(&event_tx, log_event(LogLevel::Error, message.clone()));
-                    send_event(&event_tx, RuntimeEvent::CounterDelta(error_counter()));
-                    failure_message = Some(message);
-                    false
-                }
-                Ok(Err(error)) => {
-                    let message = format!("Native Hook injection task failed: {error}");
-                    send_event(&event_tx, log_event(LogLevel::Error, message.clone()));
-                    send_event(&event_tx, RuntimeEvent::CounterDelta(error_counter()));
-                    failure_message = Some(message);
-                    false
-                }
-                Err(_) => {
-                    let message = format!(
-                        "Native Hook injector helper timed out after {} seconds",
-                        INJECTOR_HELPER_TIMEOUT.as_secs()
-                    );
-                    send_event(
-                        &event_tx,
-                        RuntimeEvent::HookStartup(Box::new(hook_startup_state(
-                            HookStartupPhase::Failed,
-                            &paths,
-                            Some(&process_name),
-                            Some(process_id),
-                            message.clone(),
-                        ))),
-                    );
-                    send_event(&event_tx, log_event(LogLevel::Error, message.clone()));
-                    send_event(&event_tx, RuntimeEvent::CounterDelta(error_counter()));
-                    failure_message = Some(message);
-                    false
-                }
-            };
-            if let Some(message) = failure_message {
-                send_event(
-                    &event_tx,
-                    RuntimeEvent::HookReceiveProbeFinished(Err(message.clone())),
-                );
-                send_critical_event(
-                    &event_tx,
-                    RuntimeEvent::SessionEnded(SessionStopReason::RuntimeEnded { message }),
-                )
-                .await;
-                cancellation.cancel();
-            }
-            if injected {
-                ready_deadline.arm();
-                let mut state = hook_startup_state(
-                    HookStartupPhase::WaitingForHookEndpoint,
-                    &paths,
-                    Some(&process_name),
-                    Some(process_id),
-                    "Injection succeeded; waiting for local IPC handshake",
-                );
-                state.injected = true;
-                send_event(&event_tx, RuntimeEvent::HookStartup(Box::new(state)));
-            }
+        Outcome::TimedOut => {
+            guard.cancel();
+            let _ = time::timeout(INJECTOR_STOP_TIMEOUT, &mut injection).await;
+            finish_injection_failure(
+                &paths,
+                &process_name,
+                process_id,
+                &event_tx,
+                &cancellation,
+                format!(
+                    "Native Hook injector helper timed out after {} seconds",
+                    INJECTOR_HELPER_TIMEOUT.as_secs()
+                ),
+                false,
+            )
+            .await;
+        }
+        Outcome::Completed(Ok(Ok(()))) => {
+            send_event(
+                &event_tx,
+                log_event(
+                    LogLevel::Info,
+                    format!(
+                        "Native Hook injected into {process_name} ({process_id}) from {}",
+                        hook_path.display()
+                    ),
+                ),
+            );
+            ready_deadline.arm();
+            let mut state = hook_startup_state(
+                HookStartupPhase::WaitingForHookEndpoint,
+                &paths,
+                Some(&process_name),
+                Some(process_id),
+                "Injection succeeded; waiting for local IPC handshake",
+            );
+            state.injected = true;
+            send_event(&event_tx, RuntimeEvent::HookStartup(Box::new(state)));
+        }
+        Outcome::Completed(Ok(Err(error))) => {
+            let message = format!(
+                "Native Hook injection failed: {}",
+                injection_support_message(&error)
+            );
+            finish_injection_failure(
+                &paths,
+                &process_name,
+                process_id,
+                &event_tx,
+                &cancellation,
+                message,
+                error.is_access_denied(),
+            )
+            .await;
+        }
+        Outcome::Completed(Err(error)) => {
+            finish_injection_failure(
+                &paths,
+                &process_name,
+                process_id,
+                &event_tx,
+                &cancellation,
+                format!("Native Hook injection task failed: {error}"),
+                false,
+            )
+            .await;
         }
     }
+}
+
+async fn finish_injection_failure(
+    paths: &tractor_beam_isaac_injector::NativeHookPaths,
+    process_name: &str,
+    process_id: u32,
+    event_tx: &RuntimeEventSender,
+    cancellation: &CancellationToken,
+    message: String,
+    access_denied: bool,
+) {
+    let mut state = hook_startup_state(
+        HookStartupPhase::Failed,
+        paths,
+        Some(process_name),
+        Some(process_id),
+        message.clone(),
+    );
+    state.access_denied = access_denied;
+    send_event(event_tx, RuntimeEvent::HookStartup(Box::new(state)));
+    send_event(event_tx, log_event(LogLevel::Error, message.clone()));
+    send_event(event_tx, RuntimeEvent::CounterDelta(error_counter()));
+    send_event(
+        event_tx,
+        RuntimeEvent::HookReceiveProbeFinished(Err(message.clone())),
+    );
+    send_critical_event(
+        event_tx,
+        RuntimeEvent::SessionEnded(SessionStopReason::RuntimeEnded { message }),
+    )
+    .await;
+    cancellation.cancel();
 }
 
 pub(super) fn report_waiting_for_isaac(

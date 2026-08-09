@@ -382,6 +382,21 @@ impl BridgeApp {
         let members_label = t!("room.members");
         ui.separator();
         ui.add_space(4.0);
+        if !self.client_state().missing_game_targets.is_empty() {
+            let targets = self
+                .client_state()
+                .missing_game_targets
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            wrapped_colored_label(
+                ui,
+                ui.visuals().error_fg_color,
+                &format!("{} {targets}", t!("room.steam_id_mismatch")),
+            );
+            ui.add_space(8.0);
+        }
         ui.heading(members_label);
         ui.add_space(4.0);
         if peers.is_empty() {

@@ -152,6 +152,9 @@ transport.tcp:
 room:
   zh_CN: "房间"
   en_US: "Room"
+room.steam_id_mismatch:
+  zh_CN: "SteamID 配置不一致：游戏目标不在当前 Tractor Beam 房间，请所有玩家核对所选 Steam 账号。目标 SteamID："
+  en_US: "SteamID settings do not match: the game target is outside this Tractor Beam room. Ask every player to check the selected Steam account. Target SteamID:"
 mode:
   zh_CN: "模式"
   en_US: "Mode"

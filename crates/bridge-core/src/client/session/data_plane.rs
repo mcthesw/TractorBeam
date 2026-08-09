@@ -59,10 +59,16 @@ pub(super) async fn hook_in_task(
     health: Option<SharedSessionHealth>,
 ) -> io::Result<()> {
     let mut delivery_streams = DeliveryStreamAllocator::default();
+    let mut observed_targets = std::collections::HashSet::new();
     loop {
         tokio::select! {
             () = cancellation.cancelled() => return Ok(()),
             Some(packet) = hook_packets_rx.recv() => {
+                if !observed_targets.contains(&packet.peer)
+                    && try_send_event(&event_tx, RuntimeEvent::HookTargetObserved(packet.peer))
+                {
+                    observed_targets.insert(packet.peer);
+                }
                 let size = packet.payload.len();
                 observe_health(&health, |health| health.observe_hook_in_recv(size, Instant::now()));
                 let packet = delivery_streams.assign_hook_packet(packet);
@@ -604,6 +610,38 @@ mod tests {
             .unwrap();
         assert_eq!(third.delivery_sequence, 3);
         assert_eq!(third.delivery_stream_id, first.delivery_stream_id);
+
+        cancellation.cancel();
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn target_observation_retries_after_event_queue_pressure() {
+        let (hook_tx, hook_rx) = tokio_mpsc::channel(2);
+        let (outbound_tx, mut outbound_rx) = tokio_mpsc::channel(2);
+        let (event_tx, mut event_rx) = tokio_mpsc::channel(1);
+        event_tx
+            .try_send(log_event(LogLevel::Debug, "queue blocker"))
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let task = tokio::spawn(hook_in_task(
+            hook_rx,
+            outbound_tx,
+            event_tx,
+            cancellation.clone(),
+            None,
+        ));
+
+        hook_tx.send(hook_packet(1)).await.unwrap();
+        outbound_rx.recv().await.unwrap();
+        assert!(matches!(event_rx.recv().await, Some(RuntimeEvent::Log(..))));
+
+        hook_tx.send(hook_packet(2)).await.unwrap();
+        outbound_rx.recv().await.unwrap();
+        assert!(matches!(
+            time::timeout(Duration::from_secs(1), event_rx.recv()).await,
+            Ok(Some(RuntimeEvent::HookTargetObserved(2)))
+        ));
 
         cancellation.cancel();
         task.await.unwrap().unwrap();

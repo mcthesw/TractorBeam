@@ -21,6 +21,8 @@ pub struct BridgeClient {
     pub(super) loaded_config: LoadedClientConfig,
     pub(super) log_sink: Box<dyn ClientLogSink>,
     active_log_context: Option<ClientSessionLogContext>,
+    observed_game_targets: Vec<u64>,
+    relay_peers_known: bool,
     readiness_probe: Option<probe::ProbeHandle>,
     hook_receive_probe: Option<probe::ProbeHandle>,
     light_ping_probe: Option<probe::LightPingHandle>,
@@ -49,6 +51,8 @@ impl BridgeClient {
             loaded_config,
             log_sink,
             active_log_context: None,
+            observed_game_targets: Vec::new(),
+            relay_peers_known: false,
             readiness_probe: None,
             hook_receive_probe: None,
             light_ping_probe: None,
@@ -192,6 +196,9 @@ impl BridgeClient {
                         self.state.last_stop_reason = Some(reason.clone());
                     }
                 }
+                state::RuntimeEvent::HookTargetObserved(target) => {
+                    self.observe_game_target(target);
+                }
                 state::RuntimeEvent::GameplayStopped => {
                     self.state.status = state::SessionStatus::Idle;
                     self.state.active_session_mode = None;
@@ -228,6 +235,8 @@ impl BridgeClient {
                 }
                 state::RuntimeEvent::RoomPeersUpdated(peers) => {
                     self.state.room_peers = peers;
+                    self.relay_peers_known = true;
+                    self.refresh_missing_game_targets();
                 }
                 state::RuntimeEvent::RoomPathQualityUpdated(quality) => {
                     self.state.room_path_quality = quality;
@@ -290,7 +299,10 @@ impl BridgeClient {
 
     pub fn leave_relay_room(&mut self) {
         self.relay_room = None;
+        self.relay_peers_known = false;
+        self.observed_game_targets.clear();
         self.state.room_peers.clear();
+        self.state.missing_game_targets.clear();
         self.state.room_path_quality.clear();
         self.state.relay_link = state::RelayLinkState::Inactive;
     }

@@ -40,6 +40,67 @@ fn relay_room_can_be_joined_without_starting_gameplay() {
 }
 
 #[test]
+fn missing_game_target_waits_for_membership_and_clears_when_target_joins() {
+    let mut client = BridgeClient::new();
+    client.observe_game_target(76_561_198_000_000_002);
+    assert!(client.state.missing_game_targets.is_empty());
+
+    client.state.room_peers = vec![crate::protocol::PeerPresenceInfo {
+        steam_id64: 76_561_198_000_000_001,
+        display_name: Some("Local".to_owned()),
+        presence: crate::protocol::PeerPresence::Connected,
+        capabilities: 0,
+    }];
+    client.relay_peers_known = true;
+    client.refresh_missing_game_targets();
+    assert_eq!(
+        client.state.missing_game_targets,
+        vec![76_561_198_000_000_002]
+    );
+
+    client
+        .state
+        .room_peers
+        .push(crate::protocol::PeerPresenceInfo {
+            steam_id64: 76_561_198_000_000_002,
+            display_name: Some("Remote".to_owned()),
+            presence: crate::protocol::PeerPresence::Connected,
+            capabilities: 0,
+        });
+    client.refresh_missing_game_targets();
+    assert!(client.state.missing_game_targets.is_empty());
+}
+
+#[test]
+fn leaving_room_discards_observed_game_targets() {
+    let mut client = BridgeClient::new();
+    let target = 76_561_198_000_000_002;
+    client.observe_game_target(target);
+    client.state.room_peers = vec![crate::protocol::PeerPresenceInfo {
+        steam_id64: target,
+        display_name: Some("Remote".to_owned()),
+        presence: crate::protocol::PeerPresence::Connected,
+        capabilities: 0,
+    }];
+    client.relay_peers_known = true;
+    client.refresh_missing_game_targets();
+
+    client.leave_relay_room();
+
+    assert!(client.observed_game_targets.is_empty());
+    assert!(client.state.missing_game_targets.is_empty());
+    client.state.room_peers = vec![crate::protocol::PeerPresenceInfo {
+        steam_id64: 76_561_198_000_000_003,
+        display_name: Some("New room peer".to_owned()),
+        presence: crate::protocol::PeerPresence::Connected,
+        capabilities: 0,
+    }];
+    client.relay_peers_known = true;
+    client.refresh_missing_game_targets();
+    assert!(client.state.missing_game_targets.is_empty());
+}
+
+#[test]
 fn exposes_runtime_name() {
     assert_eq!(runtime_name(), "bridge-core");
 }

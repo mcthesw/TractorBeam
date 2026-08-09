@@ -30,6 +30,7 @@ runtime_rtt_timeout_seconds = 3
 
 [[relays]]
 # Self-hosted relay matching deploy/relay.toml.
+# Hostnames, IPv4 literals, and IPv6 literals such as "2001:db8::10" are accepted.
 id = "local"
 name = "Local relay"
 host = "localhost"

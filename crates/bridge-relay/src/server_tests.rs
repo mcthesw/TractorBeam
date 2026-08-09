@@ -384,9 +384,14 @@ async fn sender_identity_mismatch_closes_tcp_sender() {
 
 #[tokio::test]
 async fn real_udp_socket_forwards_probe_without_tcp_fallback() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    assert_real_udp_socket_forwards_probe("127.0.0.1:0").await;
+    assert_real_udp_socket_forwards_probe("[::1]:0").await;
+}
+
+async fn assert_real_udp_socket_forwards_probe(bind: &str) {
+    let listener = TcpListener::bind(bind).await.unwrap();
     let tcp_address = listener.local_addr().unwrap();
-    let relay_udp = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let relay_udp = Arc::new(UdpSocket::bind(bind).await.unwrap());
     let udp_address = relay_udp.local_addr().unwrap();
     let config = RelayConfig {
         pow_difficulty_bits: 0,
@@ -564,7 +569,12 @@ async fn connect_joined_udp_peer(
     else {
         panic!("expected path token")
     };
-    let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let udp_bind = if udp_address.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    };
+    let udp = UdpSocket::bind(udp_bind).await.unwrap();
     udp.connect(udp_address).await.unwrap();
     let payload = encode_client_control(&ClientControl::UdpPathHello {
         connection_id,

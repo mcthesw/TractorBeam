@@ -26,14 +26,18 @@ pub(super) struct TestRelay {
 
 impl TestRelay {
     pub(super) fn spawn() -> Self {
-        Self::spawn_inner(false)
+        Self::spawn_inner("127.0.0.1:0", false)
+    }
+
+    pub(super) fn spawn_ipv6() -> Self {
+        Self::spawn_inner("[::1]:0", false)
     }
 
     pub(super) fn spawn_silent() -> Self {
-        Self::spawn_inner(true)
+        Self::spawn_inner("127.0.0.1:0", true)
     }
 
-    fn spawn_inner(silent: bool) -> Self {
+    fn spawn_inner(bind: &'static str, silent: bool) -> Self {
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let (stop_tx, stop_rx) = oneshot::channel();
         let worker = thread::spawn(move || {
@@ -42,7 +46,7 @@ impl TestRelay {
                 .build()
                 .unwrap()
                 .block_on(async move {
-                    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    let listener = TcpListener::bind(bind).await.unwrap();
                     ready_tx.send(listener.local_addr().unwrap()).unwrap();
                     let peers = Peers::default();
                     let mut silent_connections = Vec::new();

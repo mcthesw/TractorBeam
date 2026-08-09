@@ -7,6 +7,8 @@ mod protocol;
 mod server;
 mod state;
 mod telemetry;
+#[cfg(test)]
+mod test_support;
 
 use std::io;
 

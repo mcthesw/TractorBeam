@@ -230,6 +230,7 @@ mod tests {
 
     #[test]
     fn json_format_flattens_structured_relay_fields_without_ansi() {
+        let _subscriber_guard = crate::test_support::TRACING_SUBSCRIBER_LOCK.lock().unwrap();
         let writer = CapturedWriter::default();
         let subscriber = tracing_subscriber::registry().with(
             tracing_subscriber::fmt::layer()

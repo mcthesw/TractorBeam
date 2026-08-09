@@ -55,6 +55,31 @@ pub(super) fn handle_command(
                 ApplicationEvent::RelayRoomJoined(result),
             );
         }
+        ApplicationCommand::RejoinRelayRoom(request) => {
+            set_operation(
+                snapshot,
+                client,
+                Some(ApplicationOperation::ConfiguringRoom),
+            );
+            let result = client.rejoin_relay_room(&request.config);
+            if result.is_ok() {
+                *lan_room = None;
+                publish_lan_room(snapshot, client, None);
+                if let Err(error) = save_client_config_selection(&request.selection) {
+                    send_application_event(
+                        event_tx,
+                        snapshot,
+                        ApplicationEvent::SelectionSaveFailed(error.to_string()),
+                    );
+                }
+            }
+            set_operation(snapshot, client, None);
+            send_application_event(
+                event_tx,
+                snapshot,
+                ApplicationEvent::RelayRoomJoined(result),
+            );
+        }
         ApplicationCommand::RefreshAccounts => {
             set_operation(
                 snapshot,

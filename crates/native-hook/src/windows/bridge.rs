@@ -149,8 +149,9 @@ pub fn hook_startup_status() -> HookStartupStatus {
     *HOOK_STARTUP.lock().expect("hook startup lock poisoned")
 }
 
-pub fn report_hook_ready() {
-    *HOOK_STARTUP.lock().expect("hook startup lock poisoned") = HookStartupStatus::Ready;
+pub fn report_hook_ready(steam_id64: Option<u64>) {
+    *HOOK_STARTUP.lock().expect("hook startup lock poisoned") =
+        HookStartupStatus::Ready { steam_id64 };
 }
 
 pub fn report_hook_failure(failure: HookStartupFailure) {

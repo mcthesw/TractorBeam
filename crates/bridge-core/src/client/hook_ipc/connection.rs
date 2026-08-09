@@ -135,6 +135,7 @@ pub(super) fn run_connection(
     let mut pending_ping = None::<(u32, Instant)>;
     let mut next_ping_id = 1_u32;
     let mut installation = HookInstallState::Pending;
+    let mut game_steam_id64 = None;
     let mut startup_failure = None::<HookStartupFailure>;
     loop {
         if context.cancellation.is_cancelled() {
@@ -169,7 +170,8 @@ pub(super) fn run_connection(
                     HookToClient::Startup(status) => {
                         installation = match status {
                             HookStartupStatus::Installing => HookInstallState::Pending,
-                            HookStartupStatus::Ready => {
+                            HookStartupStatus::Ready { steam_id64 } => {
+                                game_steam_id64 = steam_id64;
                                 context.ready_deadline.complete();
                                 HookInstallState::Ready
                             }
@@ -183,6 +185,7 @@ pub(super) fn run_connection(
                             HookIpcState {
                                 connection: HookIpcConnectionState::Connected,
                                 installation,
+                                game_steam_id64,
                                 negotiated_major: Some(tractor_beam_hook_ipc::PROTOCOL_MAJOR),
                                 negotiated_minor: Some(tractor_beam_hook_ipc::PROTOCOL_MINOR),
                                 reconnects,
@@ -217,6 +220,7 @@ pub(super) fn run_connection(
                         HookIpcState {
                             connection: HookIpcConnectionState::Connected,
                             installation,
+                            game_steam_id64,
                             negotiated_major: Some(tractor_beam_hook_ipc::PROTOCOL_MAJOR),
                             negotiated_minor: Some(tractor_beam_hook_ipc::PROTOCOL_MINOR),
                             reconnects: reconnects.max(health.reconnects),

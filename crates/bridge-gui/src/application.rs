@@ -134,6 +134,7 @@ enum ApplicationCommand {
         steam_id64: String,
         display_name: String,
     },
+    RejoinRelayRoom(Box<StartRequest>),
     RefreshAccounts,
     StartReadinessProbe(RelayEndpoint),
     StartHookReceiveProbe,
@@ -265,6 +266,16 @@ impl ApplicationHandle {
             steam_id64,
             display_name,
         })
+    }
+
+    pub(crate) fn rejoin_relay_room(
+        &self,
+        config: SessionConfig,
+        selection: ClientConfigSelection,
+    ) -> bool {
+        self.submit(ApplicationCommand::RejoinRelayRoom(Box::new(
+            StartRequest { config, selection },
+        )))
     }
 
     pub(crate) fn request_shutdown(&self) {

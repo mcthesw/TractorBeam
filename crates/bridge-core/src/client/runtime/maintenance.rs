@@ -75,6 +75,7 @@ impl BridgeClient {
     pub(super) fn apply_hook_ipc_state(&mut self, ipc: state::HookIpcState) {
         self.state.hook_ipc = ipc;
         self.reconcile_hook_startup();
+        self.refresh_steam_identity_mismatch();
     }
 
     fn reconcile_hook_startup(&mut self) {
@@ -141,7 +142,35 @@ impl BridgeClient {
         self.state.hook_runtime_active = false;
         self.state.hook_startup = state::HookStartupState::default();
         self.state.hook_ipc = state::HookIpcState::default();
+        self.state.steam_identity_mismatch = None;
+        self.resume_gameplay_after_rejoin = false;
+        self.clear_gameplay_targets();
         self.active_log_context = None;
+    }
+
+    pub(super) fn refresh_steam_identity_mismatch(&mut self) {
+        let mismatch = self
+            .state
+            .relay_room_steam_id64
+            .zip(self.state.hook_ipc.game_steam_id64)
+            .and_then(|(room_steam_id64, game_steam_id64)| {
+                (room_steam_id64 != game_steam_id64).then_some(state::SteamIdentityMismatch {
+                    room_steam_id64,
+                    game_steam_id64,
+                })
+            });
+        if let Some(mismatch) = mismatch
+            && Some(mismatch) != self.state.steam_identity_mismatch
+        {
+            self.log(
+                LogLevel::Warn,
+                format!(
+                    "Steam identity mismatch: Isaac uses {} but the Relay room uses {}",
+                    mismatch.game_steam_id64, mismatch.room_steam_id64
+                ),
+            );
+        }
+        self.state.steam_identity_mismatch = mismatch;
     }
 
     pub(super) fn record_hook_startup_failure(
@@ -226,6 +255,9 @@ impl BridgeClient {
     }
 
     pub(super) fn observe_game_target(&mut self, target: u64) {
+        if self.state.status != state::SessionStatus::Running {
+            return;
+        }
         if !self.observed_game_targets.contains(&target) {
             self.observed_game_targets.push(target);
             self.refresh_missing_game_targets();
@@ -233,7 +265,7 @@ impl BridgeClient {
     }
 
     pub(super) fn refresh_missing_game_targets(&mut self) {
-        if !self.relay_peers_known {
+        if self.state.status != state::SessionStatus::Running || !self.relay_peers_known {
             return;
         }
         let missing = self
@@ -267,6 +299,11 @@ impl BridgeClient {
                 ),
             );
         }
+    }
+
+    pub(super) fn clear_gameplay_targets(&mut self) {
+        self.observed_game_targets.clear();
+        self.state.missing_game_targets.clear();
     }
 
     pub(super) fn log_session_route(&mut self, config: &SessionConfig) {

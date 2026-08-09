@@ -155,6 +155,21 @@ room:
 room.steam_id_mismatch:
   zh_CN: "SteamID 配置不一致：游戏目标不在当前 Tractor Beam 房间，请所有玩家核对所选 Steam 账号。目标 SteamID："
   en_US: "SteamID settings do not match: the game target is outside this Tractor Beam room. Ask every player to check the selected Steam account. Target SteamID:"
+room.game_steam_id_mismatch:
+  zh_CN: "游戏账号与房间设置不一致，已停止游戏连接。游戏 SteamID："
+  en_US: "The game account does not match this room, so gameplay was disconnected. Game SteamID:"
+room.configured_steam_id:
+  zh_CN: "房间 SteamID："
+  en_US: "Room SteamID:"
+room.game_steam_id_unverified:
+  zh_CN: "无法从游戏读取当前 SteamID，请在开始联机前确认所选账号。"
+  en_US: "The game SteamID could not be read. Confirm the selected account before playing."
+room.use_game_account:
+  zh_CN: "使用游戏账号"
+  en_US: "Use Game Account"
+room.change_account:
+  zh_CN: "更改账号"
+  en_US: "Change Account"
 mode:
   zh_CN: "模式"
   en_US: "Mode"
@@ -563,6 +578,9 @@ room.generate:
 room.joining:
   zh_CN: "正在进入房间…"
   en_US: "Joining room…"
+room.rejoining:
+  zh_CN: "正在切换连接…"
+  en_US: "Switching connection…"
 room.joined:
   zh_CN: "已进入房间"
   en_US: "Joined room"
@@ -572,6 +590,15 @@ room.join_failed:
 room.leave:
   zh_CN: "离开房间"
   en_US: "Leave Room"
+room.current_connection:
+  zh_CN: "当前连接"
+  en_US: "Current Connection"
+room.change_settings:
+  zh_CN: "更改"
+  en_US: "Change"
+room.switch_running_hint:
+  zh_CN: "切换时游戏会短暂断开并自动恢复。"
+  en_US: "Gameplay briefly disconnects and resumes automatically."
 room.left:
   zh_CN: "已离开房间"
   en_US: "Left room"

@@ -2,10 +2,11 @@ mod about;
 mod helpers;
 mod logs;
 mod navigation;
+mod relay_settings;
 
 use std::borrow::Cow;
 
-use eframe::egui::{self, ComboBox, TextEdit};
+use eframe::egui::{self, TextEdit};
 use rust_i18n::t;
 use tractor_beam_core::{
     ConnectionProfile, DirectOutcomeWindow, HookReceiveProbeReport, HookStartupPhase,
@@ -49,12 +50,18 @@ impl BridgeApp {
                 self.join_code_message = None;
             }
             ui.add_space(6.0);
-            ui.add_enabled_ui(!self.application_snapshot.room_active(), |ui| {
+            ui.add_enabled_ui(self.application_snapshot.lan_room.is_none(), |ui| {
                 if self.route == RouteChoice::ExternalRelay {
-                    self.relay_section(ui);
+                    if self.application_snapshot.relay_room_active {
+                        self.relay_connection_ui(ui);
+                    } else {
+                        self.relay_section(ui, true);
+                        ui.add_space(8.0);
+                        self.steam_section(ui, true);
+                    }
+                } else {
+                    self.steam_section(ui, true);
                 }
-                ui.add_space(8.0);
-                self.steam_section(ui);
             });
             ui.add_space(8.0);
 
@@ -69,105 +76,6 @@ impl BridgeApp {
             self.lan_room_ui(ui);
         } else {
             self.room_members_ui(ui);
-        }
-    }
-
-    fn relay_section(&mut self, ui: &mut egui::Ui) {
-        let relay_label = t!("relay.server");
-        let manual_label = t!("relay.manual");
-        let retest_label = t!("probe.test_latency");
-        let host_label = t!("relay.host");
-        label_with_help(ui, relay_label, t!("help.relay_server"));
-        let mut selected_relay = self.selected_relay;
-        let selected_text = selected_relay
-            .and_then(|index| self.relay_presets.get(index))
-            .map_or_else(
-                || manual_label.clone(),
-                |relay| Cow::Owned(self.relay_option_label(relay)),
-            );
-        ComboBox::from_id_salt("home_relay")
-            .selected_text(selected_text)
-            .width(400.0)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut selected_relay, None, manual_label);
-                for (index, relay) in self.relay_presets.iter().enumerate() {
-                    let label = self.relay_option_label(relay);
-                    ui.selectable_value(&mut selected_relay, Some(index), label);
-                }
-            });
-        if selected_relay != self.selected_relay {
-            self.selected_relay = selected_relay;
-            self.apply_selected_relay_defaults();
-            self.persist_selection();
-        }
-        let manual = self.selected_relay.is_none();
-        if manual {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.add_enabled(
-                    manual,
-                    TextEdit::singleline(&mut self.relay_host)
-                        .hint_text(host_label)
-                        .desired_width(310.0),
-                );
-                ui.add_enabled(
-                    manual,
-                    egui::DragValue::new(&mut self.relay_port).range(1..=u16::MAX),
-                );
-            });
-        }
-        ui.add_space(4.0);
-        if ui.button(retest_label).clicked() {
-            self.test_relay_latency();
-        }
-    }
-
-    fn steam_section(&mut self, ui: &mut egui::Ui) {
-        let accounts = self.client_state().detected_accounts.clone();
-        let steam_label = t!("steam.account");
-        let refresh_label = t!("steam.refresh_accounts");
-        let manual_steam_label = t!("steam.manual_id");
-        let display_name_label = t!("display_name");
-        label_with_help(ui, steam_label, t!("help.steam_account"));
-        if accounts.is_empty() {
-            ui.label(t!("steam.no_accounts"));
-        } else {
-            let account_before = self.selected_account;
-            ComboBox::from_id_salt("home_steam_account")
-                .selected_text(selected_account_label(self.selected_account, &accounts))
-                .width(400.0)
-                .show_ui(ui, |ui| {
-                    for (index, account) in accounts.iter().enumerate() {
-                        ui.selectable_value(
-                            &mut self.selected_account,
-                            Some(index),
-                            account_label(account),
-                        );
-                    }
-                    ui.selectable_value(&mut self.selected_account, None, t!("manual"));
-                });
-            if self.selected_account != account_before {
-                self.persist_selection();
-            }
-        }
-        ui.add_space(2.0);
-        if ui.button(refresh_label).clicked() {
-            self.refresh_accounts();
-            self.persist_selection();
-        }
-        if self.selected_account.is_none() {
-            ui.add_space(4.0);
-            ui.add(
-                TextEdit::singleline(&mut self.manual_steam_id)
-                    .hint_text(manual_steam_label)
-                    .desired_width(400.0),
-            );
-            ui.add_space(2.0);
-            ui.add(
-                TextEdit::singleline(&mut self.manual_display_name)
-                    .hint_text(display_name_label)
-                    .desired_width(400.0),
-            );
         }
     }
 
@@ -373,15 +281,47 @@ impl BridgeApp {
         }
     }
 
-    fn room_members_ui(&self, ui: &mut egui::Ui) {
+    fn room_members_ui(&mut self, ui: &mut egui::Ui) {
         if !self.application_snapshot.relay_room_active {
             ui.label(t!("room.not_joined"));
             return;
         }
-        let peers = &self.client_state().room_peers;
         let members_label = t!("room.members");
         ui.separator();
         ui.add_space(4.0);
+        if let Some(mismatch) = self.client_state().steam_identity_mismatch {
+            wrapped_colored_label(
+                ui,
+                ui.visuals().error_fg_color,
+                &format!(
+                    "{} {} / {} {}",
+                    t!("room.game_steam_id_mismatch"),
+                    mismatch.game_steam_id64,
+                    t!("room.configured_steam_id"),
+                    mismatch.room_steam_id64,
+                ),
+            );
+            ui.horizontal(|ui| {
+                if ui.button(t!("room.use_game_account")).clicked() {
+                    self.select_game_steam_account(mismatch.game_steam_id64);
+                    self.persist_selection();
+                    let _ = self.rejoin_relay_room();
+                }
+                if ui.button(t!("room.change_account")).clicked() {
+                    self.begin_relay_settings_edit();
+                }
+            });
+            ui.add_space(8.0);
+        } else if self.client_state().hook_startup.phase == HookStartupPhase::Ready
+            && self.client_state().hook_ipc.game_steam_id64.is_none()
+        {
+            wrapped_colored_label(
+                ui,
+                egui::Color32::from_rgb(185, 124, 0),
+                t!("room.game_steam_id_unverified").as_ref(),
+            );
+            ui.add_space(8.0);
+        }
         if !self.client_state().missing_game_targets.is_empty() {
             let targets = self
                 .client_state()
@@ -399,12 +339,12 @@ impl BridgeApp {
         }
         ui.heading(members_label);
         ui.add_space(4.0);
+        let peers = &self.client_state().room_peers;
         if peers.is_empty() {
             ui.label(t!("room.empty"));
             return;
         }
-        let (my_id, _) = self.current_identity();
-        let my_id = my_id.parse::<u64>().ok();
+        let my_id = self.client_state().relay_room_steam_id64;
         egui::ScrollArea::horizontal().show(ui, |ui| {
             egui::Grid::new("room_members")
                 .num_columns(6)

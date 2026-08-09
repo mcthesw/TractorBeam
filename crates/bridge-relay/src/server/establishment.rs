@@ -191,6 +191,7 @@ mod tests {
 
     #[test]
     fn establishment_milestones_are_children_of_one_root() {
+        let _subscriber_guard = crate::test_support::TRACING_SUBSCRIBER_LOCK.lock().unwrap();
         let spans = CapturedSpans::default();
         let subscriber = tracing_subscriber::registry().with(spans.clone());
         let provider = SdkMeterProvider::builder().build();

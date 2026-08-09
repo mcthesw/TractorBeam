@@ -29,6 +29,7 @@ use super::state::{
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 const INITIAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(40);
+const INSTALLATION_TIMEOUT: Duration = Duration::from_secs(60);
 const RECONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const IDLE_WAIT_INTERVAL: Duration = Duration::from_millis(1);
 const IO_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -42,6 +43,7 @@ const INPUT_DELAY_TIMEOUT: Duration = Duration::from_millis(750);
 struct ListenerSettings {
     accept_poll_interval: Duration,
     initial_connect_timeout: Duration,
+    installation_timeout: Duration,
     reconnect_timeout: Duration,
 }
 
@@ -50,6 +52,7 @@ impl Default for ListenerSettings {
         Self {
             accept_poll_interval: ACCEPT_POLL_INTERVAL,
             initial_connect_timeout: INITIAL_CONNECT_TIMEOUT,
+            installation_timeout: INSTALLATION_TIMEOUT,
             reconnect_timeout: RECONNECT_TIMEOUT,
         }
     }
@@ -66,6 +69,7 @@ pub(super) struct HookIpcSession {
 #[derive(Clone, Debug, Default)]
 pub(super) struct HookReadyDeadline {
     started: Arc<OnceLock<Instant>>,
+    connected: Arc<OnceLock<Instant>>,
     ready: Arc<AtomicBool>,
 }
 
@@ -78,16 +82,24 @@ impl HookReadyDeadline {
         self.ready.store(true, Ordering::Release);
     }
 
-    fn is_armed(&self) -> bool {
-        self.started.get().is_some()
+    fn mark_connected(&self) {
+        let _ = self.connected.set(Instant::now());
     }
 
-    fn expired(&self, timeout: Duration) -> bool {
-        !self.ready.load(Ordering::Acquire)
+    fn connection_expired(&self, timeout: Duration) -> bool {
+        self.connected.get().is_none()
             && self
                 .started
                 .get()
                 .is_some_and(|started| started.elapsed() >= timeout)
+    }
+
+    fn installation_expired(&self, timeout: Duration) -> bool {
+        !self.ready.load(Ordering::Acquire)
+            && self
+                .connected
+                .get()
+                .is_some_and(|connected| connected.elapsed() >= timeout)
     }
 }
 
@@ -167,7 +179,7 @@ struct ConnectionContext<'a> {
     event_tx: &'a RuntimeEventSender,
     cancellation: &'a CancellationToken,
     ready_deadline: &'a HookReadyDeadline,
-    ready_timeout: Duration,
+    installation_timeout: Duration,
 }
 
 impl ClientIpcSender {
@@ -318,7 +330,7 @@ fn run_listener(listener: Arc<TcpListener>, context: ListenerContext) -> io::Res
         let expired = if connected_once {
             disconnected_at.elapsed() >= settings.reconnect_timeout
         } else {
-            ready_deadline.expired(settings.initial_connect_timeout)
+            ready_deadline.connection_expired(settings.initial_connect_timeout)
         };
         if expired {
             let stage = if connected_once {
@@ -369,6 +381,7 @@ fn run_listener(listener: Arc<TcpListener>, context: ListenerContext) -> io::Res
                         return Err(error);
                     }
                 };
+                ready_deadline.mark_connected();
                 if connected_once {
                     reconnects = reconnects.saturating_add(1);
                 }
@@ -404,7 +417,7 @@ fn run_listener(listener: Arc<TcpListener>, context: ListenerContext) -> io::Res
                     event_tx: &event_tx,
                     cancellation: &cancellation,
                     ready_deadline: &ready_deadline,
-                    ready_timeout: settings.initial_connect_timeout,
+                    installation_timeout: settings.installation_timeout,
                 };
                 match run_connection(
                     &mut stream,

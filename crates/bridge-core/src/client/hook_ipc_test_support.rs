@@ -3,6 +3,13 @@ use super::*;
 pub(super) const TEST_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub(super) fn connect_fake_hook(session: &HookIpcSession) -> TcpStream {
+    connect_fake_hook_with_startup(session, HookStartupStatus::Ready)
+}
+
+pub(super) fn connect_fake_hook_with_startup(
+    session: &HookIpcSession,
+    startup: HookStartupStatus,
+) -> TcpStream {
     let mut stream = connect_with_retry(session.endpoint);
     stream.set_nodelay(true).unwrap();
     stream.set_nonblocking(true).unwrap();
@@ -26,11 +33,7 @@ pub(super) fn connect_fake_hook(session: &HookIpcSession) -> TcpStream {
                         .validate(PeerRole::BridgeClient, session.session_id)
                         .unwrap();
                     write_hook_message(&mut stream, &HookToClient::EndpointReady).unwrap();
-                    write_hook_message(
-                        &mut stream,
-                        &HookToClient::Startup(tractor_beam_hook_ipc::HookStartupStatus::Ready),
-                    )
-                    .unwrap();
+                    write_hook_message(&mut stream, &HookToClient::Startup(startup)).unwrap();
                     return stream;
                 }
                 _ => panic!("expected client handshake"),

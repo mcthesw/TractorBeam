@@ -247,22 +247,22 @@ pub(super) fn run_connection(
             }
         }
 
-        if context.ready_deadline.is_armed() {
-            if let Some(failure) = startup_failure {
-                reject_pending(&mut pending);
-                return Ok(ConnectionEnd::StartupFailed(hook_startup_failure_message(
-                    failure,
-                )));
-            }
-            if installation != HookInstallState::Ready
-                && context.ready_deadline.expired(context.ready_timeout)
-            {
-                reject_pending(&mut pending);
-                return Ok(ConnectionEnd::StartupFailed(format!(
-                    "Native Hook did not finish installing within {} seconds",
-                    context.ready_timeout.as_secs()
-                )));
-            }
+        if let Some(failure) = startup_failure {
+            reject_pending(&mut pending);
+            return Ok(ConnectionEnd::StartupFailed(hook_startup_failure_message(
+                failure,
+            )));
+        }
+        if installation != HookInstallState::Ready
+            && context
+                .ready_deadline
+                .installation_expired(context.installation_timeout)
+        {
+            reject_pending(&mut pending);
+            return Ok(ConnectionEnd::StartupFailed(format!(
+                "Native Hook did not finish installing within {} seconds",
+                context.installation_timeout.as_secs()
+            )));
         }
 
         if let Some(write) = &mut pending_write {

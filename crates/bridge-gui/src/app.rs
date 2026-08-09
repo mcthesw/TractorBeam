@@ -121,6 +121,17 @@ enum PendingRoomAction {
     Import(String),
 }
 
+#[derive(Clone)]
+struct RelaySettingsSnapshot {
+    selected_relay: Option<usize>,
+    relay_host: String,
+    relay_port: u16,
+    transport: TransportChoice,
+    selected_account: Option<usize>,
+    manual_steam_id: String,
+    manual_display_name: String,
+}
+
 pub struct BridgeApp {
     application: ApplicationHandle,
     application_snapshot: ApplicationSnapshot,
@@ -139,6 +150,7 @@ pub struct BridgeApp {
     selected_account: Option<usize>,
     manual_steam_id: String,
     manual_display_name: String,
+    relay_settings_original: Option<RelaySettingsSnapshot>,
     status_message: Option<StatusMessage>,
     input_delay_value: String,
     input_delay_message: Option<String>,
@@ -184,6 +196,7 @@ impl BridgeApp {
             selected_account: None,
             manual_steam_id: String::new(),
             manual_display_name: String::new(),
+            relay_settings_original: None,
             status_message: None,
             input_delay_value: String::new(),
             input_delay_message: None,
@@ -301,6 +314,67 @@ impl BridgeApp {
         } else {
             self.show_busy_status();
             false
+        }
+    }
+
+    fn rejoin_relay_room(&mut self) -> bool {
+        if self
+            .application
+            .rejoin_relay_room(self.session_config(), self.config_selection())
+        {
+            self.join_code_message = Some(t!("room.rejoining").into_owned());
+            self.status_message = None;
+            true
+        } else {
+            self.show_busy_status();
+            false
+        }
+    }
+
+    fn begin_relay_settings_edit(&mut self) {
+        if self.relay_settings_original.is_some() {
+            return;
+        }
+        self.relay_settings_original = Some(RelaySettingsSnapshot {
+            selected_relay: self.selected_relay,
+            relay_host: self.relay_host.clone(),
+            relay_port: self.relay_port,
+            transport: self.transport,
+            selected_account: self.selected_account,
+            manual_steam_id: self.manual_steam_id.clone(),
+            manual_display_name: self.manual_display_name.clone(),
+        });
+    }
+
+    fn cancel_relay_settings_edit(&mut self) {
+        let Some(original) = self.relay_settings_original.take() else {
+            return;
+        };
+        self.selected_relay = original.selected_relay;
+        self.relay_host = original.relay_host;
+        self.relay_port = original.relay_port;
+        self.transport = original.transport;
+        self.selected_account = original.selected_account;
+        self.manual_steam_id = original.manual_steam_id;
+        self.manual_display_name = original.manual_display_name;
+    }
+
+    fn apply_relay_settings(&mut self) {
+        if self.rejoin_relay_room() {
+            self.relay_settings_original = None;
+        }
+    }
+
+    fn select_game_steam_account(&mut self, steam_id64: u64) {
+        let steam_id64 = steam_id64.to_string();
+        self.selected_account = self
+            .client_state()
+            .detected_accounts
+            .iter()
+            .position(|account| account.steam_id64 == steam_id64);
+        if self.selected_account.is_none() {
+            self.manual_steam_id = steam_id64;
+            self.manual_display_name.clear();
         }
     }
 

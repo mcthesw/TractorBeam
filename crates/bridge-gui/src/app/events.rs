@@ -22,6 +22,7 @@ impl BridgeApp {
                 }
             },
             ApplicationEvent::RoomLeft => {
+                self.relay_settings_original = None;
                 self.status_message = None;
                 self.join_code_message = Some(t!("room.left").into_owned());
                 if let Some(action) = self.pending_room_action.take() {
@@ -46,6 +47,7 @@ impl BridgeApp {
             }
             ApplicationEvent::RelayRoomJoined(result) => match result {
                 Ok(()) => {
+                    self.relay_settings_original = None;
                     self.join_code_dialog_open = false;
                     self.join_code_message = Some(t!("room.joined").into_owned());
                     self.status_message = None;
@@ -57,7 +59,9 @@ impl BridgeApp {
             ApplicationEvent::AccountsRefreshed => {
                 self.selected_account =
                     initial_selected_account(&self.client_state().detected_accounts, None);
-                self.persist_selection();
+                if self.relay_settings_original.is_none() {
+                    self.persist_selection();
+                }
             }
             ApplicationEvent::ReadinessProbeStarted(result)
             | ApplicationEvent::HookReceiveProbeStarted(result)

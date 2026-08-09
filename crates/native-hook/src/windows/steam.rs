@@ -20,6 +20,8 @@ use super::{bridge, iat};
 type SteamFindOrCreateUserInterfaceFn =
     unsafe extern "C" fn(steam_user: i32, version: *const c_char) -> *mut c_void;
 type SteamGetHSteamUserFn = unsafe extern "C" fn() -> i32;
+type SteamUserFn = unsafe extern "C" fn() -> *mut c_void;
+type SteamUserGetSteamIdFn = unsafe extern "C" fn(*mut c_void) -> u64;
 type SteamRunCallbacksFn = unsafe extern "C" fn();
 type SteamSendP2PPacketFn = unsafe extern "thiscall" fn(
     this: *mut c_void,
@@ -173,8 +175,31 @@ unsafe fn install_steam_networking_hooks(interface: *mut c_void) {
         return;
     }
     STEAM_NETWORKING_HOOKED.store(true, Ordering::SeqCst);
-    bridge::report_hook_ready();
+    let steam_id64 = unsafe { active_steam_id64() };
+    bridge::report_hook_ready(steam_id64);
+    bridge::log_info(format!(
+        "steam_identity_ready available={}",
+        steam_id64.is_some()
+    ));
     bridge::log_info("steam_networking006_hooked");
+}
+
+unsafe fn active_steam_id64() -> Option<u64> {
+    let steam_module = unsafe { GetModuleHandleW(wide_null("steam_api.dll").as_ptr()) };
+    if steam_module.is_null() {
+        return None;
+    }
+    let steam_user =
+        unsafe { export_fn::<SteamUserFn>(steam_module, b"SteamAPI_SteamUser_v023\0")? };
+    let get_steam_id = unsafe {
+        export_fn::<SteamUserGetSteamIdFn>(steam_module, b"SteamAPI_ISteamUser_GetSteamID\0")?
+    };
+    let user = unsafe { steam_user() };
+    if user.is_null() {
+        return None;
+    }
+    let steam_id64 = unsafe { get_steam_id(user) };
+    (steam_id64 != 0).then_some(steam_id64)
 }
 
 unsafe fn install_existing_steam_networking_interface(steam_module: HMODULE) {

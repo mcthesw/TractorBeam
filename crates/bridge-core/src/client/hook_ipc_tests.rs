@@ -595,23 +595,26 @@ async fn connected_hook_gets_a_separate_installation_budget() {
         thread::sleep(Duration::from_millis(650));
         write_hook_message(
             &mut stream,
-            &HookToClient::Startup(HookStartupStatus::Ready),
+            &HookToClient::Startup(HookStartupStatus::Ready {
+                steam_id64: Some(76561198000000000),
+            }),
         )
         .unwrap();
         wait_for_shutdown(&mut stream);
     });
 
-    time::timeout(TEST_TIMEOUT, async {
+    let ready = time::timeout(TEST_TIMEOUT, async {
         loop {
             if let Some(RuntimeEvent::HookIpc(state)) = event_rx.recv().await
                 && state.installation == HookInstallState::Ready
             {
-                return;
+                return state;
             }
         }
     })
     .await
     .unwrap();
+    assert_eq!(ready.game_steam_id64, Some(76_561_198_000_000_000));
 
     observed_cancellation.cancel();
     time::timeout(TEST_TIMEOUT, worker)

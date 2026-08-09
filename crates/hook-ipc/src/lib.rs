@@ -9,8 +9,8 @@ pub mod sync_io;
 
 pub use codec::{FrameDecoder, decode, encode};
 
-pub const PROTOCOL_MAGIC: [u8; 4] = *b"TBI3";
-pub const PROTOCOL_MAJOR: u16 = 3;
+pub const PROTOCOL_MAGIC: [u8; 4] = *b"TBI4";
+pub const PROTOCOL_MAJOR: u16 = 4;
 pub const PROTOCOL_MINOR: u16 = 0;
 pub const FEATURE_GAME_PACKETS: u32 = 1 << 0;
 pub const FEATURE_INPUT_DELAY: u32 = 1 << 1;
@@ -221,7 +221,7 @@ impl fmt::Display for HookStartupFailure {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum HookStartupStatus {
     Installing,
-    Ready,
+    Ready { steam_id64: Option<u64> },
     Failed(HookStartupFailure),
 }
 

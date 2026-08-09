@@ -23,6 +23,7 @@ pub struct BridgeClient {
     active_log_context: Option<ClientSessionLogContext>,
     observed_game_targets: Vec<u64>,
     relay_peers_known: bool,
+    resume_gameplay_after_rejoin: bool,
     readiness_probe: Option<probe::ProbeHandle>,
     hook_receive_probe: Option<probe::ProbeHandle>,
     light_ping_probe: Option<probe::LightPingHandle>,
@@ -53,6 +54,7 @@ impl BridgeClient {
             active_log_context: None,
             observed_game_targets: Vec::new(),
             relay_peers_known: false,
+            resume_gameplay_after_rejoin: false,
             readiness_probe: None,
             hook_receive_probe: None,
             light_ping_probe: None,
@@ -203,12 +205,14 @@ impl BridgeClient {
                     self.state.status = state::SessionStatus::Idle;
                     self.state.active_session_mode = None;
                     self.active_log_context = None;
+                    self.clear_gameplay_targets();
                 }
                 state::RuntimeEvent::Stopped => {
                     self.state.status = state::SessionStatus::Idle;
                     self.state.active_session_mode = None;
                     self.state.hook_runtime_active = false;
                     self.active_log_context = None;
+                    self.clear_gameplay_targets();
                     should_clear = true;
                 }
                 state::RuntimeEvent::LightPingFinished(report) => {
@@ -251,6 +255,20 @@ impl BridgeClient {
             }
         }
         self.finish_game_exit();
+        if self.state.status == state::SessionStatus::Running
+            && !self.resume_gameplay_after_rejoin
+            && let Some(mismatch) = self.state.steam_identity_mismatch
+        {
+            self.resume_gameplay_after_rejoin = true;
+            self.log(
+                LogLevel::Warn,
+                format!(
+                    "Gameplay detached because Isaac uses SteamID {} but the Relay room uses {}",
+                    mismatch.game_steam_id64, mismatch.room_steam_id64
+                ),
+            );
+            self.stop_session();
+        }
         if should_clear {
             self.session = None;
             self.cleanup_hook_launch_parameters("session ended");
@@ -288,13 +306,59 @@ impl BridgeClient {
         if !steam_id64.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(ConfigError::InvalidSteamId.into());
         }
+        let relay_room_steam_id64 = steam_id64
+            .parse::<u64>()
+            .map_err(|_| ConfigError::InvalidSteamId)?;
         self.leave_relay_room();
         self.relay_room = Some(session::RelayRoomHandle::join(
             route,
             steam_id64,
             display_name,
         )?);
+        self.state.relay_room_steam_id64 = Some(relay_room_steam_id64);
+        self.refresh_steam_identity_mismatch();
         self.poll_events();
+        Ok(())
+    }
+
+    pub fn rejoin_relay_room(&mut self, config: &SessionConfig) -> Result<(), ClientError> {
+        config.validate()?;
+        let SessionRouteConfig::ExternalRelay(route) = &config.route else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Relay room rejoin requires a Relay route",
+            )
+            .into());
+        };
+        let running = self.state.status == state::SessionStatus::Running;
+        if running && self.state.hook_startup.phase != state::HookStartupPhase::Ready {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "Wait for Native Hook startup to finish before changing Relay settings",
+            )
+            .into());
+        }
+
+        let resume_gameplay = running || self.resume_gameplay_after_rejoin;
+        if running {
+            self.stop_session();
+        }
+        if let Err(error) = self.join_relay_room(route, &config.steam_id64, &config.display_name) {
+            self.resume_gameplay_after_rejoin = resume_gameplay;
+            return Err(error);
+        }
+        self.resume_gameplay_after_rejoin = resume_gameplay;
+        if self.state.steam_identity_mismatch.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "The selected Steam account does not match the account used by Isaac",
+            )
+            .into());
+        }
+        if resume_gameplay {
+            self.start_session(config)?;
+        }
+        self.resume_gameplay_after_rejoin = false;
         Ok(())
     }
 
@@ -303,9 +367,12 @@ impl BridgeClient {
         self.relay_peers_known = false;
         self.observed_game_targets.clear();
         self.state.room_peers.clear();
+        self.state.relay_room_steam_id64 = None;
+        self.state.steam_identity_mismatch = None;
         self.state.missing_game_targets.clear();
         self.state.room_path_quality.clear();
         self.state.relay_link = state::RelayLinkState::Inactive;
+        self.resume_gameplay_after_rejoin = false;
     }
 
     #[must_use]
@@ -384,6 +451,7 @@ impl BridgeClient {
 
             self.state.status = state::SessionStatus::Running;
             self.state.active_session_mode = Some(config.mode);
+            self.resume_gameplay_after_rejoin = false;
             self.log(
                 LogLevel::Info,
                 format!(
@@ -492,6 +560,7 @@ impl BridgeClient {
         self.state.status = state::SessionStatus::Running;
         self.state.active_session_mode = Some(config.mode);
         self.state.hook_runtime_active = config.mode != SessionMode::Official;
+        self.resume_gameplay_after_rejoin = false;
         self.log(LogLevel::Info, format!("Starting {} session", config.mode));
         self.log_session_route(config);
         self.log(
@@ -502,6 +571,7 @@ impl BridgeClient {
     }
 
     pub fn stop_session(&mut self) {
+        self.clear_gameplay_targets();
         if self.state.hook_startup.phase == state::HookStartupPhase::Ready
             && self
                 .session

@@ -191,6 +191,21 @@ impl BridgeClient {
         let ipc = &self.state.hook_ipc;
         output.push_str(&format!("connection: {}\n", ipc.connection));
         output.push_str(&format!("installation: {}\n", ipc.installation));
+        output.push_str(&format!(
+            "game_steam_id64: {}\n",
+            ipc.game_steam_id64
+                .map_or("none".to_owned(), |id| id.to_string())
+        ));
+        output.push_str(&format!(
+            "relay_room_steam_id64: {}\n",
+            self.state
+                .relay_room_steam_id64
+                .map_or("none".to_owned(), |id| id.to_string())
+        ));
+        output.push_str(&format!(
+            "steam_identity_mismatch: {}\n",
+            self.state.steam_identity_mismatch.is_some()
+        ));
         match (ipc.negotiated_major, ipc.negotiated_minor) {
             (Some(major), Some(minor)) => {
                 output.push_str(&format!("negotiated_version: {major}.{minor}\n"));

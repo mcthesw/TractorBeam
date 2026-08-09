@@ -3,7 +3,12 @@ use super::*;
 pub(super) const TEST_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub(super) fn connect_fake_hook(session: &HookIpcSession) -> TcpStream {
-    connect_fake_hook_with_startup(session, HookStartupStatus::Ready)
+    connect_fake_hook_with_startup(
+        session,
+        HookStartupStatus::Ready {
+            steam_id64: Some(76561198000000000),
+        },
+    )
 }
 
 pub(super) fn connect_fake_hook_with_startup(

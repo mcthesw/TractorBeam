@@ -27,6 +27,10 @@ fn relay_room_can_be_joined_without_starting_gameplay() {
 
     assert!(client.relay_room_active());
     assert_eq!(client.state().status, state::SessionStatus::Idle);
+    assert_eq!(
+        client.state().relay_room_steam_id64,
+        Some(76_561_198_000_000_001)
+    );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     while client.state().room_peers.is_empty() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -35,13 +39,54 @@ fn relay_room_can_be_joined_without_starting_gameplay() {
     assert!(!client.state().room_peers.is_empty());
     client.leave_relay_room();
     assert!(!client.relay_room_active());
+    assert_eq!(client.state().relay_room_steam_id64, None);
     assert!(client.state().room_peers.is_empty());
+    relay.stop();
+}
+
+#[test]
+fn relay_room_can_change_to_the_game_identity_without_restarting_gameplay() {
+    let relay = TestRelay::spawn();
+    let mut client = BridgeClient::new();
+    let route = ExternalRelayConfig {
+        relay: RelayEndpoint::new("127.0.0.1", relay.address.port()),
+        relay_name: None,
+        transport: TransportChoice::Tcp,
+        session_credential: crate::SessionCredential::from_bytes([43; 16]),
+    };
+    client
+        .join_relay_room(&route, "76561198000000001", "Wrong account")
+        .unwrap();
+    client.apply_hook_ipc_state(state::HookIpcState {
+        connection: state::HookIpcConnectionState::Connected,
+        installation: state::HookInstallState::Ready,
+        game_steam_id64: Some(76_561_198_000_000_002),
+        ..state::HookIpcState::default()
+    });
+    let config = SessionConfig {
+        route: SessionRouteConfig::ExternalRelay(route),
+        mode: SessionMode::Pure,
+        steam_id64: "76561198000000002".to_owned(),
+        display_name: "Game account".to_owned(),
+        session_health: SessionHealthConfig::default(),
+    };
+
+    client.rejoin_relay_room(&config).unwrap();
+
+    assert!(client.relay_room_active());
+    assert_eq!(client.state.status, state::SessionStatus::Idle);
+    assert_eq!(
+        client.state.relay_room_steam_id64,
+        Some(76_561_198_000_000_002)
+    );
+    assert_eq!(client.state.steam_identity_mismatch, None);
     relay.stop();
 }
 
 #[test]
 fn missing_game_target_waits_for_membership_and_clears_when_target_joins() {
     let mut client = BridgeClient::new();
+    client.state.status = state::SessionStatus::Running;
     client.observe_game_target(76_561_198_000_000_002);
     assert!(client.state.missing_game_targets.is_empty());
 
@@ -74,6 +119,7 @@ fn missing_game_target_waits_for_membership_and_clears_when_target_joins() {
 #[test]
 fn leaving_room_discards_observed_game_targets() {
     let mut client = BridgeClient::new();
+    client.state.status = state::SessionStatus::Running;
     let target = 76_561_198_000_000_002;
     client.observe_game_target(target);
     client.state.room_peers = vec![crate::protocol::PeerPresenceInfo {
@@ -98,6 +144,31 @@ fn leaving_room_discards_observed_game_targets() {
     client.relay_peers_known = true;
     client.refresh_missing_game_targets();
     assert!(client.state.missing_game_targets.is_empty());
+}
+
+#[test]
+fn compares_the_game_identity_with_the_active_relay_room() {
+    let mut client = BridgeClient::new();
+    client.state.relay_room_steam_id64 = Some(76_561_198_000_000_001);
+
+    client.apply_hook_ipc_state(state::HookIpcState {
+        connection: state::HookIpcConnectionState::Connected,
+        installation: state::HookInstallState::Ready,
+        game_steam_id64: Some(76_561_198_000_000_002),
+        ..state::HookIpcState::default()
+    });
+
+    assert_eq!(
+        client.state.steam_identity_mismatch,
+        Some(state::SteamIdentityMismatch {
+            room_steam_id64: 76_561_198_000_000_001,
+            game_steam_id64: 76_561_198_000_000_002,
+        })
+    );
+
+    client.state.hook_ipc.game_steam_id64 = Some(76_561_198_000_000_001);
+    client.refresh_steam_identity_mismatch();
+    assert_eq!(client.state.steam_identity_mismatch, None);
 }
 
 #[test]
@@ -585,6 +656,8 @@ fn gameplay_stop_keeps_the_hook_runtime_available() {
     client.state.status = state::SessionStatus::Running;
     client.state.active_session_mode = Some(SessionMode::Pure);
     client.state.hook_runtime_active = true;
+    client.observed_game_targets = vec![76_561_198_000_000_002];
+    client.state.missing_game_targets = vec![76_561_198_000_000_002];
     client.session = Some(session::SessionHandle::with_test_events(vec![
         state::RuntimeEvent::GameplayStopped,
     ]));
@@ -594,6 +667,8 @@ fn gameplay_stop_keeps_the_hook_runtime_available() {
     assert_eq!(client.state.active_session_mode, None);
     assert!(client.state.hook_runtime_active);
     assert!(client.session.is_some());
+    assert!(client.observed_game_targets.is_empty());
+    assert!(client.state.missing_game_targets.is_empty());
 }
 
 #[test]

@@ -136,7 +136,9 @@ fn handshake(stream: &mut TcpStream, session_id: SessionId) -> io::Result<()> {
                 write_message(stream, &HookToClient::EndpointReady)?;
                 write_message(
                     stream,
-                    &HookToClient::Startup(tractor_beam_hook_ipc::HookStartupStatus::Ready),
+                    &HookToClient::Startup(tractor_beam_hook_ipc::HookStartupStatus::Ready {
+                        steam_id64: Some(76561198000000000),
+                    }),
                 )?;
                 return Ok(());
             }

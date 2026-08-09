@@ -336,6 +336,7 @@ impl Display for HookIpcConnectionState {
 pub struct HookIpcState {
     pub connection: HookIpcConnectionState,
     pub installation: HookInstallState,
+    pub game_steam_id64: Option<u64>,
     pub negotiated_major: Option<u16>,
     pub negotiated_minor: Option<u16>,
     pub reconnects: u32,
@@ -344,6 +345,12 @@ pub struct HookIpcState {
     pub malformed_frames: u64,
     pub last_error: Option<String>,
     pub updated_at: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SteamIdentityMismatch {
+    pub room_steam_id64: u64,
+    pub game_steam_id64: u64,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -371,6 +378,8 @@ pub struct RuntimeState {
     pub client_incidents: Vec<ClientIncidentSnapshot>,
     pub light_ping_reports: Vec<super::probe::LightPingReport>,
     pub room_peers: Vec<crate::protocol::PeerPresenceInfo>,
+    pub relay_room_steam_id64: Option<u64>,
+    pub steam_identity_mismatch: Option<SteamIdentityMismatch>,
     pub missing_game_targets: Vec<u64>,
     pub room_path_quality: Vec<super::RoomPathQualitySnapshot>,
     pub lan_peers: Vec<super::LanPeerState>,

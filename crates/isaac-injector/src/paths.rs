@@ -1,8 +1,16 @@
 use std::{
     env,
     ffi::OsString,
+    fs::{self, OpenOptions},
+    io::Read,
     path::{Path, PathBuf},
-    process::{Command, ExitStatus},
+    process::{self, Child, Command, ExitStatus, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{InjectionStep, InjectorError};
@@ -15,6 +23,9 @@ pub const NATIVE_HOOK_DLL: &str = "tractor_beam_native_hook.dll";
 
 /// Rust Injector helper executable name expected in the Client Bundle.
 pub const NATIVE_INJECTOR_EXE: &str = "tractor-beam-isaac-injector.exe";
+const INJECTOR_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const ACTIVE_GUARD: &[u8] = b"tractor-beam-injection-active-v1";
+static NEXT_GUARD_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeHookPaths {
@@ -26,6 +37,70 @@ pub struct NativeHookPaths {
 pub enum InjectorLaunchEvent {
     ElevatedRetryStarting,
     ElevatedRetrySucceeded,
+}
+
+#[derive(Clone, Debug)]
+pub struct InjectionGuard {
+    inner: Arc<InjectionGuardInner>,
+}
+
+#[derive(Debug)]
+struct InjectionGuardInner {
+    path: PathBuf,
+    cancelled: AtomicBool,
+}
+
+impl InjectionGuard {
+    pub fn create() -> Result<Self, InjectorError> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let id = NEXT_GUARD_ID.fetch_add(1, Ordering::Relaxed);
+        let path = env::temp_dir().join(format!(
+            "tractor-beam-injection-{}-{nonce}-{id}.guard",
+            process::id()
+        ));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| InjectorError::step_io(InjectionStep::HelperProcess, error))?;
+        std::io::Write::write_all(&mut file, ACTIVE_GUARD)
+            .map_err(|error| InjectorError::step_io(InjectionStep::HelperProcess, error))?;
+        Ok(Self {
+            inner: Arc::new(InjectionGuardInner {
+                path,
+                cancelled: AtomicBool::new(false),
+            }),
+        })
+    }
+
+    pub fn cancel(&self) {
+        self.inner.cancelled.store(true, Ordering::Release);
+        let _ = fs::write(&self.inner.path, b"cancelled");
+        let _ = fs::remove_file(&self.inner.path);
+    }
+
+    #[must_use]
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.inner.cancelled.load(Ordering::Acquire)
+    }
+
+    #[must_use]
+    pub(crate) fn path(&self) -> &Path {
+        &self.inner.path
+    }
+}
+
+impl Drop for InjectionGuardInner {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+pub(crate) fn injection_guard_active(path: &Path) -> bool {
+    fs::read(path).is_ok_and(|contents| contents == ACTIVE_GUARD)
 }
 
 pub fn resolve_native_hook_paths() -> Result<NativeHookPaths, InjectorError> {
@@ -50,13 +125,31 @@ pub fn injector_args(pid: u32, dll_path: &Path) -> [OsString; 4] {
     ]
 }
 
-#[cfg(windows)]
-fn elevated_injector_args(pid: u32, dll_path: &Path, result_path: &Path) -> [OsString; 6] {
+fn guarded_injector_args(pid: u32, dll_path: &Path, guard_path: &Path) -> [OsString; 6] {
     [
         "--pid".into(),
         pid.to_string().into(),
         "--dll".into(),
         dll_path.as_os_str().to_owned(),
+        "--guard-file".into(),
+        guard_path.as_os_str().to_owned(),
+    ]
+}
+
+#[cfg(windows)]
+fn elevated_injector_args(
+    pid: u32,
+    dll_path: &Path,
+    guard_path: &Path,
+    result_path: &Path,
+) -> [OsString; 8] {
+    [
+        "--pid".into(),
+        pid.to_string().into(),
+        "--dll".into(),
+        dll_path.as_os_str().to_owned(),
+        "--guard-file".into(),
+        guard_path.as_os_str().to_owned(),
         "--result-file".into(),
         result_path.as_os_str().to_owned(),
     ]
@@ -79,13 +172,60 @@ pub fn run_injector(paths: &NativeHookPaths, pid: u32) -> Result<(), InjectorErr
 pub fn run_injector_with_elevated_retry(
     paths: &NativeHookPaths,
     pid: u32,
+    guard: &InjectionGuard,
     observer: impl FnMut(InjectorLaunchEvent),
 ) -> Result<(), InjectorError> {
     run_injector_with_elevated_retry_impl(
-        || run_injector(paths, pid),
-        || run_elevated_injector(paths, pid),
+        || run_guarded_injector(paths, pid, guard),
+        || run_elevated_injector(paths, pid, guard),
         observer,
     )
+}
+
+fn run_guarded_injector(
+    paths: &NativeHookPaths,
+    pid: u32,
+    guard: &InjectionGuard,
+) -> Result<(), InjectorError> {
+    if guard.is_cancelled() {
+        return Err(InjectorError::InjectionCancelled);
+    }
+    let child = Command::new(&paths.injector)
+        .args(guarded_injector_args(pid, &paths.hook, guard.path()))
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    wait_for_guarded_child(child, guard)
+}
+
+fn wait_for_guarded_child(mut child: Child, guard: &InjectionGuard) -> Result<(), InjectorError> {
+    let status = loop {
+        if guard.is_cancelled() {
+            stop_child(&mut child);
+            return Err(InjectorError::InjectionCancelled);
+        }
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        thread::sleep(INJECTOR_POLL_INTERVAL);
+    };
+    let mut stderr = Vec::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        pipe.read_to_end(&mut stderr)?;
+    }
+    if status.success() {
+        Ok(())
+    } else {
+        Err(InjectorError::injection(
+            InjectionStep::HelperProcess,
+            injector_failure_message(status, &stderr),
+        ))
+    }
+}
+
+fn stop_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn run_injector_with_elevated_retry_impl(
@@ -106,12 +246,20 @@ fn run_injector_with_elevated_retry_impl(
 }
 
 #[cfg(windows)]
-fn run_elevated_injector(paths: &NativeHookPaths, pid: u32) -> Result<(), InjectorError> {
-    windows_elevation::run_elevated_injector(paths, pid)
+fn run_elevated_injector(
+    paths: &NativeHookPaths,
+    pid: u32,
+    guard: &InjectionGuard,
+) -> Result<(), InjectorError> {
+    windows_elevation::run_elevated_injector(paths, pid, guard)
 }
 
 #[cfg(not(windows))]
-fn run_elevated_injector(_paths: &NativeHookPaths, _pid: u32) -> Result<(), InjectorError> {
+fn run_elevated_injector(
+    _paths: &NativeHookPaths,
+    _pid: u32,
+    _guard: &InjectionGuard,
+) -> Result<(), InjectorError> {
     Err(InjectorError::UnsupportedPlatform)
 }
 
@@ -180,6 +328,17 @@ mod tests {
                 OsString::from("hook.dll")
             ]
         );
+    }
+
+    #[test]
+    fn cancelling_guard_revokes_the_cross_process_permit() {
+        let guard = InjectionGuard::create().expect("create injection guard");
+        assert!(injection_guard_active(guard.path()));
+
+        guard.cancel();
+
+        assert!(guard.is_cancelled());
+        assert!(!injection_guard_active(guard.path()));
     }
 
     #[test]

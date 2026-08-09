@@ -6,11 +6,16 @@ use crate::InjectorError;
 use windows_sys::Win32::Foundation::{ERROR_BAD_LENGTH, ERROR_PARTIAL_COPY};
 
 pub fn inject(pid: u32, hook: &Path) -> Result<(), InjectorError> {
-    inject_platform(pid, hook)
+    inject_platform(pid, hook, None)
+}
+
+pub fn inject_guarded(pid: u32, hook: &Path, guard: &Path) -> Result<(), InjectorError> {
+    ensure_injection_allowed(Some(guard))?;
+    inject_platform(pid, hook, Some(guard))
 }
 
 #[cfg(windows)]
-fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
+fn inject_platform(pid: u32, hook: &Path, guard: Option<&Path>) -> Result<(), InjectorError> {
     use std::{
         ffi::{OsStr, OsString},
         io, iter,
@@ -50,6 +55,7 @@ fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
     if process_has_module(pid, &hook)? {
         return Err(InjectorError::NativeHookAlreadyLoaded);
     }
+    ensure_injection_allowed(guard)?;
     let hook_wide = wide_null(hook.as_os_str());
     let remote_bytes = hook_wide.len() * size_of::<u16>();
 
@@ -119,6 +125,12 @@ fn inject_platform(pid: u32, hook: &Path) -> Result<(), InjectorError> {
                 "GetProcAddress(LoadLibraryW) failed",
             ));
         };
+
+        if let Err(error) = ensure_injection_allowed(guard) {
+            VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
+            CloseHandle(process);
+            return Err(error);
+        }
 
         let thread = CreateRemoteThread(
             process,
@@ -274,8 +286,16 @@ fn is_retryable_module_snapshot_error(error: &std::io::Error) -> bool {
 }
 
 #[cfg(not(windows))]
-fn inject_platform(_pid: u32, _hook: &Path) -> Result<(), InjectorError> {
+fn inject_platform(_pid: u32, _hook: &Path, _guard: Option<&Path>) -> Result<(), InjectorError> {
     Err(InjectorError::UnsupportedPlatform)
+}
+
+fn ensure_injection_allowed(guard: Option<&Path>) -> Result<(), InjectorError> {
+    if guard.is_none_or(crate::paths::injection_guard_active) {
+        Ok(())
+    } else {
+        Err(InjectorError::InjectionCancelled)
+    }
 }
 
 #[cfg(all(test, windows))]

@@ -8,10 +8,10 @@ mod report;
 
 pub use error::{InjectionStep, InjectorError};
 pub use paths::{
-    InjectorLaunchEvent, NATIVE_HOOK_DLL, NATIVE_INJECTOR_EXE, NativeHookPaths, injector_args,
-    resolve_native_hook_paths, run_injector, run_injector_with_elevated_retry,
+    InjectionGuard, InjectorLaunchEvent, NATIVE_HOOK_DLL, NATIVE_INJECTOR_EXE, NativeHookPaths,
+    injector_args, resolve_native_hook_paths, run_injector, run_injector_with_elevated_retry,
 };
-pub use platform::inject;
+pub use platform::{inject, inject_guarded};
 pub use process::{
     ISAAC_PROCESS_NAME, IsaacProcess, find_isaac_process, find_isaac_processes, is_process_running,
     wait_for_isaac,

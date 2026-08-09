@@ -9,20 +9,25 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, ERROR_CANCELLED, HANDLE, WAIT_FAILED, WAIT_OBJECT_0},
-    System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject},
+    Foundation::{CloseHandle, ERROR_CANCELLED, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
+    System::Threading::{GetExitCodeProcess, TerminateProcess, WaitForSingleObject},
     UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW},
 };
 
-use super::{NativeHookPaths, elevated_injector_args};
+use super::{InjectionGuard, NativeHookPaths, elevated_injector_args};
 use crate::{InjectorError, read_failure_report};
 
 const SW_SHOWNORMAL: i32 = 1;
+const WAIT_POLL_MILLIS: u32 = 25;
 
 pub(super) fn run_elevated_injector(
     paths: &NativeHookPaths,
     pid: u32,
+    guard: &InjectionGuard,
 ) -> Result<(), InjectorError> {
+    if guard.is_cancelled() {
+        return Err(InjectorError::InjectionCancelled);
+    }
     let result_file = ElevatedResultFile::create().map_err(|error| {
         InjectorError::elevated_retry_failed(format!(
             "could not create elevated injector result file: {error}"
@@ -33,6 +38,7 @@ pub(super) fn run_elevated_injector(
     let parameters = wide_null(&shell_parameters(&elevated_injector_args(
         pid,
         &paths.hook,
+        guard.path(),
         result_file.path(),
     )));
     let mut info = SHELLEXECUTEINFOW {
@@ -58,22 +64,35 @@ pub(super) fn run_elevated_injector(
             "elevated injector helper did not return a process handle",
         ));
     };
-    wait_for_process(&process, result_file.path())
+    wait_for_process(&process, result_file.path(), guard)
 }
 
-fn wait_for_process(process: &OwnedHandle, result_path: &Path) -> Result<(), InjectorError> {
-    match unsafe { WaitForSingleObject(process.raw(), INFINITE) } {
-        WAIT_OBJECT_0 => {}
-        WAIT_FAILED => {
-            return Err(InjectorError::elevated_retry_failed(format!(
-                "could not wait for elevated injector helper: {}",
-                io::Error::last_os_error()
-            )));
+fn wait_for_process(
+    process: &OwnedHandle,
+    result_path: &Path,
+    guard: &InjectionGuard,
+) -> Result<(), InjectorError> {
+    loop {
+        if guard.is_cancelled() {
+            unsafe {
+                TerminateProcess(process.raw(), 1);
+            }
+            return Err(InjectorError::InjectionCancelled);
         }
-        result => {
-            return Err(InjectorError::elevated_retry_failed(format!(
-                "unexpected wait result {result} from elevated injector helper"
-            )));
+        match unsafe { WaitForSingleObject(process.raw(), WAIT_POLL_MILLIS) } {
+            WAIT_OBJECT_0 => break,
+            WAIT_TIMEOUT => {}
+            WAIT_FAILED => {
+                return Err(InjectorError::elevated_retry_failed(format!(
+                    "could not wait for elevated injector helper: {}",
+                    io::Error::last_os_error()
+                )));
+            }
+            result => {
+                return Err(InjectorError::elevated_retry_failed(format!(
+                    "unexpected wait result {result} from elevated injector helper"
+                )));
+            }
         }
     }
     let mut exit_code = 0;

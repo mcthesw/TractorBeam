@@ -19,7 +19,7 @@ use windows_sys::Win32::{
     System::{LibraryLoader::GetModuleFileNameW, SystemInformation::GetLocalTime},
 };
 
-use tractor_beam_hook_ipc::{GamePacket, SessionId};
+use tractor_beam_hook_ipc::{GamePacket, HookStartupFailure, HookStartupStatus, SessionId};
 
 use super::ipc_worker::{self, WorkerCounters};
 
@@ -27,6 +27,7 @@ const RUNTIME_FILE: &str = "hook-runtime.txt";
 const DAILY_LOG_RETAIN_COUNT: usize = 10;
 
 static STATE: Mutex<Option<BridgeState>> = Mutex::new(None);
+static HOOK_STARTUP: Mutex<HookStartupStatus> = Mutex::new(HookStartupStatus::Installing);
 static LOG_LOCK: Mutex<()> = Mutex::new(());
 static LOG_DATE: Mutex<Option<String>> = Mutex::new(None);
 static NEXT_SEQUENCE: AtomicU32 = AtomicU32::new(1);
@@ -142,6 +143,18 @@ pub fn request_process_detach() {
     if let Some(running) = WORKER_RUNNING.get() {
         running.store(false, Ordering::Release);
     }
+}
+
+pub fn hook_startup_status() -> HookStartupStatus {
+    *HOOK_STARTUP.lock().expect("hook startup lock poisoned")
+}
+
+pub fn report_hook_ready() {
+    *HOOK_STARTUP.lock().expect("hook startup lock poisoned") = HookStartupStatus::Ready;
+}
+
+pub fn report_hook_failure(failure: HookStartupFailure) {
+    *HOOK_STARTUP.lock().expect("hook startup lock poisoned") = HookStartupStatus::Failed(failure);
 }
 
 pub fn mode() -> BridgeMode {

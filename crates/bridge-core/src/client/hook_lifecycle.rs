@@ -7,7 +7,7 @@ use tokio::time;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    LogLevel,
+    LogLevel, hook_ipc,
     state::{
         HookStartupPhase, HookStartupState, RuntimeEvent, RuntimeEventSender, SessionStopReason,
         error_counter, log_event, send_critical_event, send_event, unix_seconds,
@@ -26,6 +26,7 @@ pub(super) async fn inject_process(
     process: tractor_beam_isaac_injector::IsaacProcess,
     event_tx: RuntimeEventSender,
     cancellation: CancellationToken,
+    ready_deadline: hook_ipc::HookReadyDeadline,
 ) {
     let process_name = process.name.clone();
     let process_id = process.pid;
@@ -161,6 +162,7 @@ pub(super) async fn inject_process(
                 cancellation.cancel();
             }
             if injected {
+                ready_deadline.arm();
                 let mut state = hook_startup_state(
                     HookStartupPhase::WaitingForHookEndpoint,
                     &paths,

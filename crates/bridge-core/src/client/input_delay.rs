@@ -7,10 +7,7 @@ use serde::Serialize;
 use thiserror::Error;
 use tractor_beam_hook_ipc::{ErrorCode, InputDelayCommand};
 
-use super::{
-    LogLevel, SessionMode, SessionStatus,
-    state::{self, HookIpcConnectionState},
-};
+use super::{HookStartupPhase, LogLevel, SessionMode, SessionStatus, state};
 
 static NEXT_REQUEST_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -95,7 +92,7 @@ impl super::BridgeClient {
             Some(SessionMode::Fallback | SessionMode::Pure)
         ) {
             Some(InputDelayEvidenceBlocker::UnsupportedMode)
-        } else if self.state.hook_ipc.connection != HookIpcConnectionState::Connected {
+        } else if self.state.hook_startup.phase != HookStartupPhase::Ready {
             Some(InputDelayEvidenceBlocker::HookNotReady)
         } else if current_delay.is_none() {
             Some(InputDelayEvidenceBlocker::CurrentDelayUnknown)
@@ -135,7 +132,7 @@ impl super::BridgeClient {
             Some(SessionMode::Fallback | SessionMode::Pure) => {}
             Some(SessionMode::Official) | None => return Err(InputDelayError::UnsupportedMode),
         }
-        if self.state.hook_ipc.connection != HookIpcConnectionState::Connected {
+        if self.state.hook_startup.phase != HookStartupPhase::Ready {
             return Err(InputDelayError::HookNotReady);
         }
         Ok(())
@@ -203,7 +200,7 @@ mod tests {
 
         client.state.status = SessionStatus::Running;
         client.state.active_session_mode = Some(SessionMode::Pure);
-        client.state.hook_ipc.connection = HookIpcConnectionState::Connected;
+        client.state.hook_startup.phase = HookStartupPhase::Ready;
         assert_eq!(
             client.input_delay_evidence().blocker,
             Some(InputDelayEvidenceBlocker::CurrentDelayUnknown)

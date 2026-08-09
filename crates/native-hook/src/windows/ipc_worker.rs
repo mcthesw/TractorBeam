@@ -12,8 +12,8 @@ use std::{
 };
 
 use tractor_beam_hook_ipc::{
-    ClientToHook, ErrorCode, FrameDecoder, GamePacket, Handshake, HookToClient, InputDelayCommand,
-    IpcHealth, PeerRole, ProtocolError, SessionId,
+    ClientToHook, ErrorCode, FrameDecoder, GamePacket, Handshake, HookStartupStatus, HookToClient,
+    InputDelayCommand, IpcHealth, PeerRole, ProtocolError, SessionId,
 };
 
 use super::{bridge, input_delay::InputDelayMemoryError};
@@ -170,7 +170,7 @@ fn connect(
                     (*handshake)
                         .validate(PeerRole::BridgeClient, session_id)
                         .map_err(protocol_io)?;
-                    write_message(&mut stream, &HookToClient::Ready)?;
+                    write_message(&mut stream, &HookToClient::EndpointReady)?;
                     return Ok(stream);
                 }
                 [] => {}
@@ -248,6 +248,7 @@ fn run_connection(
 
     let mut pending_write = None::<PendingWrite>;
     let mut control_outbound = VecDeque::<HookToClient>::new();
+    let mut startup_status = None::<HookStartupStatus>;
     let mut next_health = Instant::now() + HEALTH_INTERVAL;
     while running.load(Ordering::Relaxed) {
         for message in reader_rx.try_iter() {
@@ -285,6 +286,12 @@ fn run_connection(
                 thread::sleep(IO_POLL_INTERVAL);
                 continue;
             }
+        }
+
+        let current_startup = bridge::hook_startup_status();
+        if startup_status != Some(current_startup) {
+            control_outbound.push_back(HookToClient::Startup(current_startup));
+            startup_status = Some(current_startup);
         }
 
         while let Some(message) = control_outbound.pop_front() {
@@ -649,7 +656,7 @@ mod tests {
                                 .unwrap();
                                 sent_handshake = true;
                             }
-                            HookToClient::Ready if sent_handshake => return stream,
+                            HookToClient::EndpointReady if sent_handshake => return stream,
                             _ => {}
                         }
                     }

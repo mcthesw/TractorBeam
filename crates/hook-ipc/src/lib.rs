@@ -9,8 +9,8 @@ pub mod sync_io;
 
 pub use codec::{FrameDecoder, decode, encode};
 
-pub const PROTOCOL_MAGIC: [u8; 4] = *b"TBI2";
-pub const PROTOCOL_MAJOR: u16 = 2;
+pub const PROTOCOL_MAGIC: [u8; 4] = *b"TBI3";
+pub const PROTOCOL_MAJOR: u16 = 3;
 pub const PROTOCOL_MINOR: u16 = 0;
 pub const FEATURE_GAME_PACKETS: u32 = 1 << 0;
 pub const FEATURE_INPUT_DELAY: u32 = 1 << 1;
@@ -196,6 +196,35 @@ impl fmt::Display for ErrorCode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum HookStartupFailure {
+    SteamApiImports,
+    SteamNetworkingHooks,
+}
+
+impl HookStartupFailure {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SteamApiImports => "steam_api_imports",
+            Self::SteamNetworkingHooks => "steam_networking_hooks",
+        }
+    }
+}
+
+impl fmt::Display for HookStartupFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum HookStartupStatus {
+    Installing,
+    Ready,
+    Failed(HookStartupFailure),
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct IpcHealth {
     pub hook_data_dropped: u64,
@@ -207,7 +236,8 @@ pub struct IpcHealth {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum HookToClient {
     Handshake(Handshake),
-    Ready,
+    EndpointReady,
+    Startup(HookStartupStatus),
     Game(GamePacket),
     InputDelayResult {
         id: u32,

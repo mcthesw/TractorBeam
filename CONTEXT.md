@@ -35,7 +35,7 @@ The versioned message language and packet formats at one component boundary. Loc
 _Avoid_: transport, runtime, socket loop
 
 **Local IPC Protocol**:
-The typed `TBI2` message contract used only between one Bridge Client session and its Native Hook over an IPv4 loopback TCP connection.
+The typed `TBI3` message contract used only between one Bridge Client session and its Native Hook over an IPv4 loopback TCP connection. Endpoint readiness means the loopback connection is authenticated; Hook readiness additionally requires the Steam packet hooks to be installed.
 _Avoid_: Relay Protocol, UDP protocol, socket loop
 
 **Relay Protocol v2**:

@@ -168,12 +168,7 @@ impl BridgeClient {
                     }
                 }
                 state::RuntimeEvent::HookStartup(startup) => {
-                    let mut startup = *startup;
-                    if startup.launch_parameters_path.is_none() {
-                        startup.launch_parameters_path =
-                            self.state.hook_launch_parameters_path_written.clone();
-                    }
-                    self.state.hook_startup = startup;
+                    self.apply_hook_startup_state(*startup)
                 }
                 state::RuntimeEvent::HookIpc(ipc) => self.apply_hook_ipc_state(*ipc),
                 state::RuntimeEvent::SessionHealthSnapshot(snapshot) => {

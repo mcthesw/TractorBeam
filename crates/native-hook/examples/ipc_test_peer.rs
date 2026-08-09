@@ -133,7 +133,11 @@ fn handshake(stream: &mut TcpStream, session_id: SessionId) -> io::Result<()> {
                 (*handshake)
                     .validate(PeerRole::BridgeClient, session_id)
                     .map_err(protocol_io)?;
-                write_message(stream, &HookToClient::Ready)?;
+                write_message(stream, &HookToClient::EndpointReady)?;
+                write_message(
+                    stream,
+                    &HookToClient::Startup(tractor_beam_hook_ipc::HookStartupStatus::Ready),
+                )?;
                 return Ok(());
             }
             [] => {}

@@ -67,7 +67,7 @@ pub(super) fn hook_phase_label(phase: HookStartupPhase) -> (egui::Color32, Cow<'
             t!("hook.waiting_endpoint"),
         ),
         HookStartupPhase::EndpointReady => (
-            egui::Color32::from_rgb(100, 200, 100),
+            egui::Color32::from_rgb(255, 200, 0),
             t!("hook.endpoint_ready"),
         ),
         HookStartupPhase::Ready => (egui::Color32::from_rgb(100, 200, 100), t!("hook.ready")),
@@ -82,7 +82,7 @@ pub(super) fn input_delay_controls_enabled(state: &RuntimeState) -> bool {
             state.active_session_mode,
             Some(SessionMode::Fallback | SessionMode::Pure)
         )
-        && state.hook_ipc.connection == HookIpcConnectionState::Connected
+        && state.hook_startup.phase == HookStartupPhase::Ready
 }
 
 pub(super) fn readiness_probe_table(ui: &mut egui::Ui, report: &ReadinessProbeReport) {

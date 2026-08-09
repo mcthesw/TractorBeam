@@ -7,7 +7,8 @@ process. It is separate from Client-local, player-facing Room Path Quality. See
 Tractor Beam keeps four network boundaries deliberately separate:
 
 1. The Native Hook exchanges target-addressed game packets with Bridge Client
-   over Local IPC v2 (`TBI2`). It does not know about Relays, Rooms, Join Codes,
+   over Local IPC v3 (`TBI3`). It reports ready only after the required Steam
+   packet hooks are installed, and does not know about Relays, Rooms, Join Codes,
    reconnect credentials, or TCP/UDP path selection.
 2. Bridge Client owns session orchestration, the selected Relay endpoint, the
    Session Credential, retry policy, queue/drop policy, and user-visible state.

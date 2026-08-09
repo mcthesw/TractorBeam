@@ -536,6 +536,7 @@ async fn malformed_frame_after_handshake_is_terminal() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn absent_hook_times_out_with_test_budget() {
     let session = HookIpcSession::test();
+    let ready_deadline = session.ready_deadline();
     let (_control_tx, control_rx) = control_channel();
     let (event_tx, _event_rx) = tokio::sync::mpsc::channel(16);
     let cancellation = CancellationToken::new();
@@ -551,6 +552,7 @@ async fn absent_hook_times_out_with_test_budget() {
         },
     )
     .unwrap();
+    ready_deadline.arm();
 
     let error = time::timeout(TEST_TIMEOUT, worker)
         .await

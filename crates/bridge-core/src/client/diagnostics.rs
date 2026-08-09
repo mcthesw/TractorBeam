@@ -105,6 +105,14 @@ impl BridgeClient {
             "reconnect_dropped_packets: {}\n",
             self.state.counters.reconnect_dropped_packets
         ));
+        output.push_str(&format!(
+            "detached_hook_dropped_packets: {}\n",
+            self.state.counters.detached_hook_dropped_packets
+        ));
+        output.push_str(&format!(
+            "detached_relay_dropped_packets: {}\n",
+            self.state.counters.detached_relay_dropped_packets
+        ));
         output.push_str(&format!("relay_link: {:?}\n\n", self.state.relay_link));
         output.push_str("direct LAN:\n");
         output.push_str(&format!("peers: {}\n", self.state.lan_peers.len()));

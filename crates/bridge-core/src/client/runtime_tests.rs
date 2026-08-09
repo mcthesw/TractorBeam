@@ -465,6 +465,7 @@ fn reliable_game_exit_completion_returns_client_to_idle() {
     let mut client = BridgeClient::new();
     client.state.status = state::SessionStatus::Running;
     client.state.active_session_mode = Some(SessionMode::Pure);
+    client.state.hook_runtime_active = true;
     client.session = Some(session::SessionHandle::with_test_events(vec![
         state::RuntimeEvent::SessionEnded(state::SessionStopReason::GameExited {
             process_name: "isaac-ng.exe".to_owned(),
@@ -479,6 +480,7 @@ fn reliable_game_exit_completion_returns_client_to_idle() {
     assert!(client.poll_events());
     assert_eq!(client.state.status, state::SessionStatus::Idle);
     assert_eq!(client.state.active_session_mode, None);
+    assert!(!client.state.hook_runtime_active);
     assert!(client.session.is_none());
     assert_eq!(
         client.state.last_stop_reason,
@@ -487,6 +489,42 @@ fn reliable_game_exit_completion_returns_client_to_idle() {
             pid: 42,
         })
     );
+}
+
+#[test]
+fn gameplay_stop_keeps_the_hook_runtime_available() {
+    let mut client = BridgeClient::new();
+    client.state.status = state::SessionStatus::Running;
+    client.state.active_session_mode = Some(SessionMode::Pure);
+    client.state.hook_runtime_active = true;
+    client.session = Some(session::SessionHandle::with_test_events(vec![
+        state::RuntimeEvent::GameplayStopped,
+    ]));
+
+    assert!(client.poll_events());
+    assert_eq!(client.state.status, state::SessionStatus::Idle);
+    assert_eq!(client.state.active_session_mode, None);
+    assert!(client.state.hook_runtime_active);
+    assert!(client.session.is_some());
+}
+
+#[test]
+fn stop_before_hook_ready_cancels_the_runtime() {
+    let mut client = BridgeClient::new();
+    client.state.status = state::SessionStatus::Running;
+    client.state.active_session_mode = Some(SessionMode::Pure);
+    client.state.hook_runtime_active = true;
+    client.state.hook_startup.phase = state::HookStartupPhase::WaitingForIsaac;
+    client.session = Some(session::SessionHandle::with_test_persistent_runtime(
+        SessionMode::Pure,
+    ));
+
+    client.stop_session();
+
+    assert_eq!(client.state.status, state::SessionStatus::Idle);
+    assert_eq!(client.state.active_session_mode, None);
+    assert!(!client.state.hook_runtime_active);
+    assert!(client.session.is_none());
 }
 
 #[test]

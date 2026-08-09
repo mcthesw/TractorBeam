@@ -173,6 +173,9 @@ manual:
 start:
   zh_CN: "启动游戏"
   en_US: "Launch Game"
+start.reconnect:
+  zh_CN: "重新连接游戏"
+  en_US: "Reconnect Game"
 start.failed:
   zh_CN: "启动失败"
   en_US: "Start failed"
@@ -191,6 +194,9 @@ status.idle:
 status.running:
   zh_CN: "运行中"
   en_US: "Running"
+status.ready_to_reconnect:
+  zh_CN: "等待重新连接"
+  en_US: "Ready to reconnect"
 status.reconnecting:
   zh_CN: "正在重连"
   en_US: "Reconnecting"

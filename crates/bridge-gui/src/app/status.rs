@@ -3,8 +3,8 @@ use std::borrow::Cow;
 use eframe::egui;
 use rust_i18n::t;
 use tractor_beam_core::{
-    ClientError, ConfigError, ConnectionProfile, InputDelayError, RelayLinkState, SessionQuality,
-    SessionStatus, SessionStopReason,
+    ClientError, ConfigError, ConnectionProfile, HookStartupPhase, InputDelayError, RelayLinkState,
+    SessionQuality, SessionStatus, SessionStopReason,
 };
 
 use super::{ApplicationOperation, BootstrapState, BridgeApp};
@@ -85,6 +85,7 @@ impl BridgeApp {
                 self.application_status_label()
             ));
             if state.status == SessionStatus::Idle
+                && !state.hook_runtime_active
                 && let Some(reason) = &state.last_stop_reason
             {
                 ui.monospace(stop_reason_label(reason));
@@ -163,6 +164,13 @@ impl BridgeApp {
         match self.application_snapshot.bootstrap {
             BootstrapState::Initializing => t!("status.initializing"),
             BootstrapState::Failed => t!("status.initialization_failed"),
+            BootstrapState::Ready
+                if self.client_state().status == SessionStatus::Idle
+                    && self.client_state().hook_runtime_active
+                    && self.client_state().hook_startup.phase == HookStartupPhase::Ready =>
+            {
+                t!("status.ready_to_reconnect")
+            }
             BootstrapState::Ready => status_label(self.client_state().status),
         }
     }

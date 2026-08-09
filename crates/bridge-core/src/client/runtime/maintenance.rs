@@ -48,6 +48,7 @@ impl BridgeClient {
                     self.state.last_stop_reason = Some(reason)
                 }
                 state::RuntimeEvent::SessionEnded(_)
+                | state::RuntimeEvent::GameplayStopped
                 | state::RuntimeEvent::Stopped
                 | state::RuntimeEvent::ReadinessProbeFinished(_)
                 | state::RuntimeEvent::HookReceiveProbeFinished(_)
@@ -178,6 +179,57 @@ impl BridgeClient {
             &self.state.room_path_quality,
             state::unix_seconds(),
         );
+    }
+
+    pub(super) fn prepare_gameplay_start(
+        &mut self,
+        route: ClientSessionLogRoute,
+        mode: SessionMode,
+    ) {
+        self.state.last_stop_reason = None;
+        self.state.latest_hook_receive_probe = None;
+        self.state.latest_hook_receive_probe_error = None;
+        self.state.latest_session_health = None;
+        self.state.latest_session_health_summary = None;
+        self.state.smoothness = super::super::SmoothnessSnapshot::default();
+        self.state.latest_input_delay_status = None;
+        self.state.active_session_mode = None;
+        self.state.client_incidents.clear();
+        if self.relay_room.is_none() {
+            self.state.room_peers.clear();
+            self.state.room_path_quality.clear();
+            self.state.relay_link = state::RelayLinkState::Inactive;
+        }
+        self.active_log_context = Some(ClientSessionLogContext { route, mode });
+    }
+
+    pub(super) fn log_session_route(&mut self, config: &SessionConfig) {
+        if config.mode == SessionMode::Official {
+            return;
+        }
+        match &config.route {
+            SessionRouteConfig::ExternalRelay(route) => {
+                if let Some(name) = &route.relay_name {
+                    self.log(LogLevel::Info, format!("Relay preset: {name}"));
+                }
+                self.log(LogLevel::Info, format!("Relay endpoint: {}", route.relay));
+                self.log(LogLevel::Info, format!("Transport: {}", route.transport));
+            }
+            SessionRouteConfig::LanDirect(_) => {
+                self.log(LogLevel::Info, "Session route: direct LAN");
+            }
+        }
+    }
+
+    pub(super) fn stop_session_runtime(&mut self, reason: &str) {
+        if let Some(handle) = self.session.take() {
+            self.apply_stopped_session_events(handle.stop());
+            self.cleanup_hook_launch_parameters(reason);
+        }
+        self.state.status = state::SessionStatus::Idle;
+        self.state.active_session_mode = None;
+        self.state.hook_runtime_active = false;
+        self.active_log_context = None;
     }
 
     pub(super) fn remove_hook_launch_parameters_silent(&self) {

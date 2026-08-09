@@ -15,6 +15,42 @@ pub(super) struct RelayTransportTaskContext {
     pub(super) initial_peers: Vec<PeerPresenceInfo>,
 }
 
+pub(super) async fn hook_dispatch_task(
+    mut hook_packets_rx: TokioReceiver<tractor_beam_hook_ipc::GamePacket>,
+    outbound: HookOutboundSlot,
+    event_tx: RuntimeEventSender,
+    cancellation: CancellationToken,
+) -> io::Result<()> {
+    let mut detached_dropped = 0_u64;
+    let mut detached_report = time::interval(HEARTBEAT_INTERVAL);
+    detached_report.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            () = cancellation.cancelled() => {
+                report_detached_hook_drops(&event_tx, &mut detached_dropped);
+                return Ok(());
+            }
+            _ = detached_report.tick() => {
+                report_detached_hook_drops(&event_tx, &mut detached_dropped);
+            }
+            packet = hook_packets_rx.recv() => {
+                let Some(packet) = packet else {
+                    return Ok(());
+                };
+                match outbound.try_send(packet) {
+                    AttachmentSend::Delivered => {}
+                    AttachmentSend::Detached => {
+                        detached_dropped = detached_dropped.saturating_add(1);
+                    }
+                    AttachmentSend::Full => {
+                        send_error(&event_tx, "Gameplay outbound queue is full; dropping hook packet");
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(super) async fn hook_in_task(
     mut hook_packets_rx: TokioReceiver<tractor_beam_hook_ipc::GamePacket>,
     outbound_tx: TokioSender<OutboundGamePacket>,
@@ -56,6 +92,7 @@ pub(super) async fn relay_transport_task(
     let local_steam_id64 = relay.local_steam_id64();
     let mut room_peers = context.initial_peers.clone();
     let mut room_path = RoomPathQuality::default();
+    let mut detached_dropped = 0_u64;
     if relay.supports_room_path_probe() {
         room_path.sync_peers(&room_peers, local_steam_id64);
     }
@@ -63,6 +100,7 @@ pub(super) async fn relay_transport_task(
     loop {
         tokio::select! {
             () = context.cancellation.cancelled() => {
+                report_detached_relay_drops(&context.event_tx, &mut detached_dropped);
                 let _ = send_control(&mut relay.sender, &ClientControl::Stop).await;
                 return Ok(());
             }
@@ -105,8 +143,14 @@ pub(super) async fn relay_transport_task(
                 };
                 match decode_inbound_relay_datagram(raw) {
                     Ok(Some(InboundRelayDatagram::Game(packet))) => {
-                        if !inbound_target.try_send(packet) {
-                            send_error(&context.event_tx, "Hook inbound queue is full; dropping relay packet");
+                        match inbound_target.try_send(packet) {
+                            AttachmentSend::Delivered => {}
+                            AttachmentSend::Detached => {
+                                detached_dropped = detached_dropped.saturating_add(1);
+                            }
+                            AttachmentSend::Full => {
+                                send_error(&context.event_tx, "Hook inbound queue is full; dropping relay packet");
+                            }
                         }
                     }
                     Ok(Some(InboundRelayDatagram::HealthPong { id })) => {
@@ -150,6 +194,7 @@ pub(super) async fn relay_transport_task(
                 }
             }
             _ = heartbeat.tick() => {
+                report_detached_relay_drops(&context.event_tx, &mut detached_dropped);
                 if let Err(error) = send_control(&mut relay.sender, &ClientControl::ControlPing { id: 0 }).await {
                     recover_relay(&mut relay, &mut outbound_rx, &context, error).await?;
                 }
@@ -174,6 +219,30 @@ pub(super) async fn relay_transport_task(
                 emit_room_path(&context.event_tx, &room_path);
             }
         }
+    }
+}
+
+fn report_detached_hook_drops(event_tx: &RuntimeEventSender, dropped: &mut u64) {
+    report_detached_drops(event_tx, dropped, |count| Counters {
+        detached_hook_dropped_packets: count,
+        ..Counters::default()
+    });
+}
+
+fn report_detached_relay_drops(event_tx: &RuntimeEventSender, dropped: &mut u64) {
+    report_detached_drops(event_tx, dropped, |count| Counters {
+        detached_relay_dropped_packets: count,
+        ..Counters::default()
+    });
+}
+
+fn report_detached_drops(
+    event_tx: &RuntimeEventSender,
+    dropped: &mut u64,
+    counters: impl FnOnce(u64) -> Counters,
+) {
+    if *dropped > 0 && try_send_event(event_tx, RuntimeEvent::CounterDelta(counters(*dropped))) {
+        *dropped = 0;
     }
 }
 

@@ -29,6 +29,8 @@ pub struct Counters {
     pub received_bytes: u64,
     pub errors: u64,
     pub reconnect_dropped_packets: u64,
+    pub detached_hook_dropped_packets: u64,
+    pub detached_relay_dropped_packets: u64,
 }
 
 impl Counters {
@@ -41,6 +43,12 @@ impl Counters {
         self.reconnect_dropped_packets = self
             .reconnect_dropped_packets
             .saturating_add(other.reconnect_dropped_packets);
+        self.detached_hook_dropped_packets = self
+            .detached_hook_dropped_packets
+            .saturating_add(other.detached_hook_dropped_packets);
+        self.detached_relay_dropped_packets = self
+            .detached_relay_dropped_packets
+            .saturating_add(other.detached_relay_dropped_packets);
     }
 }
 
@@ -358,6 +366,7 @@ pub struct RuntimeState {
     pub hook_launch_parameters_cleanup: Option<String>,
     pub hook_startup: HookStartupState,
     pub hook_ipc: HookIpcState,
+    pub hook_runtime_active: bool,
     pub last_stop_reason: Option<SessionStopReason>,
     pub client_incidents: Vec<ClientIncidentSnapshot>,
     pub light_ping_reports: Vec<super::probe::LightPingReport>,
@@ -379,6 +388,7 @@ pub(super) enum RuntimeEvent {
     SessionHealthSnapshot(Box<SessionHealthSnapshot>),
     SessionHealthSummary(Box<SessionHealthSnapshot>),
     SessionEnded(SessionStopReason),
+    GameplayStopped,
     Stopped,
     LightPingFinished(Box<super::probe::LightPingReport>),
     RoomPeersUpdated(Vec<crate::protocol::PeerPresenceInfo>),
@@ -408,7 +418,11 @@ pub(super) fn trim_logs(logs: &mut Vec<LogEntry>) {
 }
 
 pub(super) fn send_event(sender: &RuntimeEventSender, event: RuntimeEvent) {
-    let _ = sender.try_send(event);
+    let _ = try_send_event(sender, event);
+}
+
+pub(super) fn try_send_event(sender: &RuntimeEventSender, event: RuntimeEvent) -> bool {
+    sender.try_send(event).is_ok()
 }
 
 pub(super) async fn send_critical_event(sender: &RuntimeEventSender, event: RuntimeEvent) {

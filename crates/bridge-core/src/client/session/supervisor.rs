@@ -3,12 +3,16 @@ use super::*;
 pub(super) async fn supervise_session(
     config: SessionConfig,
     native_hook: Option<SessionNativeHook>,
-    ipc_control_rx: Option<Receiver<InputDelayCall>>,
+    control: SessionControl,
     cancellation: CancellationToken,
     std_event_tx: mpsc::Sender<RuntimeEvent>,
     startup_tx: SyncSender<io::Result<()>>,
     relay_data_plane: Option<RelayRoomDataPlane>,
 ) {
+    let SessionControl {
+        ipc: ipc_control_rx,
+        gameplay: mut command_rx,
+    } = control;
     let (event_tx, event_rx) = tokio_mpsc::channel(EVENT_QUEUE_CAPACITY);
     let event_forwarder = tokio::spawn(forward_events(event_rx, std_event_tx));
 
@@ -46,32 +50,92 @@ pub(super) async fn supervise_session(
                 );
             }
 
-            let stop_reason = wait_for_session_end(
-                &cancellation,
-                &mut runtime_tasks.route,
-                &mut runtime_tasks.support,
-            )
-            .await;
-            cancellation.cancel();
-            if let Some(message) = stop_reason {
-                send_critical_event(
-                    &event_tx,
-                    RuntimeEvent::SessionEnded(SessionStopReason::RuntimeEnded {
-                        message: message.clone(),
-                    }),
-                )
-                .await;
-                send_event(&event_tx, log_event(LogLevel::Warn, message));
+            loop {
+                let route_active = runtime_tasks
+                    .route
+                    .as_ref()
+                    .is_some_and(|route| !route.tasks.is_empty());
+                let commands_active = command_rx.is_some();
+                tokio::select! {
+                    () = cancellation.cancelled() => break,
+                    command = async {
+                        command_rx
+                            .as_mut()
+                            .expect("active gameplay command receiver exists")
+                            .recv()
+                            .await
+                    }, if commands_active => {
+                        let Some(command) = command else {
+                            command_rx = None;
+                            continue;
+                        };
+                        handle_session_command(
+                            command,
+                            &mut runtime_tasks,
+                            &cancellation,
+                            &event_tx,
+                        )
+                        .await;
+                    }
+                    result = async {
+                        runtime_tasks
+                            .route
+                            .as_mut()
+                            .expect("active route exists")
+                            .tasks
+                            .join_next()
+                            .await
+                    }, if route_active => {
+                        let route_cancellation = runtime_tasks
+                            .route
+                            .as_ref()
+                            .expect("active route exists")
+                            .cancellation
+                            .clone();
+                        let message = task_exit_message(
+                            "Bridge gameplay task",
+                            &route_cancellation,
+                            result,
+                        );
+                        if let Some(route) = runtime_tasks.route.take() {
+                            stop_route_tasks(route, &event_tx).await;
+                        }
+                        if let Some(message) = message {
+                            send_critical_event(
+                                &event_tx,
+                                RuntimeEvent::SessionEnded(SessionStopReason::RuntimeEnded {
+                                    message: message.clone(),
+                                }),
+                            )
+                            .await;
+                            send_event(&event_tx, log_event(LogLevel::Warn, message));
+                        }
+                        send_critical_event(&event_tx, RuntimeEvent::GameplayStopped).await;
+                    }
+                    result = runtime_tasks.support.join_next(), if !runtime_tasks.support.is_empty() => {
+                        if let Some(message) = task_exit_message(
+                            "Bridge lifecycle task",
+                            &cancellation,
+                            result,
+                        ) {
+                            send_critical_event(
+                                &event_tx,
+                                RuntimeEvent::SessionEnded(SessionStopReason::RuntimeEnded {
+                                    message: message.clone(),
+                                }),
+                            )
+                            .await;
+                            send_event(&event_tx, log_event(LogLevel::Warn, message));
+                        }
+                        break;
+                    }
+                }
             }
-            shutdown_tasks(runtime_tasks.route, &event_tx).await;
+            cancellation.cancel();
+            if let Some(route) = runtime_tasks.route.take() {
+                stop_route_tasks(route, &event_tx).await;
+            }
             shutdown_tasks(runtime_tasks.support, &event_tx).await;
-            emit_direct_summary(&event_tx, &runtime_tasks.direct_monitor).await;
-            emit_health_summary(
-                &event_tx,
-                &runtime_tasks.health,
-                &runtime_tasks.direct_monitor,
-            )
-            .await;
         }
         Err(error) => {
             let kind = error.kind();
@@ -136,7 +200,7 @@ pub(super) async fn start_runtime_tasks_inner(
     ipc_control_rx: Option<Receiver<InputDelayCall>>,
     cancellation: &CancellationToken,
     event_tx: &RuntimeEventSender,
-    mut relay_data_plane: Option<RelayRoomDataPlane>,
+    relay_data_plane: Option<RelayRoomDataPlane>,
 ) -> io::Result<RuntimeTasks> {
     if config.mode != SessionMode::Official && native_hook.is_none() {
         return Err(io::Error::new(
@@ -155,12 +219,10 @@ pub(super) async fn start_runtime_tasks_inner(
             None,
         ));
         return Ok(RuntimeTasks {
-            route: JoinSet::new(),
+            route: None,
             support,
-            health: None,
-            direct_monitor: None,
-            _relay_data_plane: None,
-            _lan_data_plane: None,
+            hook_outbound: None,
+            to_hook: None,
         });
     }
 
@@ -179,9 +241,8 @@ pub(super) async fn start_runtime_tasks_inner(
         event_tx.clone(),
         cancellation.clone(),
     )?;
-    let mut tasks = JoinSet::new();
-    tasks.spawn(ipc_worker);
     let mut support = JoinSet::new();
+    support.spawn(ipc_worker);
     support.spawn(process_lifecycle::run(
         Some(native_hook.paths),
         preexisting_processes,
@@ -189,6 +250,46 @@ pub(super) async fn start_runtime_tasks_inner(
         cancellation.clone(),
         Some(ready_deadline),
     ));
+    let hook_outbound = HookOutboundSlot::new();
+    support.spawn(hook_dispatch_task(
+        hook_packets_rx,
+        hook_outbound.clone(),
+        event_tx.clone(),
+        cancellation.clone(),
+    ));
+    let route = start_route_tasks(
+        config,
+        &hook_outbound,
+        to_hook.clone(),
+        cancellation,
+        event_tx,
+        relay_data_plane,
+    )
+    .await?;
+    Ok(RuntimeTasks {
+        route: Some(route),
+        support,
+        hook_outbound: Some(hook_outbound),
+        to_hook: Some(to_hook),
+    })
+}
+
+async fn start_route_tasks(
+    config: &SessionConfig,
+    hook_outbound: &HookOutboundSlot,
+    to_hook: hook_ipc::ClientIpcSender,
+    cancellation: &CancellationToken,
+    event_tx: &RuntimeEventSender,
+    mut relay_data_plane: Option<RelayRoomDataPlane>,
+) -> io::Result<RouteTasks> {
+    let route_cancellation = cancellation.child_token();
+    let mut hook_outbound = hook_outbound.attach()?;
+    let hook_packets_rx = hook_outbound.receiver.take().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "Native Hook gameplay packets are already attached",
+        )
+    })?;
     let health = config.session_health.enabled.then(|| {
         Arc::new(Mutex::new(SessionHealth::new(
             config.session_health.runtime_rtt_enabled
@@ -198,6 +299,7 @@ pub(super) async fn start_runtime_tasks_inner(
             Instant::now(),
         )))
     });
+    let mut tasks = JoinSet::new();
     let (direct_monitor, lan_data_plane) = match &config.route {
         SessionRouteConfig::ExternalRelay(relay_route) => {
             if let Some(data_plane) = relay_data_plane.as_mut() {
@@ -211,14 +313,14 @@ pub(super) async fn start_runtime_tasks_inner(
                     hook_packets_rx,
                     data_plane.outbound_tx.clone(),
                     event_tx.clone(),
-                    cancellation.clone(),
+                    route_cancellation.clone(),
                     health.clone(),
                 ));
                 tasks.spawn(hook_out_task(
                     to_hook,
                     inbound_rx,
                     event_tx.clone(),
-                    cancellation.clone(),
+                    route_cancellation.clone(),
                     health.clone(),
                 ));
             } else {
@@ -227,7 +329,7 @@ pub(super) async fn start_runtime_tasks_inner(
                     hook_packets_rx,
                     outbound_tx,
                     event_tx.clone(),
-                    cancellation.clone(),
+                    route_cancellation.clone(),
                     health.clone(),
                 ));
                 let (relay, peers) = RelayTransport::connect_session(
@@ -256,7 +358,7 @@ pub(super) async fn start_runtime_tasks_inner(
                     RelayInboundTarget::Fixed(inbound_tx),
                     RelayTransportTaskContext {
                         event_tx: event_tx.clone(),
-                        cancellation: cancellation.clone(),
+                        cancellation: route_cancellation.clone(),
                         health: health.clone(),
                         runtime_rtt_interval: Duration::from_secs(
                             config.session_health.runtime_rtt_interval_seconds,
@@ -268,7 +370,7 @@ pub(super) async fn start_runtime_tasks_inner(
                     to_hook,
                     inbound_rx,
                     event_tx.clone(),
-                    cancellation.clone(),
+                    route_cancellation.clone(),
                     health.clone(),
                 ));
             }
@@ -295,20 +397,20 @@ pub(super) async fn start_runtime_tasks_inner(
             tasks.spawn(direct_hook_in_task(
                 room,
                 hook_packets_rx,
-                cancellation.clone(),
+                route_cancellation.clone(),
                 health.clone(),
             ));
             tasks.spawn(direct_hook_out_task(
                 to_hook,
                 inbound,
                 event_tx.clone(),
-                cancellation.clone(),
+                route_cancellation.clone(),
                 health.clone(),
             ));
             tasks.spawn(direct_monitor_task(
                 monitor.clone(),
                 event_tx.clone(),
-                cancellation.clone(),
+                route_cancellation.clone(),
             ));
             send_event(
                 event_tx,
@@ -320,20 +422,90 @@ pub(super) async fn start_runtime_tasks_inner(
     if health.is_some() {
         tasks.spawn(health_snapshot_task(
             event_tx.clone(),
-            cancellation.clone(),
+            route_cancellation.clone(),
             health.clone(),
             direct_monitor.clone(),
             Duration::from_secs(config.session_health.snapshot_interval_seconds),
         ));
     }
-    Ok(RuntimeTasks {
-        route: tasks,
-        support,
+    Ok(RouteTasks {
+        tasks,
+        cancellation: route_cancellation,
         health,
         direct_monitor,
+        _hook_outbound: Some(hook_outbound),
         _relay_data_plane: relay_data_plane,
         _lan_data_plane: lan_data_plane,
     })
+}
+
+async fn handle_session_command(
+    command: SessionCommand,
+    runtime: &mut RuntimeTasks,
+    cancellation: &CancellationToken,
+    event_tx: &RuntimeEventSender,
+) {
+    match command {
+        SessionCommand::StartGameplay {
+            config,
+            relay_data_plane,
+            reply,
+        } => {
+            let result = if runtime.route.is_some() {
+                Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "Gameplay is already attached",
+                ))
+            } else {
+                match (&runtime.hook_outbound, &runtime.to_hook) {
+                    (Some(hook_outbound), Some(to_hook)) => start_route_tasks(
+                        &config,
+                        hook_outbound,
+                        to_hook.clone(),
+                        cancellation,
+                        event_tx,
+                        relay_data_plane,
+                    )
+                    .await
+                    .map(|route| runtime.route = Some(route)),
+                    _ => Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "Native Hook runtime is unavailable",
+                    )),
+                }
+            };
+            if result.is_ok() {
+                send_event(
+                    event_tx,
+                    log_event(
+                        LogLevel::Info,
+                        "Gameplay route attached without restarting Isaac",
+                    ),
+                );
+            }
+            let _ = reply.send(result);
+        }
+        SessionCommand::StopGameplay { reply } => {
+            if let Some(route) = runtime.route.take() {
+                stop_route_tasks(route, event_tx).await;
+            }
+            send_event(
+                event_tx,
+                log_event(
+                    LogLevel::Info,
+                    "Gameplay route detached; Native Hook remains ready",
+                ),
+            );
+            let _ = reply.send(Ok(()));
+        }
+    }
+}
+
+pub(super) async fn stop_route_tasks(route: RouteTasks, event_tx: &RuntimeEventSender) {
+    route.cancellation.cancel();
+    shutdown_tasks(route.tasks, event_tx).await;
+    emit_direct_summary(event_tx, &route.direct_monitor).await;
+    emit_health_summary(event_tx, &route.health, &route.direct_monitor).await;
 }
 
 #[cfg(test)]
@@ -341,22 +513,6 @@ pub(super) fn test_native_hook_paths() -> tractor_beam_isaac_injector::NativeHoo
     tractor_beam_isaac_injector::NativeHookPaths {
         injector: PathBuf::from("tractor-beam-isaac-injector.exe"),
         hook: PathBuf::from("tractor_beam_native_hook.dll"),
-    }
-}
-
-async fn wait_for_session_end(
-    cancellation: &CancellationToken,
-    route: &mut JoinSet<io::Result<()>>,
-    support: &mut JoinSet<io::Result<()>>,
-) -> Option<String> {
-    tokio::select! {
-        () = cancellation.cancelled() => None,
-        result = route.join_next(), if !route.is_empty() => {
-            task_exit_message("Bridge route task", cancellation, result)
-        }
-        result = support.join_next(), if !support.is_empty() => {
-            task_exit_message("Bridge lifecycle task", cancellation, result)
-        }
     }
 }
 

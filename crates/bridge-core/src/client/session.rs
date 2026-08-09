@@ -36,7 +36,8 @@ use super::{
     session_health::{SessionHealth, SessionHealthSnapshot},
     state::{
         HookStartupPhase, HookStartupState, RelayLinkState, RuntimeEvent, RuntimeEventSender,
-        SessionStopReason, error_counter, log_event, send_critical_event, send_event, unix_seconds,
+        SessionStopReason, error_counter, log_event, send_critical_event, send_event,
+        try_send_event, unix_seconds,
     },
 };
 
@@ -44,8 +45,8 @@ mod data_plane;
 mod lan_route;
 
 use data_plane::{
-    RelayTransportTaskContext, emit_health_summary, health_snapshot_task, hook_in_task,
-    hook_out_task, observe_health, relay_transport_task,
+    RelayTransportTaskContext, emit_health_summary, health_snapshot_task, hook_dispatch_task,
+    hook_in_task, hook_out_task, observe_health, relay_transport_task,
 };
 use lan_route::{
     DirectSendObserver, direct_hook_in_task, direct_hook_out_task, direct_monitor_task,
@@ -59,6 +60,7 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(6);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
 type SharedSessionHealth = Arc<Mutex<SessionHealth>>;
 
@@ -67,7 +69,25 @@ pub(super) struct SessionHandle {
     cancellation: CancellationToken,
     pub(super) events: Receiver<RuntimeEvent>,
     ipc_control: Option<SyncSender<InputDelayCall>>,
+    commands: Option<tokio_mpsc::UnboundedSender<SessionCommand>>,
+    mode: SessionMode,
     worker: Option<JoinHandle<()>>,
+}
+
+enum SessionCommand {
+    StartGameplay {
+        config: Box<SessionConfig>,
+        relay_data_plane: Option<RelayRoomDataPlane>,
+        reply: SyncSender<io::Result<()>>,
+    },
+    StopGameplay {
+        reply: SyncSender<io::Result<()>>,
+    },
+}
+
+struct SessionControl {
+    ipc: Option<Receiver<InputDelayCall>>,
+    gameplay: Option<tokio_mpsc::UnboundedReceiver<SessionCommand>>,
 }
 
 #[derive(Debug)]
@@ -82,6 +102,92 @@ pub(super) struct RelayRoomHandle {
 }
 
 type ActiveRelayInbound = Option<(u64, TokioSender<InboundGamePacket>)>;
+type ActiveHookOutbound = Option<(u64, TokioSender<tractor_beam_hook_ipc::GamePacket>)>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AttachmentSend {
+    Delivered,
+    Detached,
+    Full,
+}
+
+#[derive(Clone, Debug)]
+struct HookOutboundSlot {
+    sender: Arc<Mutex<ActiveHookOutbound>>,
+    next_generation: Arc<AtomicU64>,
+}
+
+impl HookOutboundSlot {
+    fn new() -> Self {
+        Self {
+            sender: Arc::new(Mutex::new(None)),
+            next_generation: Arc::new(AtomicU64::new(1)),
+        }
+    }
+
+    fn attach(&self) -> io::Result<HookOutboundAttachment> {
+        let mut current = self
+            .sender
+            .lock()
+            .expect("Hook outbound slot lock poisoned");
+        if current.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "Gameplay is already attached to the Native Hook",
+            ));
+        }
+        let (sender, receiver) = tokio_mpsc::channel(PACKET_QUEUE_CAPACITY);
+        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
+        *current = Some((generation, sender));
+        Ok(HookOutboundAttachment {
+            receiver: Some(receiver),
+            slot: self.clone(),
+            generation,
+        })
+    }
+
+    fn detach(&self, generation: u64) {
+        let mut current = self
+            .sender
+            .lock()
+            .expect("Hook outbound slot lock poisoned");
+        if current
+            .as_ref()
+            .is_some_and(|(active, _)| *active == generation)
+        {
+            *current = None;
+        }
+    }
+
+    fn try_send(&self, packet: tractor_beam_hook_ipc::GamePacket) -> AttachmentSend {
+        let sender = self
+            .sender
+            .lock()
+            .expect("Hook outbound slot lock poisoned")
+            .as_ref()
+            .map(|(_, sender)| sender.clone());
+        sender.map_or(AttachmentSend::Detached, |sender| {
+            if sender.try_send(packet).is_ok() {
+                AttachmentSend::Delivered
+            } else {
+                AttachmentSend::Full
+            }
+        })
+    }
+}
+
+#[derive(Debug)]
+struct HookOutboundAttachment {
+    receiver: Option<TokioReceiver<tractor_beam_hook_ipc::GamePacket>>,
+    slot: HookOutboundSlot,
+    generation: u64,
+}
+
+impl Drop for HookOutboundAttachment {
+    fn drop(&mut self) {
+        self.slot.detach(self.generation);
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(super) struct RelayInboundSlot {
@@ -126,14 +232,20 @@ impl RelayInboundSlot {
         }
     }
 
-    fn try_send(&self, packet: InboundGamePacket) -> bool {
+    fn try_send(&self, packet: InboundGamePacket) -> AttachmentSend {
         let sender = self
             .sender
             .lock()
             .expect("Relay inbound slot lock poisoned")
             .as_ref()
             .map(|(_, sender)| sender.clone());
-        sender.is_none_or(|sender| sender.try_send(packet).is_ok())
+        sender.map_or(AttachmentSend::Detached, |sender| {
+            if sender.try_send(packet).is_ok() {
+                AttachmentSend::Delivered
+            } else {
+                AttachmentSend::Full
+            }
+        })
     }
 }
 
@@ -143,9 +255,15 @@ pub(super) enum RelayInboundTarget {
 }
 
 impl RelayInboundTarget {
-    pub(super) fn try_send(&self, packet: InboundGamePacket) -> bool {
+    pub(super) fn try_send(&self, packet: InboundGamePacket) -> AttachmentSend {
         match self {
-            Self::Fixed(sender) => sender.try_send(packet).is_ok(),
+            Self::Fixed(sender) => {
+                if sender.try_send(packet).is_ok() {
+                    AttachmentSend::Delivered
+                } else {
+                    AttachmentSend::Full
+                }
+            }
             Self::Room(slot) => slot.try_send(packet),
         }
     }
@@ -277,12 +395,20 @@ impl SessionNativeHook {
 }
 
 struct RuntimeTasks {
-    /// Route-wide tasks only. Route adapters own pair-local tasks and absorb a single pair's
-    /// failure instead of surfacing it as a session-wide exit here.
-    route: JoinSet<io::Result<()>>,
+    route: Option<RouteTasks>,
     support: JoinSet<io::Result<()>>,
+    hook_outbound: Option<HookOutboundSlot>,
+    to_hook: Option<hook_ipc::ClientIpcSender>,
+}
+
+struct RouteTasks {
+    /// Route-wide tasks only. Route adapters own pair-local tasks and absorb a single pair's
+    /// failure instead of surfacing it as a gameplay-wide exit here.
+    tasks: JoinSet<io::Result<()>>,
+    cancellation: CancellationToken,
     health: Option<SharedSessionHealth>,
     direct_monitor: Option<crate::client::lan::LanDataPlaneMonitor>,
+    _hook_outbound: Option<HookOutboundAttachment>,
     _relay_data_plane: Option<RelayRoomDataPlane>,
     _lan_data_plane: Option<crate::client::lan::LanDataPlaneAttachment>,
 }
@@ -349,11 +475,18 @@ fn spawn_bridge_worker_handle(
     native_hook: Option<SessionNativeHook>,
     relay_data_plane: Option<RelayRoomDataPlane>,
 ) -> (SessionHandle, Receiver<io::Result<()>>) {
+    let mode = config.mode;
     let cancellation = CancellationToken::new();
     let (event_tx, event_rx) = mpsc::channel();
     let (startup_tx, startup_rx) = mpsc::sync_channel(1);
     let (ipc_control, ipc_control_rx) = if native_hook.is_some() {
         let (sender, receiver) = hook_ipc::control_channel();
+        (Some(sender), Some(receiver))
+    } else {
+        (None, None)
+    };
+    let (commands, command_rx) = if native_hook.is_some() {
+        let (sender, receiver) = tokio_mpsc::unbounded_channel();
         (Some(sender), Some(receiver))
     } else {
         (None, None)
@@ -398,7 +531,10 @@ fn spawn_bridge_worker_handle(
         runtime.block_on(supervise_session(
             config,
             native_hook,
-            ipc_control_rx,
+            SessionControl {
+                ipc: ipc_control_rx,
+                gameplay: command_rx,
+            },
             worker_cancellation,
             event_tx,
             startup_tx,
@@ -412,6 +548,8 @@ fn spawn_bridge_worker_handle(
             cancellation,
             events: event_rx,
             ipc_control,
+            commands,
+            mode,
             worker: Some(worker),
         },
         startup_rx,
@@ -419,6 +557,66 @@ fn spawn_bridge_worker_handle(
 }
 
 impl SessionHandle {
+    pub(super) fn is_reusable_for(&self, mode: SessionMode) -> bool {
+        self.commands.is_some() && self.mode == mode
+    }
+
+    pub(super) fn is_persistent(&self) -> bool {
+        self.commands.is_some()
+    }
+
+    pub(super) fn start_gameplay(
+        &self,
+        config: SessionConfig,
+        relay_data_plane: Option<RelayRoomDataPlane>,
+    ) -> io::Result<()> {
+        if config.mode != self.mode {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Native Hook mode cannot change while Isaac is running",
+            ));
+        }
+        let commands = self.commands.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "This gameplay runtime cannot be reattached",
+            )
+        })?;
+        let (reply, response) = mpsc::sync_channel(1);
+        commands
+            .send(SessionCommand::StartGameplay {
+                config: Box::new(config),
+                relay_data_plane,
+                reply,
+            })
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Hook runtime has stopped"))?;
+        response.recv_timeout(COMMAND_TIMEOUT).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("Gameplay attach did not finish: {error}"),
+            )
+        })?
+    }
+
+    pub(super) fn stop_gameplay(&self) -> io::Result<()> {
+        let commands = self.commands.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "This gameplay runtime cannot be detached",
+            )
+        })?;
+        let (reply, response) = mpsc::sync_channel(1);
+        commands
+            .send(SessionCommand::StopGameplay { reply })
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Hook runtime has stopped"))?;
+        response.recv_timeout(COMMAND_TIMEOUT).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("Gameplay detach did not finish: {error}"),
+            )
+        })?
+    }
+
     pub(super) fn request_input_delay(
         &self,
         id: u32,
@@ -453,6 +651,23 @@ impl SessionHandle {
             cancellation: CancellationToken::new(),
             events: event_rx,
             ipc_control: None,
+            commands: None,
+            mode: SessionMode::Official,
+            worker: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_test_persistent_runtime(mode: SessionMode) -> Self {
+        let (commands, command_rx) = tokio_mpsc::unbounded_channel();
+        drop(command_rx);
+        let (_event_tx, events) = mpsc::channel();
+        Self {
+            cancellation: CancellationToken::new(),
+            events,
+            ipc_control: None,
+            commands: Some(commands),
+            mode,
             worker: None,
         }
     }

@@ -175,6 +175,13 @@ impl BridgeApp {
         let lan_direct = self.route == RouteChoice::LanDirect;
         let room_active = self.application_snapshot.room_active();
         let running = self.client_state().status == SessionStatus::Running;
+        let hook_ready = self.client_state().hook_runtime_active
+            && self.client_state().hook_startup.phase == HookStartupPhase::Ready;
+        let start_label = if hook_ready {
+            t!("start.reconnect")
+        } else {
+            t!("start")
+        };
         let mutation_enabled = self.mutations_enabled();
         let join_code_label = if lan_direct {
             t!("lan.join_code")
@@ -239,8 +246,11 @@ impl BridgeApp {
             }
             if ui
                 .add_enabled(
-                    room_active && !running && mutation_enabled,
-                    egui::Button::new(t!("start")),
+                    room_active
+                        && !running
+                        && mutation_enabled
+                        && (!self.client_state().hook_runtime_active || hook_ready),
+                    egui::Button::new(start_label),
                 )
                 .clicked()
             {
@@ -465,10 +475,12 @@ impl BridgeApp {
             ui.add_space(12.0);
             label_with_help(ui, mode_label, t!("help.mode"));
             let mode_before = self.mode;
-            ui.vertical(|ui| {
-                ui.radio_value(&mut self.mode, SessionMode::Official, official);
-                ui.radio_value(&mut self.mode, SessionMode::Fallback, fallback);
-                ui.radio_value(&mut self.mode, SessionMode::Pure, pure);
+            ui.add_enabled_ui(!self.client_state().hook_runtime_active, |ui| {
+                ui.vertical(|ui| {
+                    ui.radio_value(&mut self.mode, SessionMode::Official, official);
+                    ui.radio_value(&mut self.mode, SessionMode::Fallback, fallback);
+                    ui.radio_value(&mut self.mode, SessionMode::Pure, pure);
+                });
             });
             if self.mode != mode_before {
                 self.persist_selection();

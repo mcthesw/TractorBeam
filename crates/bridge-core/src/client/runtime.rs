@@ -192,9 +192,15 @@ impl BridgeClient {
                         self.state.last_stop_reason = Some(reason.clone());
                     }
                 }
+                state::RuntimeEvent::GameplayStopped => {
+                    self.state.status = state::SessionStatus::Idle;
+                    self.state.active_session_mode = None;
+                    self.active_log_context = None;
+                }
                 state::RuntimeEvent::Stopped => {
                     self.state.status = state::SessionStatus::Idle;
                     self.state.active_session_mode = None;
+                    self.state.hook_runtime_active = false;
                     self.active_log_context = None;
                     should_clear = true;
                 }
@@ -313,29 +319,76 @@ impl BridgeClient {
             },
             SessionRouteConfig::LanDirect(_) => ClientSessionLogRoute::LanDirect,
         };
+        if self
+            .session
+            .as_ref()
+            .is_some_and(session::SessionHandle::is_persistent)
+        {
+            if self.state.hook_startup.phase != state::HookStartupPhase::Ready {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "Native Hook is still starting",
+                )
+                .into());
+            }
+            if self.state.status != state::SessionStatus::Idle {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "Gameplay is already running",
+                )
+                .into());
+            }
+            if !self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.is_reusable_for(config.mode))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Fully exit Isaac before switching between Fallback and Pure mode",
+                )
+                .into());
+            }
+
+            let relay_data_plane = if matches!(config.route, SessionRouteConfig::ExternalRelay(_)) {
+                self.relay_room
+                    .as_ref()
+                    .map(session::RelayRoomHandle::attach)
+                    .transpose()?
+            } else {
+                None
+            };
+            self.prepare_gameplay_start(log_route, config.mode);
+            let result = self
+                .session
+                .as_ref()
+                .expect("persistent session was checked above")
+                .start_gameplay(config.clone(), relay_data_plane);
+            if let Err(error) = result {
+                self.active_log_context = None;
+                return Err(error.into());
+            }
+
+            self.state.status = state::SessionStatus::Running;
+            self.state.active_session_mode = Some(config.mode);
+            self.log(
+                LogLevel::Info,
+                format!(
+                    "Reconnected {} gameplay without restarting Isaac",
+                    config.mode
+                ),
+            );
+            self.log_session_route(config);
+            return Ok(());
+        }
+
         self.stop_session();
-        self.state.last_stop_reason = None;
-        self.state.latest_hook_receive_probe = None;
-        self.state.latest_hook_receive_probe_error = None;
-        self.state.latest_session_health = None;
-        self.state.latest_session_health_summary = None;
-        self.state.smoothness = super::SmoothnessSnapshot::default();
-        self.state.latest_input_delay_status = None;
-        self.state.active_session_mode = None;
+        self.prepare_gameplay_start(log_route, config.mode);
         self.state.hook_launch_parameters_path_written = None;
         self.state.hook_launch_parameters_cleanup = None;
         self.state.hook_startup = state::HookStartupState::default();
         self.state.hook_ipc = state::HookIpcState::default();
-        self.state.client_incidents.clear();
-        if self.relay_room.is_none() {
-            self.state.room_peers.clear();
-            self.state.room_path_quality.clear();
-            self.state.relay_link = state::RelayLinkState::Inactive;
-        }
-        self.active_log_context = Some(ClientSessionLogContext {
-            route: log_route,
-            mode: config.mode,
-        });
+        self.state.hook_runtime_active = false;
 
         let native_hook = if config.mode != SessionMode::Official {
             let preexisting_processes = tractor_beam_isaac_injector::find_isaac_processes();
@@ -425,21 +478,9 @@ impl BridgeClient {
         self.session = Some(session);
         self.state.status = state::SessionStatus::Running;
         self.state.active_session_mode = Some(config.mode);
+        self.state.hook_runtime_active = config.mode != SessionMode::Official;
         self.log(LogLevel::Info, format!("Starting {} session", config.mode));
-        if config.mode != SessionMode::Official {
-            match &config.route {
-                SessionRouteConfig::ExternalRelay(route) => {
-                    if let Some(name) = &route.relay_name {
-                        self.log(LogLevel::Info, format!("Relay preset: {name}"));
-                    }
-                    self.log(LogLevel::Info, format!("Relay endpoint: {}", route.relay));
-                    self.log(LogLevel::Info, format!("Transport: {}", route.transport));
-                }
-                SessionRouteConfig::LanDirect(_) => {
-                    self.log(LogLevel::Info, "Session route: direct LAN");
-                }
-            }
-        }
+        self.log_session_route(config);
         self.log(
             LogLevel::Info,
             format!("Steam launch URI: {}", crate::steam::isaac_launch_uri()),
@@ -448,6 +489,41 @@ impl BridgeClient {
     }
 
     pub fn stop_session(&mut self) {
+        if self.state.hook_startup.phase == state::HookStartupPhase::Ready
+            && self
+                .session
+                .as_ref()
+                .is_some_and(session::SessionHandle::is_persistent)
+        {
+            let result = self
+                .session
+                .as_ref()
+                .expect("persistent session was checked above")
+                .stop_gameplay();
+            self.poll_events();
+            if let Err(error) = result {
+                self.log(
+                    LogLevel::Error,
+                    format!("Could not detach gameplay from Native Hook: {error}"),
+                );
+                self.stop_session_runtime("gameplay detach failed");
+            } else {
+                if self.state.last_stop_reason.is_none() {
+                    self.state.last_stop_reason = Some(state::SessionStopReason::UserStopped);
+                }
+                self.state.status = state::SessionStatus::Idle;
+                self.state.active_session_mode = None;
+                self.active_log_context = None;
+                if self.session.is_some() {
+                    self.log(
+                        LogLevel::Info,
+                        "Gameplay stopped; Native Hook remains ready",
+                    );
+                }
+            }
+            return;
+        }
+
         if let Some(handle) = self.session.take() {
             self.apply_stopped_session_events(handle.stop());
             if self.state.last_stop_reason.is_none() {
@@ -457,12 +533,16 @@ impl BridgeClient {
         }
         self.state.status = state::SessionStatus::Idle;
         self.state.active_session_mode = None;
+        self.state.hook_runtime_active = false;
         self.active_log_context = None;
         self.log(LogLevel::Info, "Session stopped");
     }
 
     pub fn shutdown(&mut self) {
-        self.stop_session();
+        if self.state.last_stop_reason.is_none() && self.session.is_some() {
+            self.state.last_stop_reason = Some(state::SessionStopReason::UserStopped);
+        }
+        self.stop_session_runtime("client shutdown");
         self.leave_relay_room();
         if let Some(handle) = self.readiness_probe.take() {
             handle.finish();

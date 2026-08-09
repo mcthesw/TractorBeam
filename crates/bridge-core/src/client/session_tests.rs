@@ -31,6 +31,36 @@ fn relay_room_data_plane_can_be_reattached_after_drop() {
     assert!(slot.attach(second_tx).is_ok());
 }
 
+#[tokio::test]
+async fn hook_packets_are_not_replayed_across_gameplay_attachments() {
+    let slot = HookOutboundSlot::new();
+    let mut first = slot.attach().unwrap();
+    let mut first_rx = first.receiver.take().unwrap();
+    let first_packet = hook_packet(1);
+    assert_eq!(
+        slot.try_send(first_packet.clone()),
+        AttachmentSend::Delivered
+    );
+    assert_eq!(first_rx.recv().await, Some(first_packet));
+    drop(first);
+
+    assert_eq!(slot.try_send(hook_packet(2)), AttachmentSend::Detached);
+
+    let mut second = slot.attach().unwrap();
+    let mut second_rx = second.receiver.take().unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), second_rx.recv())
+            .await
+            .is_err()
+    );
+    let third_packet = hook_packet(3);
+    assert_eq!(
+        slot.try_send(third_packet.clone()),
+        AttachmentSend::Delivered
+    );
+    assert_eq!(second_rx.recv().await, Some(third_packet));
+}
+
 #[test]
 fn session_start_reports_relay_join_timeout() {
     let _guard = SESSION_TEST_LOCK
@@ -69,6 +99,23 @@ fn session_start_reports_initial_room_peers() {
     });
 
     assert!(event.is_some());
+    handle.stop();
+    relay.stop();
+}
+
+#[test]
+fn gameplay_route_can_be_reattached_to_the_same_hook_runtime() {
+    let _guard = SESSION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = TestRelay::spawn();
+    let config = test_session_config(relay.address.port());
+    let handle = spawn_bridge_worker(config.clone(), test_native_hook_paths()).unwrap();
+
+    handle.stop_gameplay().unwrap();
+    assert!(handle.is_reusable_for(config.mode));
+    handle.start_gameplay(config, None).unwrap();
+
     handle.stop();
     relay.stop();
 }
@@ -130,9 +177,10 @@ async fn official_mode_owns_a_cancellable_process_lifecycle_task() {
         .await
         .expect("Official lifecycle should start without Hook or Relay sockets");
 
-    assert!(tasks.route.is_empty());
+    assert!(tasks.route.is_none());
     assert_eq!(tasks.support.len(), 1);
-    assert!(tasks.health.is_none());
+    assert!(tasks.hook_outbound.is_none());
+    assert!(tasks.to_hook.is_none());
     cancellation.cancel();
     shutdown_tasks(tasks.support, &event_tx).await;
 }
@@ -203,7 +251,7 @@ async fn lan_mode_attaches_existing_room_without_relay() {
     let cancellation = CancellationToken::new();
     let (event_tx, mut event_rx) = tokio_mpsc::channel(EVENT_QUEUE_CAPACITY);
     let (_control, control_rx) = hook_ipc::control_channel();
-    let tasks = start_runtime_tasks_inner(
+    let mut tasks = start_runtime_tasks_inner(
         &config,
         Some(SessionNativeHook::new(
             test_native_hook_paths(),
@@ -218,7 +266,7 @@ async fn lan_mode_attaches_existing_room_without_relay() {
     .await
     .unwrap();
 
-    assert!(!tasks.route.is_empty());
+    assert!(tasks.route.is_some());
     let health_snapshot = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if let Some(RuntimeEvent::SessionHealthSnapshot(snapshot)) = event_rx.recv().await {
@@ -233,9 +281,19 @@ async fn lan_mode_attaches_existing_room_without_relay() {
     assert_eq!(health_snapshot.direct.send.resolved_outcomes(), 0);
     assert_eq!(health_snapshot.direct.receive.resolved_outcomes(), 0);
     cancellation.cancel();
-    shutdown_tasks(tasks.route, &event_tx).await;
+    stop_route_tasks(tasks.route.take().unwrap(), &event_tx).await;
     shutdown_tasks(tasks.support, &event_tx).await;
     room.stop().await;
+}
+
+fn hook_packet(sequence: u32) -> tractor_beam_hook_ipc::GamePacket {
+    tractor_beam_hook_ipc::GamePacket {
+        peer: 76_561_198_000_000_002,
+        sequence,
+        channel: 0,
+        send_type: 0,
+        payload: vec![sequence as u8],
+    }
 }
 
 fn test_session_config(port: u16) -> SessionConfig {

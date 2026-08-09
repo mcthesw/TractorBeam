@@ -451,4 +451,21 @@ mod tests {
         assert_eq!(report.b_to_a_bytes, 512);
         relay.stop();
     }
+
+    #[test]
+    fn probes_local_ipv6_tcp_relay() {
+        let relay = TestRelay::spawn_ipv6();
+
+        let report = run_relay_probe(
+            RelayEndpoint::new("[::1]", relay.address.port()),
+            TransportChoice::Tcp,
+            512,
+        )
+        .unwrap();
+
+        assert_eq!(report.relay, format!("[::1]:{}", relay.address.port()));
+        assert_eq!(report.a_to_b_bytes, 512);
+        assert_eq!(report.b_to_a_bytes, 512);
+        relay.stop();
+    }
 }

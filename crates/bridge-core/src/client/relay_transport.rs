@@ -1,4 +1,9 @@
-use std::{io, sync::Arc, time::Duration};
+use std::{
+    io,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    sync::Arc,
+    time::Duration,
+};
 
 use bytes::Bytes;
 use futures_util::{
@@ -67,16 +72,17 @@ impl RelayTransport {
         git_hash: Option<&str>,
         steam_id64: u64,
     ) -> io::Result<Self> {
-        let mut stream = TcpStream::connect(endpoint.to_string()).await?;
+        let mut stream = TcpStream::connect((endpoint.host.as_str(), endpoint.port)).await?;
         stream.set_nodelay(true)?;
         let enabled_capabilities = negotiate(&mut stream, choice, client_version, git_hash).await?;
+        let relay_address = stream.peer_addr()?;
         let codec = LengthDelimitedCodec::builder()
             .max_frame_length(MAX_RELAY_DATAGRAM_SIZE)
             .new_codec();
         let (tcp_sender, tcp_receiver) = Framed::new(stream, codec).split();
         let udp = if choice == TransportChoice::Udp {
-            let socket = UdpSocket::bind("0.0.0.0:0").await?;
-            socket.connect(endpoint.to_string()).await?;
+            let socket = UdpSocket::bind(udp_bind_address(relay_address)).await?;
+            socket.connect(relay_address).await?;
             Some(Arc::new(socket))
         } else {
             None
@@ -222,6 +228,15 @@ impl RelayTransport {
         *self = replacement;
         Ok(recovery)
     }
+}
+
+fn udp_bind_address(relay_address: SocketAddr) -> SocketAddr {
+    let ip = if relay_address.is_ipv4() {
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+    } else {
+        IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+    };
+    SocketAddr::new(ip, 0)
 }
 
 impl RelayTransport {
@@ -487,4 +502,15 @@ fn tcp_frame(frame: Option<Result<bytes::BytesMut, io::Error>>) -> io::Result<By
         ));
     };
     frame.map(|bytes| bytes.freeze())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn udp_bind_matches_the_connected_relay_address_family() {
+        assert!(udp_bind_address("192.0.2.1:25910".parse().unwrap()).is_ipv4());
+        assert!(udp_bind_address("[2001:db8::1]:25910".parse().unwrap()).is_ipv6());
+    }
 }

@@ -115,8 +115,14 @@ pub struct RelayEndpoint {
 impl RelayEndpoint {
     #[must_use]
     pub fn new(host: impl Into<String>, port: u16) -> Self {
+        let host = host.into();
+        let host = host.trim();
+        let host = host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(host);
         Self {
-            host: host.into(),
+            host: host.to_owned(),
             port,
         }
     }
@@ -134,7 +140,11 @@ impl RelayEndpoint {
 
 impl Display for RelayEndpoint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}:{}", self.host, self.port)
+        if self.host.contains(':') {
+            write!(formatter, "[{}]:{}", self.host, self.port)
+        } else {
+            write!(formatter, "{}:{}", self.host, self.port)
+        }
     }
 }
 

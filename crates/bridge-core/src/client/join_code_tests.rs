@@ -44,6 +44,18 @@ fn round_trips_relay_v5_and_lan_v6_with_surrounding_whitespace() {
 }
 
 #[test]
+fn relay_join_code_round_trips_ipv6_literal() {
+    let JoinCode::ExternalRelay(mut relay) = relay_code(None) else {
+        panic!("fixture is Relay")
+    };
+    relay.relay_host = "2001:db8::10".to_owned();
+    let code = JoinCode::ExternalRelay(relay);
+
+    let decoded = JoinCode::decode(&code.encode().unwrap()).unwrap();
+    assert_eq!(decoded, code);
+}
+
+#[test]
 fn relay_v5_and_lan_v6_match_golden_fixtures() {
     let relay = include_str!("fixtures/join-code/relay-v5.txt").trim();
     assert_eq!(relay_code(Some("guangzhou")).encode().unwrap(), relay);

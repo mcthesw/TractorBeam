@@ -119,6 +119,14 @@ fn validates_relay_endpoint() {
 }
 
 #[test]
+fn normalizes_and_formats_ipv6_relay_endpoints() {
+    let endpoint = RelayEndpoint::new(" [2001:db8::1] ", 25_910);
+
+    assert_eq!(endpoint.host, "2001:db8::1");
+    assert_eq!(endpoint.to_string(), "[2001:db8::1]:25910");
+}
+
+#[test]
 fn validates_session_config() {
     let config = SessionConfig {
         route: SessionRouteConfig::ExternalRelay(ExternalRelayConfig {

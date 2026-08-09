@@ -36,6 +36,23 @@ default_transport = "tcp"
 }
 
 #[test]
+fn parses_ipv6_relay_preset() {
+    let raw = r#"
+[[relays]]
+id = "ipv6"
+name = "IPv6 relay"
+host = "[2001:db8::10]"
+port = 25910
+"#;
+
+    let config: ClientConfig = toml::from_str::<RawClientConfig>(raw)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_eq!(config.relays[0].endpoint.host, "2001:db8::10");
+}
+
+#[test]
 fn rejects_invalid_session_health_interval() {
     let raw = "[session_health]\nenabled = true\nsnapshot_interval_seconds = 0\n";
     let error =

@@ -34,6 +34,13 @@ TCP cannot be disabled in v3. A Relay without UDP accepts only Clients whose
 required capabilities allow the TCP data profile. Listener, packet-size, queue,
 Room, traffic, and admission values are validated at startup.
 
+The Bridge Client accepts Relay hostnames, IPv4 literals, and IPv6 literals
+with or without brackets. TCP resolution selects the concrete Relay address;
+the UDP data profile then uses that same address and address family. To expose
+an IPv6 listener, use `[::]:25910` for both bind fields. Whether an IPv6
+wildcard also accepts IPv4 is operating-system dependent, so deployment must
+still verify the intended IPv4/IPv6 listener and firewall state.
+
 ## Session lifecycle
 
 The Client first performs the bounded compatibility bootstrap, then Join with a

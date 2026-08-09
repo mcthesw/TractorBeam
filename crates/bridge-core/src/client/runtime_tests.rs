@@ -535,11 +535,25 @@ fn reliable_game_exit_completion_returns_client_to_idle() {
     client.state.status = state::SessionStatus::Running;
     client.state.active_session_mode = Some(SessionMode::Pure);
     client.state.hook_runtime_active = true;
+    client.state.hook_startup = state::HookStartupState {
+        phase: state::HookStartupPhase::Ready,
+        injected: true,
+        endpoint_ready: true,
+        pid: Some(42),
+        ..state::HookStartupState::default()
+    };
+    client.state.hook_ipc.connection = state::HookIpcConnectionState::Connected;
+    client.state.hook_ipc.installation = state::HookInstallState::Ready;
     client.session = Some(session::SessionHandle::with_test_events(vec![
         state::RuntimeEvent::SessionEnded(state::SessionStopReason::GameExited {
             process_name: "isaac-ng.exe".to_owned(),
             pid: 42,
         }),
+        state::RuntimeEvent::HookIpc(Box::new(state::HookIpcState {
+            connection: state::HookIpcConnectionState::Reconnecting,
+            installation: state::HookInstallState::Pending,
+            ..state::HookIpcState::default()
+        })),
         state::RuntimeEvent::SessionEnded(state::SessionStopReason::RuntimeEnded {
             message: "later task exit".to_owned(),
         }),
@@ -551,6 +565,11 @@ fn reliable_game_exit_completion_returns_client_to_idle() {
     assert_eq!(client.state.active_session_mode, None);
     assert!(!client.state.hook_runtime_active);
     assert!(client.session.is_none());
+    assert_eq!(
+        client.state.hook_startup.phase,
+        state::HookStartupPhase::NotStarted
+    );
+    assert_eq!(client.state.hook_ipc, state::HookIpcState::default());
     assert_eq!(
         client.state.last_stop_reason,
         Some(state::SessionStopReason::GameExited {

@@ -63,9 +63,9 @@ pub use session_health::{
 };
 pub use smoothness::{SmoothnessReason, SmoothnessSnapshot};
 pub use state::{
-    ClientIncidentKind, ClientIncidentSnapshot, Counters, HookIpcConnectionState, HookIpcState,
-    HookStartupPhase, HookStartupState, LogEntry, LogLevel, RelayLinkState, RuntimeState,
-    SessionStatus, SessionStopReason,
+    ClientIncidentKind, ClientIncidentSnapshot, Counters, HookInstallState, HookIpcConnectionState,
+    HookIpcState, HookStartupPhase, HookStartupState, LogEntry, LogLevel, RelayLinkState,
+    RuntimeState, SessionStatus, SessionStopReason,
 };
 
 pub const PRODUCT_NAME: &str = "Tractor Beam";

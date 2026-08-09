@@ -290,6 +290,46 @@ fn terminal_hook_ipc_failure_replaces_waiting_startup_state() {
 }
 
 #[test]
+fn hook_ready_requires_installation_confirmation() {
+    let mut client = BridgeClient::new();
+    client.state.hook_startup = state::HookStartupState {
+        phase: state::HookStartupPhase::WaitingForHookEndpoint,
+        injected: true,
+        ..state::HookStartupState::default()
+    };
+
+    client.apply_hook_ipc_state(state::HookIpcState {
+        connection: state::HookIpcConnectionState::Connected,
+        ..state::HookIpcState::default()
+    });
+    assert_eq!(
+        client.state.hook_startup.phase,
+        state::HookStartupPhase::EndpointReady
+    );
+
+    client.apply_hook_ipc_state(state::HookIpcState {
+        connection: state::HookIpcConnectionState::Connected,
+        installation: state::HookInstallState::Ready,
+        ..state::HookIpcState::default()
+    });
+    assert_eq!(
+        client.state.hook_startup.phase,
+        state::HookStartupPhase::Ready
+    );
+
+    client.apply_hook_ipc_state(state::HookIpcState {
+        connection: state::HookIpcConnectionState::Failed,
+        installation: state::HookInstallState::Failed,
+        last_error: Some("Steam networking hook installation failed".to_owned()),
+        ..state::HookIpcState::default()
+    });
+    assert_eq!(
+        client.state.hook_startup.message.as_deref(),
+        Some("Steam networking hook installation failed")
+    );
+}
+
+#[test]
 fn hook_ipc_failure_does_not_replace_a_specific_startup_failure() {
     let mut client = BridgeClient::new();
     client.state.hook_startup = state::HookStartupState {

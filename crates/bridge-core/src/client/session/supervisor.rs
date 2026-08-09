@@ -152,6 +152,7 @@ pub(super) async fn start_runtime_tasks_inner(
             Vec::new(),
             event_tx.clone(),
             cancellation.clone(),
+            None,
         ));
         return Ok(RuntimeTasks {
             route: JoinSet::new(),
@@ -165,6 +166,7 @@ pub(super) async fn start_runtime_tasks_inner(
 
     let native_hook = native_hook.expect("Native Hook presence was validated above");
     let preexisting_processes = native_hook.preexisting_processes;
+    let ready_deadline = native_hook.ipc.ready_deadline();
     let ipc_control_rx = ipc_control_rx.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -185,6 +187,7 @@ pub(super) async fn start_runtime_tasks_inner(
         preexisting_processes,
         event_tx.clone(),
         cancellation.clone(),
+        Some(ready_deadline),
     ));
     let health = config.session_health.enabled.then(|| {
         Arc::new(Mutex::new(SessionHealth::new(

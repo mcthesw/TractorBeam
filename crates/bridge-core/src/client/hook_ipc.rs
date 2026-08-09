@@ -5,8 +5,8 @@ use std::{
     mem,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream},
     sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
+        Arc, OnceLock,
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     },
     thread,
@@ -17,13 +17,13 @@ use rand::RngExt as _;
 use tokio::sync::mpsc::{Receiver as TokioReceiver, Sender as TokioSender};
 use tokio_util::sync::CancellationToken;
 use tractor_beam_hook_ipc::{
-    ClientToHook, ErrorCode, FrameDecoder, GamePacket, Handshake, HookToClient, InputDelayCommand,
-    PeerRole, ProtocolError, SessionId,
+    ClientToHook, ErrorCode, FrameDecoder, GamePacket, Handshake, HookStartupFailure,
+    HookStartupStatus, HookToClient, InputDelayCommand, PeerRole, ProtocolError, SessionId,
 };
 
 use super::state::{
-    HookIpcConnectionState, HookIpcState, LogLevel, RuntimeEvent, RuntimeEventSender, log_event,
-    send_event, unix_seconds,
+    HookInstallState, HookIpcConnectionState, HookIpcState, LogLevel, RuntimeEvent,
+    RuntimeEventSender, log_event, send_event, unix_seconds,
 };
 
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(20);
@@ -60,6 +60,35 @@ pub(super) struct HookIpcSession {
     pub(super) endpoint: SocketAddr,
     pub(super) session_id: SessionId,
     listener: Arc<TcpListener>,
+    ready_deadline: HookReadyDeadline,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct HookReadyDeadline {
+    started: Arc<OnceLock<Instant>>,
+    ready: Arc<AtomicBool>,
+}
+
+impl HookReadyDeadline {
+    pub(super) fn arm(&self) {
+        let _ = self.started.set(Instant::now());
+    }
+
+    fn complete(&self) {
+        self.ready.store(true, Ordering::Release);
+    }
+
+    fn is_armed(&self) -> bool {
+        self.started.get().is_some()
+    }
+
+    fn expired(&self, timeout: Duration) -> bool {
+        !self.ready.load(Ordering::Acquire)
+            && self
+                .started
+                .get()
+                .is_some_and(|started| started.elapsed() >= timeout)
+    }
 }
 
 impl HookIpcSession {
@@ -78,6 +107,7 @@ impl HookIpcSession {
             endpoint,
             session_id,
             listener: Arc::new(listener),
+            ready_deadline: HookReadyDeadline::default(),
         })
     }
 
@@ -93,6 +123,10 @@ impl HookIpcSession {
         );
         let session_id = SessionId::new(bytes);
         Self::bind_with_session(session_id).expect("test loopback listener binds")
+    }
+
+    pub(super) fn ready_deadline(&self) -> HookReadyDeadline {
+        self.ready_deadline.clone()
     }
 }
 
@@ -121,6 +155,7 @@ struct ListenerContext {
     client_dropped: Arc<AtomicU64>,
     event_tx: RuntimeEventSender,
     cancellation: CancellationToken,
+    ready_deadline: HookReadyDeadline,
     settings: ListenerSettings,
 }
 
@@ -131,6 +166,8 @@ struct ConnectionContext<'a> {
     client_dropped: &'a Arc<AtomicU64>,
     event_tx: &'a RuntimeEventSender,
     cancellation: &'a CancellationToken,
+    ready_deadline: &'a HookReadyDeadline,
+    ready_timeout: Duration,
 }
 
 impl ClientIpcSender {
@@ -244,6 +281,7 @@ fn start_with_settings(
                     client_dropped,
                     event_tx,
                     cancellation,
+                    ready_deadline: session.ready_deadline,
                     settings,
                 },
             )
@@ -263,6 +301,7 @@ fn run_listener(listener: Arc<TcpListener>, context: ListenerContext) -> io::Res
         client_dropped,
         event_tx,
         cancellation,
+        ready_deadline,
         settings,
     } = context;
     let started = Instant::now();
@@ -279,7 +318,7 @@ fn run_listener(listener: Arc<TcpListener>, context: ListenerContext) -> io::Res
         let expired = if connected_once {
             disconnected_at.elapsed() >= settings.reconnect_timeout
         } else {
-            started.elapsed() >= settings.initial_connect_timeout
+            ready_deadline.expired(settings.initial_connect_timeout)
         };
         if expired {
             let stage = if connected_once {
@@ -364,6 +403,8 @@ fn run_listener(listener: Arc<TcpListener>, context: ListenerContext) -> io::Res
                     client_dropped: &client_dropped,
                     event_tx: &event_tx,
                     cancellation: &cancellation,
+                    ready_deadline: &ready_deadline,
+                    ready_timeout: settings.initial_connect_timeout,
                 };
                 match run_connection(
                     &mut stream,
@@ -373,6 +414,11 @@ fn run_listener(listener: Arc<TcpListener>, context: ListenerContext) -> io::Res
                     pending_messages,
                 ) {
                     Ok(ConnectionEnd::Shutdown) => return Ok(()),
+                    Ok(ConnectionEnd::StartupFailed(message)) => {
+                        publish_startup_failure(&event_tx, &message);
+                        reject_pending_controls(&control_rx);
+                        return Err(io::Error::other(message));
+                    }
                     Ok(ConnectionEnd::Disconnected) => {
                         disconnected_at = Instant::now();
                         drain_data(&to_hook_rx, &client_dropped);

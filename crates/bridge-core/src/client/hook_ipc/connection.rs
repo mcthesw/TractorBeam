@@ -63,7 +63,7 @@ pub(super) fn server_handshake(
             Ok(messages) => {
                 let mut messages = messages.into_iter();
                 if let Some(message) = messages.next() {
-                    if message == HookToClient::Ready {
+                    if message == HookToClient::EndpointReady {
                         return Ok((negotiated, decoder, messages.collect()));
                     }
                     return Err(ServerHandshakeError::Terminal(protocol_io(
@@ -85,6 +85,7 @@ pub(super) enum ServerHandshakeError {
 pub(super) enum ConnectionEnd {
     Shutdown,
     Disconnected,
+    StartupFailed(String),
 }
 
 pub(super) fn run_connection(
@@ -133,6 +134,8 @@ pub(super) fn run_connection(
     let mut next_ping_at = Instant::now() + LIVENESS_PING_INTERVAL;
     let mut pending_ping = None::<(u32, Instant)>;
     let mut next_ping_id = 1_u32;
+    let mut installation = HookInstallState::Pending;
+    let mut startup_failure = None::<HookStartupFailure>;
     loop {
         if context.cancellation.is_cancelled() {
             let _ = write_message(stream, &ClientToHook::Shutdown);
@@ -159,9 +162,35 @@ pub(super) fn run_connection(
         for message in messages {
             match message {
                 Ok(message) => match message {
-                    HookToClient::Handshake(_) | HookToClient::Ready => {
+                    HookToClient::Handshake(_) | HookToClient::EndpointReady => {
                         reject_pending(&mut pending);
                         return Err(protocol_io("unexpected handshake message after ready"));
+                    }
+                    HookToClient::Startup(status) => {
+                        installation = match status {
+                            HookStartupStatus::Installing => HookInstallState::Pending,
+                            HookStartupStatus::Ready => {
+                                context.ready_deadline.complete();
+                                HookInstallState::Ready
+                            }
+                            HookStartupStatus::Failed(failure) => {
+                                startup_failure = Some(failure);
+                                HookInstallState::Failed
+                            }
+                        };
+                        publish_status(
+                            context.event_tx,
+                            HookIpcState {
+                                connection: HookIpcConnectionState::Connected,
+                                installation,
+                                negotiated_major: Some(tractor_beam_hook_ipc::PROTOCOL_MAJOR),
+                                negotiated_minor: Some(tractor_beam_hook_ipc::PROTOCOL_MINOR),
+                                reconnects,
+                                last_error: startup_failure.map(hook_startup_failure_message),
+                                updated_at: unix_seconds(),
+                                ..HookIpcState::default()
+                            },
+                        );
                     }
                     HookToClient::Game(packet) => {
                         if context.from_hook_tx.try_send(packet).is_err() {
@@ -187,6 +216,7 @@ pub(super) fn run_connection(
                         context.event_tx,
                         HookIpcState {
                             connection: HookIpcConnectionState::Connected,
+                            installation,
                             negotiated_major: Some(tractor_beam_hook_ipc::PROTOCOL_MAJOR),
                             negotiated_minor: Some(tractor_beam_hook_ipc::PROTOCOL_MINOR),
                             reconnects: reconnects.max(health.reconnects),
@@ -196,8 +226,8 @@ pub(super) fn run_connection(
                                 .load(Ordering::Relaxed)
                                 .max(health.client_data_dropped),
                             malformed_frames: health.malformed_frames,
+                            last_error: startup_failure.map(hook_startup_failure_message),
                             updated_at: unix_seconds(),
-                            ..HookIpcState::default()
                         },
                     ),
                     HookToClient::Goodbye => {
@@ -214,6 +244,24 @@ pub(super) fn run_connection(
                     reject_pending(&mut pending);
                     return Err(error);
                 }
+            }
+        }
+
+        if context.ready_deadline.is_armed() {
+            if let Some(failure) = startup_failure {
+                reject_pending(&mut pending);
+                return Ok(ConnectionEnd::StartupFailed(hook_startup_failure_message(
+                    failure,
+                )));
+            }
+            if installation != HookInstallState::Ready
+                && context.ready_deadline.expired(context.ready_timeout)
+            {
+                reject_pending(&mut pending);
+                return Ok(ConnectionEnd::StartupFailed(format!(
+                    "Native Hook did not finish installing within {} seconds",
+                    context.ready_timeout.as_secs()
+                )));
             }
         }
 
@@ -347,6 +395,39 @@ pub(super) fn publish_failure(event_tx: &RuntimeEventSender, message: &str) {
             format!("Native Hook local IPC failed: {message}"),
         ),
     );
+}
+
+pub(super) fn publish_startup_failure(event_tx: &RuntimeEventSender, message: &str) {
+    publish_status(
+        event_tx,
+        HookIpcState {
+            connection: HookIpcConnectionState::Failed,
+            installation: HookInstallState::Failed,
+            last_error: Some(message.to_owned()),
+            updated_at: unix_seconds(),
+            ..HookIpcState::default()
+        },
+    );
+    send_event(
+        event_tx,
+        log_event(
+            LogLevel::Error,
+            format!("Native Hook startup failed: {message}"),
+        ),
+    );
+}
+
+fn hook_startup_failure_message(failure: HookStartupFailure) -> String {
+    match failure {
+        HookStartupFailure::SteamApiImports => {
+            "Native Hook could not install the Steam API imports; fully exit Isaac and try again"
+                .to_owned()
+        }
+        HookStartupFailure::SteamNetworkingHooks => {
+            "Native Hook could not install the Steam networking hooks; fully exit Isaac and try again"
+                .to_owned()
+        }
+    }
 }
 
 pub(super) fn publish_status(event_tx: &RuntimeEventSender, state: HookIpcState) {

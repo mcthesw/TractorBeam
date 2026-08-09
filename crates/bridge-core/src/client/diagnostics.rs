@@ -182,6 +182,7 @@ impl BridgeClient {
         output.push_str("native hook local IPC:\n");
         let ipc = &self.state.hook_ipc;
         output.push_str(&format!("connection: {}\n", ipc.connection));
+        output.push_str(&format!("installation: {}\n", ipc.installation));
         match (ipc.negotiated_major, ipc.negotiated_minor) {
             (Some(major), Some(minor)) => {
                 output.push_str(&format!("negotiated_version: {major}.{minor}\n"));

@@ -49,27 +49,27 @@ pub unsafe fn patch_imports(module: HMODULE, import_module: &str, patches: &[Imp
 
     let mut descriptor =
         unsafe { base.add(directory.VirtualAddress as usize) }.cast::<IMAGE_IMPORT_DESCRIPTOR>();
-    let mut patched_any = false;
-
     while unsafe { (*descriptor).Name } != 0 {
         let module_name = unsafe { CStr::from_ptr(base.add((*descriptor).Name as usize).cast()) };
         if module_name
             .to_string_lossy()
             .eq_ignore_ascii_case(import_module)
         {
-            patched_any |= unsafe { patch_descriptor(base, descriptor, patches) };
+            unsafe { patch_descriptor(base, descriptor, patches) };
         }
         descriptor = unsafe { descriptor.add(1) };
     }
 
-    patched_any
+    patches
+        .iter()
+        .all(|patch| !patch.original.load(Ordering::SeqCst).is_null())
 }
 
 unsafe fn patch_descriptor(
     base: *mut u8,
     descriptor: *mut IMAGE_IMPORT_DESCRIPTOR,
     patches: &[ImportPatch],
-) -> bool {
+) {
     let original_first_thunk = unsafe { (*descriptor).Anonymous.OriginalFirstThunk };
     let original_rva = if original_first_thunk == 0 {
         unsafe { (*descriptor).FirstThunk }
@@ -81,8 +81,6 @@ unsafe fn patch_descriptor(
         unsafe { base.add(original_rva as usize) }.cast::<IMAGE_THUNK_DATA32>();
     let mut thunk =
         unsafe { base.add((*descriptor).FirstThunk as usize) }.cast::<IMAGE_THUNK_DATA32>();
-    let mut patched_any = false;
-
     while unsafe { (*original_thunk).u1.AddressOfData } != 0 {
         let ordinal = unsafe { (*original_thunk).u1.Ordinal };
         if ordinal & IMAGE_ORDINAL_FLAG32 == 0 {
@@ -94,15 +92,12 @@ unsafe fn patch_descriptor(
                     unsafe {
                         patch_slot(thunk, patch);
                     }
-                    patched_any = true;
                 }
             }
         }
         original_thunk = unsafe { original_thunk.add(1) };
         thunk = unsafe { thunk.add(1) };
     }
-
-    patched_any
 }
 
 unsafe fn patch_slot(thunk: *mut IMAGE_THUNK_DATA32, patch: &ImportPatch) {

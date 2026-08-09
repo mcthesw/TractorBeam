@@ -39,12 +39,7 @@ impl BridgeClient {
                     self.refresh_smoothness();
                 }
                 state::RuntimeEvent::HookStartup(startup) => {
-                    let mut startup = *startup;
-                    if startup.launch_parameters_path.is_none() {
-                        startup.launch_parameters_path =
-                            self.state.hook_launch_parameters_path_written.clone();
-                    }
-                    self.state.hook_startup = startup;
+                    self.apply_hook_startup_state(*startup);
                 }
                 state::RuntimeEvent::HookIpc(ipc) => self.apply_hook_ipc_state(*ipc),
                 state::RuntimeEvent::SessionEnded(reason)
@@ -64,41 +59,69 @@ impl BridgeClient {
         }
     }
 
-    pub(super) fn apply_hook_ipc_state(&mut self, ipc: state::HookIpcState) {
-        if self.state.hook_startup.injected {
-            match ipc.connection {
-                state::HookIpcConnectionState::Connected
-                    if !matches!(
-                        self.state.hook_startup.phase,
-                        state::HookStartupPhase::Failed | state::HookStartupPhase::Cancelled
-                    ) =>
-                {
-                    self.state.hook_startup.phase = state::HookStartupPhase::Ready;
-                    self.state.hook_startup.endpoint_ready = true;
-                    self.state.hook_startup.message =
-                        Some("Native Hook local IPC is ready".to_owned());
-                    self.state.hook_startup.updated_at = state::unix_seconds();
-                }
-                state::HookIpcConnectionState::Failed
-                    if matches!(
-                        self.state.hook_startup.phase,
-                        state::HookStartupPhase::WaitingForHookEndpoint
-                            | state::HookStartupPhase::EndpointReady
-                            | state::HookStartupPhase::Ready
-                    ) =>
-                {
-                    self.state.hook_startup.phase = state::HookStartupPhase::Failed;
-                    self.state.hook_startup.endpoint_ready = false;
-                    self.state.hook_startup.message = Some(ipc.last_error.as_ref().map_or_else(
-                        || "Native Hook local IPC failed".to_owned(),
-                        |message| format!("Native Hook local IPC failed: {message}"),
-                    ));
-                    self.state.hook_startup.updated_at = state::unix_seconds();
-                }
-                _ => {}
-            }
+    pub(super) fn apply_hook_startup_state(&mut self, mut startup: state::HookStartupState) {
+        if startup.launch_parameters_path.is_none() {
+            startup.launch_parameters_path = self.state.hook_launch_parameters_path_written.clone();
         }
+        self.state.hook_startup = startup;
+        self.reconcile_hook_startup();
+    }
+
+    pub(super) fn apply_hook_ipc_state(&mut self, ipc: state::HookIpcState) {
         self.state.hook_ipc = ipc;
+        self.reconcile_hook_startup();
+    }
+
+    fn reconcile_hook_startup(&mut self) {
+        if !self.state.hook_startup.injected
+            || matches!(
+                self.state.hook_startup.phase,
+                state::HookStartupPhase::Failed | state::HookStartupPhase::Cancelled
+            )
+        {
+            return;
+        }
+
+        let (phase, endpoint_ready, message) = match (
+            self.state.hook_ipc.connection,
+            self.state.hook_ipc.installation,
+        ) {
+            (_, state::HookInstallState::Failed) => (
+                state::HookStartupPhase::Failed,
+                false,
+                self.state.hook_ipc.last_error.as_ref().map_or_else(
+                    || "Native Hook startup failed; fully exit Isaac and try again".to_owned(),
+                    Clone::clone,
+                ),
+            ),
+            (state::HookIpcConnectionState::Failed, _) => (
+                state::HookStartupPhase::Failed,
+                false,
+                self.state.hook_ipc.last_error.as_ref().map_or_else(
+                    || "Native Hook local IPC failed".to_owned(),
+                    |error| format!("Native Hook local IPC failed: {error}"),
+                ),
+            ),
+            (state::HookIpcConnectionState::Connected, state::HookInstallState::Ready) => (
+                state::HookStartupPhase::Ready,
+                true,
+                "Native Hook is ready".to_owned(),
+            ),
+            (state::HookIpcConnectionState::Connected, _) => (
+                state::HookStartupPhase::EndpointReady,
+                true,
+                "Native Hook connected; installing Steam networking hooks".to_owned(),
+            ),
+            _ => (
+                state::HookStartupPhase::WaitingForHookEndpoint,
+                false,
+                "Injection succeeded; waiting for Native Hook".to_owned(),
+            ),
+        };
+        self.state.hook_startup.phase = phase;
+        self.state.hook_startup.endpoint_ready = endpoint_ready;
+        self.state.hook_startup.message = Some(message);
+        self.state.hook_startup.updated_at = state::unix_seconds();
     }
 
     pub(super) fn record_hook_startup_failure(

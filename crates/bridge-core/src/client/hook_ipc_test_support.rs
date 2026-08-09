@@ -25,7 +25,12 @@ pub(super) fn connect_fake_hook(session: &HookIpcSession) -> TcpStream {
                     handshake
                         .validate(PeerRole::BridgeClient, session.session_id)
                         .unwrap();
-                    write_hook_message(&mut stream, &HookToClient::Ready).unwrap();
+                    write_hook_message(&mut stream, &HookToClient::EndpointReady).unwrap();
+                    write_hook_message(
+                        &mut stream,
+                        &HookToClient::Startup(tractor_beam_hook_ipc::HookStartupStatus::Ready),
+                    )
+                    .unwrap();
                     return stream;
                 }
                 _ => panic!("expected client handshake"),

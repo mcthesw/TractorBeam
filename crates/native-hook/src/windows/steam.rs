@@ -4,6 +4,7 @@ use std::{
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering},
 };
 
+use tractor_beam_hook_ipc::HookStartupFailure;
 use windows_sys::Win32::{
     Foundation::HMODULE,
     System::{
@@ -61,6 +62,7 @@ static ORIGINAL_AVAILABLE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 static ORIGINAL_READ: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 static ORIGINAL_SESSION_STATE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 static STEAM_NETWORKING_HOOKED: AtomicBool = AtomicBool::new(false);
+static STEAM_NETWORKING_HOOKING: AtomicBool = AtomicBool::new(false);
 static SESSION_STATE_CALLS: AtomicU32 = AtomicU32::new(0);
 static RUN_CALLBACK_CALLS: AtomicU32 = AtomicU32::new(0);
 
@@ -85,6 +87,10 @@ pub unsafe fn install_hooks() {
         !ORIGINAL_FIND_INTERFACE.load(Ordering::SeqCst).is_null(),
         !ORIGINAL_RUN_CALLBACKS.load(Ordering::SeqCst).is_null()
     ));
+    if !patched {
+        bridge::report_hook_failure(HookStartupFailure::SteamApiImports);
+        return;
+    }
     unsafe {
         install_existing_steam_networking_interface(steam_module);
     }
@@ -130,44 +136,51 @@ unsafe extern "C" fn hook_run_callbacks() {
 }
 
 unsafe fn install_steam_networking_hooks(interface: *mut c_void) {
-    if interface.is_null() || STEAM_NETWORKING_HOOKED.swap(true, Ordering::SeqCst) {
+    if interface.is_null() || STEAM_NETWORKING_HOOKED.load(Ordering::SeqCst) {
+        return;
+    }
+    if STEAM_NETWORKING_HOOKING.swap(true, Ordering::SeqCst) {
         return;
     }
 
     bridge::log_info("steam_networking006_hooking");
     let vtable = unsafe { *(interface.cast::<*mut *mut c_void>()) };
-    unsafe {
+    let installed = unsafe {
         patch_vtable_slot(
             vtable,
             0,
             hook_send_p2p_packet as *mut c_void,
             &ORIGINAL_SEND,
-        );
-        patch_vtable_slot(
+        ) && patch_vtable_slot(
             vtable,
             1,
             hook_is_p2p_packet_available as *mut c_void,
             &ORIGINAL_AVAILABLE,
-        );
-        patch_vtable_slot(
+        ) && patch_vtable_slot(
             vtable,
             2,
             hook_read_p2p_packet as *mut c_void,
             &ORIGINAL_READ,
-        );
-        patch_vtable_slot(
+        ) && patch_vtable_slot(
             vtable,
             6,
             hook_get_p2p_session_state as *mut c_void,
             &ORIGINAL_SESSION_STATE,
-        );
+        )
+    };
+    if !installed {
+        bridge::report_hook_failure(HookStartupFailure::SteamNetworkingHooks);
+        return;
     }
+    STEAM_NETWORKING_HOOKED.store(true, Ordering::SeqCst);
+    bridge::report_hook_ready();
     bridge::log_info("steam_networking006_hooked");
 }
 
 unsafe fn install_existing_steam_networking_interface(steam_module: HMODULE) {
     if steam_module.is_null() {
         bridge::log_warn("steam_probe module_missing=steam_api.dll");
+        bridge::report_hook_failure(HookStartupFailure::SteamApiImports);
         return;
     }
 
@@ -209,7 +222,7 @@ unsafe fn patch_vtable_slot(
     index: usize,
     replacement: *mut c_void,
     original: &'static AtomicPtr<c_void>,
-) {
+) -> bool {
     let slot = unsafe { vtable.add(index) };
     let mut old_protect = 0;
     if unsafe {
@@ -222,7 +235,7 @@ unsafe fn patch_vtable_slot(
     } == 0
     {
         bridge::log_error(format!("steam_vtable_patch_failed index={index}"));
-        return;
+        return false;
     }
 
     let current = unsafe { *slot };
@@ -241,6 +254,7 @@ unsafe fn patch_vtable_slot(
         );
         FlushInstructionCache(GetCurrentProcess(), slot.cast(), size_of::<*mut c_void>());
     }
+    true
 }
 
 unsafe extern "thiscall" fn hook_send_p2p_packet(

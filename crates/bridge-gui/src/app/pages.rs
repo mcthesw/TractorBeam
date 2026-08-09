@@ -8,10 +8,10 @@ use std::borrow::Cow;
 use eframe::egui::{self, ComboBox, TextEdit};
 use rust_i18n::t;
 use tractor_beam_core::{
-    ConnectionProfile, DirectOutcomeWindow, HookIpcConnectionState, HookReceiveProbeReport,
-    HookStartupPhase, ReadinessProbeCaseReport, ReadinessProbeReport, RoomPathQualitySnapshot,
-    RoomPathQualityState, RuntimeState, SessionCredential, SessionMode, SessionQuality,
-    SessionStatus, TransportChoice, protocol::PeerPresence,
+    ConnectionProfile, DirectOutcomeWindow, HookReceiveProbeReport, HookStartupPhase,
+    ReadinessProbeCaseReport, ReadinessProbeReport, RoomPathQualitySnapshot, RoomPathQualityState,
+    RuntimeState, SessionCredential, SessionMode, SessionQuality, SessionStatus, TransportChoice,
+    protocol::PeerPresence,
 };
 
 use helpers::*;

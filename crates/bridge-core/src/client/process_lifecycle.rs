@@ -90,11 +90,13 @@ pub(super) async fn run(
     preexisting_processes: Vec<IsaacProcess>,
     event_tx: RuntimeEventSender,
     cancellation: CancellationToken,
+    ready_deadline: Option<super::hook_ipc::HookReadyDeadline>,
 ) -> io::Result<()> {
     run_with(
         hook_paths,
         event_tx,
         cancellation,
+        ready_deadline,
         Arc::new(SystemIsaacProcesses),
         ProcessLifecycleSettings::default(),
         preexisting_processes,
@@ -107,6 +109,7 @@ async fn run_with(
     hook_paths: Option<NativeHookPaths>,
     event_tx: RuntimeEventSender,
     cancellation: CancellationToken,
+    ready_deadline: Option<super::hook_ipc::HookReadyDeadline>,
     processes: Arc<dyn IsaacProcessService>,
     settings: ProcessLifecycleSettings,
     preexisting_processes: Vec<IsaacProcess>,
@@ -219,11 +222,13 @@ async fn run_with(
         ),
     );
     if let Some(paths) = hook_paths {
+        let ready_deadline = ready_deadline.expect("Native Hook readiness deadline is available");
         hook_lifecycle::inject_process(
             paths,
             process.clone(),
             event_tx.clone(),
             cancellation.clone(),
+            ready_deadline,
         )
         .await;
     }
@@ -407,6 +412,7 @@ mod tests {
             None,
             event_tx,
             cancellation.clone(),
+            None,
             processes.clone(),
             fast_settings(Duration::from_secs(1)),
             Vec::new(),
@@ -438,6 +444,7 @@ mod tests {
             None,
             event_tx,
             cancellation,
+            None,
             processes.clone(),
             fast_settings(Duration::from_secs(1)),
             Vec::new(),
@@ -460,6 +467,7 @@ mod tests {
             None,
             event_tx,
             cancellation.clone(),
+            None,
             processes,
             fast_settings(Duration::from_millis(5)),
             Vec::new(),
@@ -496,6 +504,7 @@ mod tests {
             None,
             event_tx,
             cancellation.clone(),
+            None,
             processes.clone(),
             settings,
             vec![residue],
@@ -528,6 +537,7 @@ mod tests {
             None,
             event_tx,
             cancellation.clone(),
+            None,
             processes.clone(),
             settings,
             vec![existing.clone()],

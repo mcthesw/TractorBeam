@@ -294,6 +294,24 @@ pub enum HookIpcConnectionState {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HookInstallState {
+    #[default]
+    Pending,
+    Ready,
+    Failed,
+}
+
+impl Display for HookInstallState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pending => formatter.write_str("pending"),
+            Self::Ready => formatter.write_str("ready"),
+            Self::Failed => formatter.write_str("failed"),
+        }
+    }
+}
+
 impl Display for HookIpcConnectionState {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -309,6 +327,7 @@ impl Display for HookIpcConnectionState {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct HookIpcState {
     pub connection: HookIpcConnectionState,
+    pub installation: HookInstallState,
     pub negotiated_major: Option<u16>,
     pub negotiated_minor: Option<u16>,
     pub reconnects: u32,

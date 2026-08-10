@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.5.0](https://github.com/mcthesw/TractorBeam/compare/v0.4.0...v0.5.0) (2026-08-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** Bridge Client and Native Hook binaries must come from the same Client Bundle.
+
+### Features
+
+* **client:** enter rooms before gameplay ([b43560e](https://github.com/mcthesw/TractorBeam/commit/b43560e8ae46512b112ac9ff8eba49134bcac3bc))
+* **client:** reconnect gameplay without reinjection ([81f9dd7](https://github.com/mcthesw/TractorBeam/commit/81f9dd7b516f9dd82eedb15289e7d922a16a0ecc))
+* **client:** verify Steam identity and rejoin Relay rooms ([98e3efb](https://github.com/mcthesw/TractorBeam/commit/98e3efbbc0b0ad31b4ea603f19bb285bfd5276e2))
+* **client:** warn about SteamID room mismatches ([428ad92](https://github.com/mcthesw/TractorBeam/commit/428ad9281c86f74ea92d61578b1ae3c312e90020))
+* **relay:** support IPv6 transport end to end ([443f407](https://github.com/mcthesw/TractorBeam/commit/443f407eff8175dc647a202d5c958badb8a5bac8))
+
+
+### Bug Fixes
+
+* **client:** bind injection to the newly launched Isaac process ([d7cfaa9](https://github.com/mcthesw/TractorBeam/commit/d7cfaa9e9e6445859411e0560b060096b24906e3))
+* **client:** finalize Hook state when Isaac exits ([0b08d7a](https://github.com/mcthesw/TractorBeam/commit/0b08d7aa2866925b859581df94b1251f0fc943ee))
+* **client:** make injection launch deterministic ([d5a4891](https://github.com/mcthesw/TractorBeam/commit/d5a48919e2b7fa82360647da8eda27246ca7d2cb))
+* **client:** separate Hook connection and install deadlines ([0783278](https://github.com/mcthesw/TractorBeam/commit/0783278080e5a80b6277b0c28926fb6c3332adab))
+* **hook:** avoid blocking Isaac process detach ([710224e](https://github.com/mcthesw/TractorBeam/commit/710224e019a58fe404cf3b1917000901519d4335))
+* **hook:** report verified startup readiness ([5a50621](https://github.com/mcthesw/TractorBeam/commit/5a50621f3136beb976a03dece8a66b404ab09dc3))
+* **injector:** preserve elevated helper failures ([12d9669](https://github.com/mcthesw/TractorBeam/commit/12d966939a28f5f8a72c53670ff2fb2b7d559923))
+
+
+### Code Refactoring
+
+* **ipc:** replace native hook named pipes with loopback TCP ([9c4e870](https://github.com/mcthesw/TractorBeam/commit/9c4e870736734b198fa94cc1ea4a12a1a5f91709))
+
 ## [0.4.0](https://github.com/mcthesw/TractorBeam/compare/v0.3.0...v0.4.0) (2026-07-27)
 
 

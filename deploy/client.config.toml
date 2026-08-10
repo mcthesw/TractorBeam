@@ -1,7 +1,7 @@
 # Copy this file to config.toml next to tractor-beam.exe.
 #
-# Do not commit public beta tester relay addresses here. Distribute tester
-# relay presets out-of-band with the test package.
+# Formal Client Bundles do not include Relay presets. Distribute test Relay
+# presets out-of-band with separately packaged test builds.
 
 # Transport used when a relay preset does not override it. TCP is the public
 # beta default because it works better for peers whose UDP path is blocked or
@@ -10,10 +10,6 @@ default_transport = "tcp"
 
 # Isaac online mode. Keep "pure" unless a future build documents another mode.
 default_mode = "pure"
-
-# Relay selected when the app starts. Must match one of the [[relays]].id
-# values below.
-selected_relay = "local"
 
 [session_health]
 # Write periodic runtime health snapshots to the Diagnostics Bundle.
@@ -27,14 +23,3 @@ snapshot_interval_seconds = 5
 runtime_rtt_interval_seconds = 1
 # Seconds to wait before a runtime RTT probe is counted as timed out.
 runtime_rtt_timeout_seconds = 3
-
-[[relays]]
-# Self-hosted relay matching deploy/relay.toml.
-# Hostnames, IPv4 literals, and IPv6 literals such as "2001:db8::10" are accepted.
-id = "local"
-name = "Local relay"
-host = "localhost"
-port = 25910
-udp = true
-tcp = true
-default_transport = "tcp"

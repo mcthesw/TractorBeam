@@ -2,25 +2,19 @@
 
 [English](roadmap.en.md)
 
-路线图将首个里程碑保持在较小范围：先交付已确认可行的 Windows 玩家工具，再扩展
-平台、打包、传输和安全范围。
+路线图将首个里程碑保持在较小范围：先交付已确认可行的 Windows 玩家工具，再扩展平台、打包、传输和安全范围。
 
 ## 阶段 1：Windows Rust 基线
 
 目标：保持 Windows Bridge 路径使用 Rust 基线和 Rust Native Hook。
 
 - [x] 仅支持 Windows + Steam + *The Binding of Isaac: Repentance+*。
-- [x] 使用运行时 Crate `bridge-core`、`bridge-gui`、`bridge-relay`、
-  `native-hook` 和 `isaac-injector`，以及职责收窄的共享契约 Crate `hook-ipc`
-  和 `relay-protocol`。
+- [x] 使用运行时 Crate `bridge-core`、`bridge-gui`、`bridge-relay`、 `native-hook` 和 `isaac-injector`，以及职责收窄的共享契约 Crate `hook-ipc` 和 `relay-protocol`。
 - [x] 为 i686 Isaac 进程构建 Rust Native Hook DLL。
 - [x] 构建 Rust Injector 辅助程序。
-- [x] 构建支持房间加入、Peer 转发、UDP/TCP 监听、超时、速率限制和 IP/CIDR
-  阻止列表的 Rust Relay Server。
-- [x] 构建 Rust Bridge Client Runtime，包括异步本地 Hook Bridge、可选 Relay
-  Transport、房间设置、Steam 启动、注入编排、状态和错误处理。
-- [x] 构建 egui Bridge GUI，包括 Relay 地址、传输选择、房间、SteamID64、模式、
-  启停、状态、计数器和诊断导出。
+- [x] 构建支持房间加入、Peer 转发、UDP/TCP 监听、超时、速率限制和 IP/CIDR 阻止列表的 Rust Relay Server。
+- [x] 构建 Rust Bridge Client Runtime，包括异步本地 Hook Bridge、可选 Relay Transport、房间设置、Steam 启动、注入编排、状态和错误处理。
+- [x] 构建 egui Bridge GUI，包括 Relay 地址、传输选择、房间、SteamID64、模式、启停、状态、计数器和诊断导出。
 - [x] 实现 Official Mode、Fallback Mode 和 Pure Mode。
 - [x] 定义首版 Relay 协议 Envelope、版本、能力和错误码。
 - [x] 阶段 1 控制消息使用简单的版本化 Envelope。

@@ -2,16 +2,13 @@
 
 [English](relay-observability.en.md)
 
-Relay Server 可以通过标准 OTLP/gRPC 导出 OpenTelemetry 指标和 Trace，只有 Relay
-会执行导出。
+Relay Server 可以通过标准 OTLP/gRPC 导出 OpenTelemetry 指标和 Trace，只有 Relay 会执行导出。
 
-接收端可以是本地 OpenTelemetry Collector、Vector、SigNoz Collector 或其他兼容
-OTLP 的组件。Tractor Beam 不依赖特定部署拓扑或可观测性后端。
+接收端可以是本地 OpenTelemetry Collector、Vector、SigNoz Collector 或其他兼容 OTLP 的组件。Tractor Beam 不依赖特定部署拓扑或可观测性后端。
 
 ## 本地日志格式
 
-Relay 日志始终写入标准输出，并与 OTLP 导出相互独立。设置 `LOG_FORMAT=json` 可输出
-适合 journald、Docker 或其他结构化日志采集器读取的逐行 JSON。
+Relay 日志始终写入标准输出，并与 OTLP 导出相互独立。设置 `LOG_FORMAT=json` 可输出适合 journald、Docker 或其他结构化日志采集器读取的逐行 JSON。
 
 `LOG_FORMAT` 只支持 `text` 和 `json`。未设置时默认为 `text`，便于直接运行时阅读。`RUST_LOG` 控制过滤；缺失或无效时默认使用 `info`。
 
@@ -53,9 +50,7 @@ service_instance_id = "relay-guangzhou-1"
 | `tractor_beam.relay.tcp.egress.queue.max_utilization` | Gauge | `1` | 当前每 Peer TCP 队列的最高利用率 | 无 |
 | `tractor_beam.relay.tcp.egress.queue.full` | Counter | `{frame}` | 因 TCP 出口队列已满而拒绝的帧 | `frame.type` |
 
-所有时长 Histogram 使用以下秒级显式边界：
-`0.00025`、`0.0005`、`0.001`、`0.0025`、`0.005`、`0.01`、`0.025`、`0.05`、
-`0.1`、`0.25`、`0.5`、`1` 和 `2.5`。
+所有时长 Histogram 使用以下秒级显式边界： `0.00025`、`0.0005`、`0.001`、`0.0025`、`0.005`、`0.01`、`0.025`、`0.05`、 `0.1`、`0.25`、`0.5`、`1` 和 `2.5`。
 
 有界值如下：
 
@@ -68,9 +63,7 @@ service_instance_id = "relay-guangzhou-1"
 - 连接 `outcome`：`accepted`、`blocked`、`closed`
 - 建连 `operation`：`join`、`resume`、`unknown`
 - 建连 `outcome`：`accepted`、`rejected`、`failed`、`disconnected`、`timeout`
-- 控制 `operation`：`bootstrap`、`join_begin`、`join_proof`、`resume`、
-  `udp_path_request`、`ping`、`pong`、`stop`、`udp_path_hello`、`detach`、
-  `session_expire`
+- 控制 `operation`：`bootstrap`、`join_begin`、`join_proof`、`resume`、 `udp_path_request`、`ping`、`pong`、`stop`、`udp_path_hello`、`detach`、 `session_expire`
 - 控制 `outcome`：`attempted`、`accepted`、`rejected`
 
 ## Trace
@@ -90,8 +83,7 @@ Span 名称是固定值：
 
 ## 容量与服务器选购
 
-不要根据房间数、Peer 数或单次指标峰值直接升级服务器。只有 Relay 指标与主机指标
-持续指向同一瓶颈时，才需要调整规格。
+不要根据房间数、Peer 数或单次指标峰值直接升级服务器。只有 Relay 指标与主机指标持续指向同一瓶颈时，才需要调整规格。
 
 | 现象 | 优先检查或升级 |
 |---|---|
@@ -100,5 +92,4 @@ Span 名称是固定值：
 | RSS 或内存压力随 Peer 数持续增长 | 内存 |
 | 只有房间、Peer 或流量增长，没有资源压力 | 暂不升级 |
 
-`rate_limited` 通常表示 Peer 超出配置限制，增加服务器资源不能解决。服务器位置和
-线路最终应通过 Client 的实际房间路径质量验证，Relay 指标不能替代玩家体验。
+`rate_limited` 通常表示 Peer 超出配置限制，增加服务器资源不能解决。服务器位置和线路最终应通过 Client 的实际房间路径质量验证，Relay 指标不能替代玩家体验。

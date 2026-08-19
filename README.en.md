@@ -53,6 +53,7 @@ cargo test --workspace
 - [docs/architecture.en.md](docs/architecture.en.md): component boundaries and data flow.
 - [docs/relay.en.md](docs/relay.en.md): Relay Server deployment.
 - [docs/relay-configuration.en.md](docs/relay-configuration.en.md): Relay Server configuration.
+- [docs/relay-observability.en.md](docs/relay-observability.en.md): Relay Server logs, metrics, traces, and capacity guidance.
 - [docs/lan.en.md](docs/lan.en.md): LAN and virtual-LAN direct sessions.
 - [docs/security.en.md](docs/security.en.md): security boundaries.
 - [roadmap.en.md](roadmap.en.md): staged roadmap.

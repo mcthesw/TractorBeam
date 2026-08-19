@@ -2,15 +2,40 @@
 
 [English](README.en.md)
 
-给 *以撒的结合：忏悔+* 远程联机用的桌面客户端和中继传输。
+优化 *以撒的结合：忏悔+* 联机体验的桌面 Client 和 Relay Server。
 
-官方联机很卡，走虚拟局域网也经常不流畅，因此这里我们引入非p2p方案，在保留steam版所有正常功能前提下，把游戏数据传输改为走服务器中继，实现较好的传输质量。
+官方联机或虚拟局域网不够流畅时，Tractor Beam 可以将游戏数据改为通过 Relay
+传输，同时保留 Steam 版本的正常功能。
 
-目前仍在开发中，只支持 Windows + Steam。
+项目仍在开发中。Client 只支持 Windows + Steam；Relay 可以在 Windows、Linux
+和 macOS 上构建，正式 Release 提供 Windows 和 Linux 可执行文件。
+
+## 使用 Client
+
+1. 从[最新版本](https://github.com/mcthesw/TractorBeam/releases/latest)下载
+   `TractorBeam-Client-Windows-x86_64.zip` 并完整解压。
+2. 保持解压出的四个文件位于同一目录，运行 `tractor-beam.exe`。
+3. 选择 Steam 账号和联机方式。房主复制联机码，其他玩家导入联机码。
+4. 点击“启动游戏”。遇到问题时，从 Client 导出 Diagnostics Bundle。
+
+正式 Client Bundle 不包含预设 Relay。如果不准备自行部署 Relay，请使用单独提供的
+公测包。公共测试 Relay 由项目维护者自费提供，不保证可用性或服务质量。
+
+- [局域网直连说明](docs/lan.md)
+- [Relay 自部署说明](docs/relay.md)
 
 ## 构建
 
+需要先安装 Rust 工具链。
+
 ```sh
+# 构建 Client
+cargo build -p tractor-beam-gui
+
+# 构建 Relay Server
+cargo build -p tractor-beam-relay
+
+# 检查和测试
 cargo check --workspace
 cargo test --workspace
 ```
@@ -19,8 +44,9 @@ cargo test --workspace
 
 - [docs/architecture.md](docs/architecture.md)：组件边界和数据流。
 - [docs/relay.md](docs/relay.md)：Relay Server 部署。
+- [docs/relay-configuration.md](docs/relay-configuration.md)：Relay Server 配置。
 - [docs/lan.md](docs/lan.md)：局域网与虚拟局域网直连。
-- [docs/security.md](docs/security.md)：威胁模型和安全边界。
+- [docs/security.md](docs/security.md)：安全边界。
 - [roadmap.md](roadmap.md)：阶段规划。
 
 ## 许可证

@@ -1,106 +1,35 @@
-# Security
+# 安全说明
 
-Tractor Beam is a work-in-progress transport moving toward a Windows
-baseline. This document records the security boundary before wider distribution.
+[English](security.en.md)
 
-## Threat Model
+Tractor Beam 的 Relay 和局域网直连都使用明文传输。只使用你信任的 Relay 或网络，
+联机码也只应分享给准备一起游戏的人。
 
-Who Tractor Beam trusts, and how much:
+## 信任边界
 
-- **Same-room Peer: semi-trusted.** A peer who joined your Room is trusted to
-  play, not to behave. Bridge treats game payloads as opaque and does not
-  validate Isaac semantics, so a peer can send any game-layer packet. The line
-  Bridge does enforce: a peer cannot make a Relay Server forward traffic outside
-  its Room, and cannot turn the relay into a general-purpose UDP forwarder toward
-  third parties.
-- **Relay Server: trusted with content, not availability.** The relay can observe,
-  modify, delay, or drop control and Isaac packets. Tractor Beam deliberately
-  provides no confidentiality or on-path integrity guarantee, so players should
-  use Relay Servers whose operators they trust. Client recovery and diagnostics
-  must still handle Relay failure or misbehavior without corrupting local state.
-- **Malicious Client: hostile.** An attacker may try to use the relay as a
-  reflection/amplification vector by spoofing a victim's source address, or to
-  forward unrelated traffic through it. Defenses: protocol magic, room
-  membership before any forwarding, scoped room/peer state, and a path-validation
-  handshake on join (a peer must prove it can receive a token at the address it
-  claims before the relay forwards anything to that address).
+- 同房间玩家可以发送任意游戏数据。Tractor Beam 会限制转发范围，但不会判断游戏
+  内容是否正常。
+- Relay 可以看到、修改、延迟或丢弃经过它的控制消息和游戏数据，因此 Relay
+  运营者必须可信。
+- 联机码中的凭据用于限制房间接入，不会加密流量，也不能证明使用者的真实身份。
 
-## Accepted Network Boundary
+## 现有防护
 
-- Relay Protocol v3 uses plaintext TCP control and TCP/UDP data. It does not use
-  TLS, PAKE, AEAD, or a payload MAC.
-- A Relay Server and an on-path observer can see control messages, Session
-  Credentials, Steam identities, member state, packet payloads, sizes,
-  directions, and timing, and an active intermediary can modify traffic.
-- Session Credentials are high-entropy bearer values that resist guessing; they
-  are not secret from the Relay/network path and do not authenticate either
-  endpoint against an active intermediary.
-- Resume credentials and UDP path tokens prevent accidental/off-path binding;
-  they do not claim on-path attack resistance.
-- A future encrypted design, if ever justified by a new threat model, requires a
-  separate Relay Protocol v3. V2 does not reserve nonce, tag, key epoch, or
-  session-key fields for it.
-- Diagnostics may contain redacted Steam/Relay/member metadata, local paths,
-  counters, and error text, but never Session Credentials or recovery/path
-  tokens.
-- Session, resume, and path-validation credentials must never be written to
-  normal logs, metrics, or Diagnostics Bundles.
-- Only use trusted Relay Servers.
+Relay 会检查协议、数据包大小、工作量证明、房间成员关系和发送路径，只在同一房间
+的玩家之间转发。它还会清理过期状态，并包含速率限制、房间数量限制和 IP/CIDR
+阻止列表，避免被当作任意流量转发器。
 
-## Phase 1 Requirements
+这些措施用于限制滥用和意外流量，不等同于加密。需要保密性的玩家不应依赖当前
+Relay 协议。
 
-- Reject packets without the Tractor Beam protocol magic.
-- Enforce maximum packet sizes.
-- Require a peer to join a room before forwarding room traffic.
-- Validate a peer's claimed address with a join handshake (the relay forwards to an address only after that address echoes a join token) to block spoofed-source reflection.
-- Forward packets only among peers in the same room.
-- Use bounded packet identifiers for diagnostics, ordering evidence, and
-  duplicate suppression; do not describe them as cryptographic replay
-  protection.
-- Expire inactive peers and rooms.
-- Apply basic rate limits.
-- Keep room and peer state scoped so the relay cannot act as a general-purpose UDP forwarder.
-- Avoid logging raw game packet payloads.
-- Make Official Mode avoid bridge launch and injection.
-- Restore or clearly report local state after launch, injection, relay, or hook failures.
-- Produce diagnostics bundles that are useful for debugging and avoid avoidable secrets.
+## 日志与诊断包
 
-## Public Release Goals
+Session Credential、恢复凭据和路径 Token 不会写入普通日志或诊断包。导出的
+Diagnostics Bundle 会对 SteamID、Relay 地址和本地路径等信息进行脱敏，但仍可能
+包含设备状态和错误信息，请只通过私密渠道分享。
 
-- Signed Directory Service metadata for trusted Relay Servers.
-- Client and Relay Server protocol compatibility ranges.
-- Directory Service relay revocation for compromised, outdated, or abusive Relay Servers.
-- Public Relay Server abuse and privacy policy.
-- Abuse mitigation such as proof-of-work, token buckets, or equivalent gating.
-- Clear user documentation for why injection is needed and how to return to Official Mode.
-- Clear user documentation that Relay/control/game traffic is plaintext and
-  trusted-Relay operation is the intended model.
+## 局域网直连
 
-## Abuse Controls
-
-- Phase 1 uses protocol magic, packet size limits, room membership checks, timeouts, and basic rate limits.
-- Phase 2 adds Relay Server local IP/CIDR blocklists, Room limits, Peer limits, and Room name length limits for obvious abuse during testing.
-- Public release should support Directory Service relay revocation, but should avoid a global player IP blacklist unless there is a clear privacy and governance policy.
-- Proof-of-work is a public-release hardening option, not a Phase 1 requirement.
-
-## Diagnostics Redaction
-
-Exported Diagnostics Bundles redact SteamID64-like values, Relay Server
-endpoints, Room fields, and local user profile paths. This is a guardrail, not a
-promise that every possible sensitive string has been removed. Test logs
-should still be shared privately.
-
-## Direct LAN boundary
-
-Direct LAN uses plaintext TCP control and UDP gameplay traffic on an existing
-physical or virtual LAN. Its Join Code discloses selected adapter addresses and
-a temporary Session Credential. The credential scopes admission and path
-checks, but it is not encryption and does not authenticate the person using it.
-Only share LAN Join Codes with intended players on a trusted network.
-
-The Client advertises host candidates only. It performs no public discovery,
-NAT traversal, STUN/TURN exchange, port mapping, embedded Relay, or automatic
-Relay fallback. Local firewall and virtual-LAN policy remain operator
-responsibilities. Diagnostics include stage and nominated-path evidence, but
-credentials, path identifiers, and path tokens must never be logged or exported;
-endpoint addresses are covered by Diagnostics Bundle redaction.
+局域网直连会在联机码中包含所选的本地或虚拟网卡地址，并使用明文 TCP/UDP 流量。
+它不提供公网发现、NAT 穿透或自动 Relay 回退，只应在可信的物理或虚拟局域网中
+使用。

@@ -67,6 +67,7 @@ static STEAM_NETWORKING_HOOKED: AtomicBool = AtomicBool::new(false);
 static STEAM_NETWORKING_HOOKING: AtomicBool = AtomicBool::new(false);
 static SESSION_STATE_CALLS: AtomicU32 = AtomicU32::new(0);
 static RUN_CALLBACK_CALLS: AtomicU32 = AtomicU32::new(0);
+const STEAM_NETWORKING_RETRY_CALLBACK_INTERVAL: u32 = 60;
 
 pub unsafe fn install_hooks() {
     let module = unsafe { GetModuleHandleW(ptr::null()) };
@@ -134,6 +135,14 @@ unsafe extern "C" fn hook_run_callbacks() {
     }
     if let Some(original) = original_fn::<SteamRunCallbacksFn>(&ORIGINAL_RUN_CALLBACKS) {
         unsafe { original() };
+    }
+    if !STEAM_NETWORKING_HOOKED.load(Ordering::SeqCst)
+        && should_retry_steam_networking(callback_call)
+    {
+        let steam_module = unsafe { GetModuleHandleW(wide_null("steam_api.dll").as_ptr()) };
+        unsafe {
+            install_existing_steam_networking_interface(steam_module);
+        }
     }
 }
 
@@ -343,6 +352,10 @@ fn should_sample_callback(call: u32) -> bool {
     call <= 8 || call.is_multiple_of(5_000)
 }
 
+fn should_retry_steam_networking(call: u32) -> bool {
+    call == 1 || call.is_multiple_of(STEAM_NETWORKING_RETRY_CALLBACK_INTERVAL)
+}
+
 unsafe extern "thiscall" fn hook_get_p2p_session_state(
     this: *mut c_void,
     remote: u64,
@@ -407,4 +420,18 @@ fn original_fn<T>(slot: &AtomicPtr<c_void>) -> Option<T> {
 
 fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retries_steam_networking_on_first_and_bounded_callback_intervals() {
+        assert!(should_retry_steam_networking(1));
+        assert!(!should_retry_steam_networking(2));
+        assert!(!should_retry_steam_networking(59));
+        assert!(should_retry_steam_networking(60));
+        assert!(should_retry_steam_networking(120));
+    }
 }

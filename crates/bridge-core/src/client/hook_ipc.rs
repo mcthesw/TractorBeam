@@ -29,7 +29,7 @@ use super::state::{
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 const INITIAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(40);
-const INSTALLATION_TIMEOUT: Duration = Duration::from_secs(60);
+const INSTALLATION_TIMEOUT: Duration = Duration::from_secs(180);
 const RECONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const IDLE_WAIT_INTERVAL: Duration = Duration::from_millis(1);
 const IO_POLL_INTERVAL: Duration = Duration::from_millis(10);

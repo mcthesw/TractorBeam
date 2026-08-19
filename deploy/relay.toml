@@ -1,8 +1,8 @@
 # Public beta Relay Server configuration.
 #
-# Listener fields enable their transport by presence. Remove udp_bind to run
-# TCP only, or remove tcp_bind to run UDP only. Public hosts must open the same
-# port/protocol in their firewall.
+# TCP is required for the control plane. Remove udp_bind only when intentionally
+# running TCP-only. Public hosts must open each configured port/protocol in both
+# the host firewall and any cloud-provider firewall or security group.
 [relay_server]
 udp_bind = "0.0.0.0:25910"
 tcp_bind = "0.0.0.0:25910"

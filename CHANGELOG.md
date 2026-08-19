@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/mcthesw/TractorBeam/compare/v0.5.0...v0.5.1) (2026-08-19)
+
+
+### Bug Fixes
+
+* **hook:** retry delayed Steam networking initialization ([a43638a](https://github.com/mcthesw/TractorBeam/commit/a43638a1728356cfb871123ab601b772ccf760d3))
+
 ## [0.5.0](https://github.com/mcthesw/TractorBeam/compare/v0.4.0...v0.5.0) (2026-08-10)
 
 

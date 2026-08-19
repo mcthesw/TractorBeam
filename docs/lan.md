@@ -1,54 +1,27 @@
-# Direct LAN sessions
+# 局域网直连
 
-Direct LAN is for players who are already mutually reachable through a physical
-LAN or a third-party virtual LAN. It does not contact a Tractor Beam Relay,
-discover public Internet peers, traverse NAT, or fall back to a Relay.
+[English](lan.en.md)
 
-## Player flow
+局域网直连适用于已经能通过物理局域网或第三方虚拟局域网互相访问的玩家。它不会
+连接 Relay，也不提供公网发现或 NAT 穿透。
 
-1. Select a Steam account and choose **LAN Direct**. Press **New Room** and review
-   the adapter list. Adapters with at least one non-link-local address are
-   selected by default; link-local-only fallback adapters remain available for
-   unusual networks.
-2. The Client compacts each selected adapter to its best IPv4 and IPv6 address,
-   gives every selected adapter one candidate before adding a second address,
-   and stays inside the bounded eight-candidate protocol budget. It then binds
-   TCP control and UDP gameplay sockets, ignores individual addresses that the
-   operating system no longer considers available, and enters the Room only
-   after at least one address binds. If none bind, no room or code is created.
-   After joining, press **Copy** to share the Join Code.
-3. Another player imports the code. If one advertised address is reachable it
-   is used automatically; if several are reachable, the player chooses the
-   initial entry point. That choice is only an admission preference.
-4. After admission, every Peer learns the other Peers and establishes an
-   independent direct UDP Peer Path. Every Peer may copy a fresh Join Code that
-   names itself as Introducer. The original Room Creator is not an authority and
-   may leave without ending the Room.
+## 使用方法
 
-External Relay and Direct LAN are mutually exclusive. Creating or importing a
-new Room leaves the current Room first. Gameplay may start and stop independently;
-the Client remains in the Room until **Leave Room** or application shutdown.
+1. 房主选择 Steam 账号和“局域网直连”，点击“新建房间”，选择可以访问其他玩家
+   的网络适配器，然后复制联机码。
+2. 其他玩家导入联机码。存在多个可达地址时，选择准备使用的入口。
+3. 所有玩家进入房间后即可启动游戏。点击“离开房间”或关闭 Client 才会退出房间。
 
-## Network and security boundary
+房主离开不会自动结束其他玩家的房间；房间中的任何玩家都可以复制新的联机码邀请
+其他人。
 
-- Join Codes disclose the selected local/virtual adapter IP addresses and a
-  temporary Session Credential. Share them only with intended players.
-- Control and gameplay traffic are plaintext. The Session Credential limits
-  admission but does not encrypt traffic or authenticate a human identity. Use
-  only a trusted LAN or virtual LAN.
-- Host candidates only are supported. There is no STUN, TURN, public
-  rendezvous, port mapping, embedded Relay, or Relay-assisted recovery.
-- The operating-system firewall must allow the Client's dynamically bound TCP
-  and UDP sockets on the selected network profiles. A probe that finds no
-  reachable address usually means routing or firewall policy blocks it.
-- Gameplay packets are addressed to one Peer, bounded, validated against the
-  nominated path, and dropped while that path is unavailable. They are never
-  queued for replay after recovery.
+## 网络与安全
 
-Diagnostics report bind, probe, admission, path, and gameplay stages plus the
-nominated endpoint pair for each Peer. Exported bundles redact IP addresses and
-never include the Session Credential, path identifier, or path token. Session
-health and the Statistics page report Direct receive attempts and drops
-separately from network-send and Native Hook queue drops. A saturated local
-receive handoff emits one onset record, aggregates repeated drops, and emits one
-recovery record when delivery resumes.
+- 所有玩家必须已经能够通过所选局域网或虚拟局域网互相访问。
+- 防火墙必须允许 Client 使用所选网络上的 TCP 和 UDP。
+- 联机码包含本地或虚拟网卡地址以及临时房间凭据，只能分享给准备一起游戏的人。
+- 控制和游戏流量均为明文，只应在可信网络中使用。
+- 局域网直连没有 STUN、TURN、端口映射或自动 Relay 回退。无法连接时，请先检查
+  虚拟局域网、路由和防火墙设置。
+
+遇到问题时，请从 Client 导出 Diagnostics Bundle，并通过私密渠道分享。

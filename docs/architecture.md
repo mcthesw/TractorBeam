@@ -1,106 +1,88 @@
-# Architecture
+# 架构
 
-Relay OpenTelemetry is explicitly configured and exported only by the Relay
-process. It is separate from Client-local, player-facing Room Path Quality. See
-[Relay observability](relay-observability.md) for the signal boundary.
+[English](architecture.en.md)
 
-Tractor Beam keeps four network boundaries deliberately separate:
+Relay OpenTelemetry 需要显式配置，并且只由 Relay 进程导出。它与 Client 本地、
+面向玩家的房间路径质量相互独立。信号边界参阅
+[Relay 可观测性](relay-observability.md)。
 
-1. The Native Hook exchanges target-addressed game packets with Bridge Client
-   over Local IPC v3 (`TBI3`). It reports ready only after the required Steam
-   packet hooks are installed, and does not know about Relays, Rooms, Join Codes,
-   reconnect credentials, or TCP/UDP path selection.
-2. Bridge Client owns session orchestration, the selected Relay endpoint, the
-   Session Credential, retry policy, queue/drop policy, and user-visible state.
-3. Relay Protocol v3 (`TBR3`) is the Client-to-Relay boundary. The Relay owns
-   admission, in-memory Room membership, path validation, forwarding, limits,
-   duplicate suppression, and the 120-second resume grace window.
-4. Direct Protocol v2 (`TBD2`) is the Bridge-Client-to-Bridge-Client boundary
-   for an existing LAN or virtual LAN. Direct Peer Paths own path validation
-   and transport frame identity without depending on a Relay.
+Tractor Beam 刻意分离四个网络边界：
+
+1. Native Hook 通过 Local IPC v3（`TBI3`）与 Bridge Client 交换带目标地址的
+   游戏包。只有完成所需 Steam 数据包 Hook 安装后才会报告 Ready；它不了解
+   Relay、房间、联机码、重连凭据或 TCP/UDP 路径选择。
+2. Bridge Client 负责会话编排、所选 Relay 端点、Session Credential、重试策略、
+   队列与丢弃策略，以及面向用户的状态。
+3. Relay Protocol v3（`TBR3`）是 Client 与 Relay 的边界。Relay 负责接入、内存
+   房间成员关系、路径验证、转发、限制、重复数据抑制和 120 秒恢复宽限期。
+4. Direct Protocol v2（`TBD2`）是在现有局域网或虚拟局域网上连接 Bridge Client
+   的边界。直连 Peer Path 独立负责路径验证和传输帧标识，不依赖 Relay。
 
 ## Relay Protocol v3
 
-Every session has one reliable TCP control connection. A bounded JSON bootstrap
-selects protocol version and capabilities before admission, and returns a
-structured compatibility rejection when required behavior is unavailable.
-After bootstrap, direction-specific bounded JSON control frames carry Join,
-Resume, presence, path-validation, Stop, and ping messages.
+每个会话都有一条可靠的 TCP 控制连接。接入前通过有界 JSON Bootstrap 选择协议
+版本和能力；缺少必需能力时返回结构化兼容性拒绝。Bootstrap 后，按方向区分且大小
+受限的 JSON 控制帧承载 Join、Resume、成员状态、路径验证、Stop 和 Ping 消息。
 
-Gameplay never uses JSON. It uses a fixed binary Data Frame containing the
-connection id, monotonic frame id, source/target SteamID64, a per-target
-delivery stream id and sequence, and opaque Isaac payload. TCP profile frames
-share the control connection; UDP profile frames use a separately
-path-validated UDP tuple. The selected profile is strict for the lifetime of a
-running session and never silently falls back.
+游戏数据不使用 JSON，而是使用固定二进制 Data Frame，其中包含连接 ID、单调递增
+帧 ID、源和目标 SteamID64、面向目标的投递流 ID 与序列号，以及不透明的 Isaac
+载荷。TCP Profile 的帧复用控制连接；UDP Profile 使用单独完成路径验证的 UDP
+地址元组。会话运行期间所选 Profile 固定不变，不会静默回退。
 
-Direct Protocol v2 carries the same delivery stream id and sequence. Its
-separate path-local `frame_id` is used only for transport acceptance. Native
-Hook's process-global packet sequence remains inside Local IPC diagnostics and
-is never interpreted as per-target network continuity.
+Direct Protocol v2 使用相同的投递流 ID 和序列号。独立的路径本地 `frame_id` 只
+用于传输接收判断。Native Hook 的进程全局数据包序列只用于 Local IPC 诊断，绝不
+解释为面向目标的网络连续性。
 
-Capability-gated fixed binary Probe Frames measure **Room Path Quality** between
-Bridge Clients over that same selected data profile. The target Bridge Client
-echoes them locally; they never enter Native Hook or Isaac packet queues. The
-typed per-Peer result stays in Bridge Core. The application combines only fresh,
-bounded Room Path Quality windows with recent Session Health deltas to publish a
-current smoothness level, confidence, freshness, and evidence reasons. Lifetime
-diagnostic counters remain available but do not permanently degrade the current
-estimate after recovery. Relay-wide OTel metrics are never an input to a player
-estimate.
+受能力控制的固定二进制 Probe Frame 在同一条已选数据路径上测量 Bridge Client
+之间的**房间路径质量**。目标 Client 在本地回显，数据不会进入 Native Hook 或
+Isaac 数据包队列。每个 Peer 的类型化结果保留在 Bridge Core 中。应用只结合新鲜、
+有界的房间路径质量窗口和近期 Session Health 增量，生成当前流畅度、置信度、
+新鲜度与证据原因。生命周期诊断计数器仍可查看，但恢复后不会永久降低当前估计。
+Relay 全局 OTel 指标绝不会参与玩家侧估计。
 
-Bridge Core also exposes read-only Input Delay evidence: current delay
-availability, the current smoothness snapshot (including the worst current peer
-path), and an explicit blocker when the evidence is incomplete. This contract
-does not convert milliseconds to delay units, recommend a value, coordinate
-peers, or issue a Hook write. Manual Read/Write remains explicitly gated on a
-running Fallback/Pure session with Hook IPC Ready, and written values are not
-auto-restored. Bridge Client does not export these measurements to an
-observability backend.
+Bridge Core 还提供只读的输入延迟证据：当前延迟是否可用、当前流畅度快照（包括
+最差 Peer 路径），以及证据不完整时的明确阻断原因。这一契约不会将毫秒换算为延迟
+单位、推荐数值、协调玩家或写入 Hook。手动读写只允许在正在运行且 Hook IPC Ready
+的 Fallback/Pure 会话中使用，写入值不会自动恢复。Bridge Client 不会将这些测量
+导出到可观测性后端。
 
-The wire contract lives in `relay-protocol`. Socket ownership and retry policy do
-not. `bridge-relay` maps wire values into its domain state, while `bridge-core`
-maps Hook packets into Data Frames and owns reconnect orchestration.
+Wire Contract 位于 `relay-protocol`；套接字所有权和重试策略不在其中。
+`bridge-relay` 将 Wire 值映射到领域状态，`bridge-core` 将 Hook 数据包映射为
+Data Frame 并负责重连编排。
 
-## Rooms and credentials
+## 房间与凭据
 
-A Room has no player-editable name or separate admission code. The 128-bit
-Session Credential is both its unguessable lookup key and bearer admission
-secret. Join Code v5 packages the Relay endpoint/profile and exactly one Session
-Credential as an opaque copy/paste value. Secrets, connection ids, resume keys,
-and path tokens must never enter logs or diagnostics.
+房间没有玩家可编辑名称或单独接入码。128 位 Session Credential 同时作为不可猜测
+的查找键和持有者接入凭据。Join Code v5 将 Relay 端点、Profile 和唯一 Session
+Credential 打包为不透明的复制粘贴值。秘密、连接 ID、恢复密钥和路径 Token 绝不能
+进入日志或诊断数据。
 
-Room membership is independent from gameplay. **New Room** and **Import** complete
-admission before reporting success, so players can see members and Room Path
-Quality before launching Isaac. Gameplay attaches to the existing Room data plane
-and may end without leaving. **Leave Room** or Client shutdown ends membership;
-Room state is neither persisted nor restored on restart.
+房间成员身份与游戏运行相互独立。“新建房间”和“导入”会在报告成功前完成接入，
+因此玩家可以在启动 Isaac 前看到成员与房间路径质量。游戏附着到现有房间数据面，
+结束游戏不必离开房间。点击“离开房间”或关闭 Client 才会结束成员身份；Relay 重启
+不会持久化或恢复房间状态。
 
-## Recovery
+## 恢复
 
-An unexpected Relay failure changes the local state to Reconnecting. Bridge
-Client immediately tries Resume, then retries with jittered exponential delays
-from 250 ms to 2 seconds for at most 120 seconds. A failed Resume may perform a
-full Join on the same Relay with the same Session Credential. It never changes
-Relay, Room, or TCP/UDP profile.
+Relay 意外断开时，本地状态变为 Reconnecting。Bridge Client 立即尝试 Resume，
+随后以带抖动的指数退避从 250 毫秒重试到 2 秒，最长持续 120 秒。Resume 失败后
+可以使用同一 Relay 和同一 Session Credential 执行完整 Join；不会切换 Relay、
+房间或 TCP/UDP Profile。
 
-Real-time Hook packets received during an unavailable path are drained and
-counted, never replayed after recovery. Relay keeps the logical Peer and duplicate
-window for 120 seconds, broadcasts Reconnecting/Connected presence transitions,
-and removes it once on expiry. Explicit Stop removes it immediately.
+路径不可用期间收到的实时 Hook 数据包会被排空并计数，恢复后不会重放。Relay 保留
+逻辑 Peer 和重复窗口 120 秒，广播 Reconnecting/Connected 成员状态变化，并在
+到期后移除一次。显式 Stop 会立即移除。
 
-## Security boundary
+## 安全边界
 
-Relay Protocol v3 is intentionally plaintext. Session credentials resist random
-Room guessing but do not protect traffic from the Relay or an on-path observer.
-V3 contains no TLS, AEAD, PAKE, payload MAC, nonce reservation, or encryption
-extension fields. A changed confidentiality threat model requires a separately
-designed incompatible later generation.
+Relay Protocol v3 有意使用明文。Session Credential 可以抵抗随机猜测房间，但
+无法保护流量免受 Relay 或链路中观察者读取。V3 不包含 TLS、AEAD、PAKE、载荷 MAC、
+Nonce 预留或加密扩展字段。若保密性威胁模型发生变化，需要另行设计不兼容的后续
+协议版本。
 
-## Future delivery profiles
+## 未来投递 Profile
 
-UDP duplication/deduplication or hop-by-hop UDP FEC may wrap complete v3 Data
-Frames later. They must be negotiated on the control plane, remain bounded by
-Relay packet/byte limits, and must not change Native Hook packet semantics.
-Direct LAN work from issue #38 is implemented as a separate route adapter;
-Relay Protocol v3 does not choose that topology in advance.
+未来可以在完整 v3 Data Frame 外增加 UDP 重复发送/去重或逐跳 UDP FEC。它们必须
+通过控制面协商，受 Relay 数据包与字节限制约束，并且不能改变 Native Hook 数据包
+语义。Issue #38 的局域网直连已经作为独立 Route Adapter 实现；Relay Protocol v3
+不会预先选择该拓扑。

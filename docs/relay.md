@@ -1,90 +1,86 @@
-# Relay Server
+# 部署 Relay Server
 
-For OTLP/gRPC metrics, traces, exact signal names, and the minimal capacity
-guide, see [Relay observability](relay-observability.md).
+[English](relay.en.md)
 
-The Relay is a stateless, in-memory Relay Protocol v3 forwarder. It requires a
-TCP listener for the reliable control plane and may expose UDP on the same public
-port for the UDP data profile. The test host only opens `25910/TCP` and
-`25910/UDP`, so both listeners should normally use that port.
+可以使用 Docker 或独立可执行文件部署。两种方式都使用同一份
+[`relay.toml`](../deploy/relay.toml)。
+默认配置监听 `25910/TCP` 和 `25910/UDP`，OTLP 默认关闭。启动前，请在主机
+防火墙以及云服务商的防火墙或安全组中放行这两个端口。
 
-## Configuration
+如需修改默认值，请先参阅 [Relay 配置说明](relay-configuration.md)。
 
-```toml
-[relay_server]
-tcp_bind = "0.0.0.0:25910"
-udp_bind = "0.0.0.0:25910" # omit for TCP-only operation
+## 使用 Docker 部署
 
-[admission]
-pow_difficulty_bits = 18
+将 [`docker-compose.relay.yml`](../deploy/docker-compose.relay.yml) 和
+[`relay.toml`](../deploy/relay.toml) 复制到准备运行 Relay 的目录，并保持两个
+文件位于同一目录，然后执行：
 
-[room_limits]
-max_rooms = 256
-
-[traffic_limits]
-rate_limit_per_second = 5000
-byte_rate_limit_per_second = 8388608
-byte_rate_limit_burst = 16777216
-
-[access_control]
-blocked_cidrs = []
+```sh
+docker compose -f docker-compose.relay.yml up -d
 ```
 
-TCP cannot be disabled in v3. A Relay without UDP accepts only Clients whose
-required capabilities allow the TCP data profile. Listener, packet-size, queue,
-Room, traffic, and admission values are validated at startup.
+## 使用可执行文件部署
 
-The Bridge Client accepts Relay hostnames, IPv4 literals, and IPv6 literals
-with or without brackets. TCP resolution selects the concrete Relay address;
-the UDP data profile then uses that same address and address family. To expose
-an IPv6 listener, use `[::]:25910` for both bind fields. Whether an IPv6
-wildcard also accepts IPv4 is operating-system dependent, so deployment must
-still verify the intended IPv4/IPv6 listener and firewall state.
+从[最新版本](https://github.com/mcthesw/TractorBeam/releases/latest)下载服务器
+平台对应的 Relay，并将 [`relay.toml`](../deploy/relay.toml) 下载到目标目录。
 
-## Session lifecycle
+Linux 下先添加执行权限，再启动 Relay：
 
-The Client first performs the bounded compatibility bootstrap, then Join with a
-128-bit Session Credential and proof-of-work challenge. The Relay creates or
-finds the credential-keyed Room and issues opaque connection/resume material.
-UDP sessions additionally validate a one-time path token from the observed UDP
-source tuple before any UDP forwarding.
+```sh
+chmod +x TractorBeam-Relay-Linux-x86_64
+./TractorBeam-Relay-Linux-x86_64 --config relay.toml
+```
 
-Unexpected TCP loss marks the Peer Reconnecting and retains Room membership,
-connection identity, duplicate window, and validated UDP tuple for 120 seconds.
-Resume restores Connected presence. Explicit Stop removes immediately; expiry
-removes once. Relay restart intentionally loses all in-memory state, after which
-Clients perform a full Join with the existing Session Credential.
+Windows 下在 PowerShell 中启动：
 
-## Protection and observability
+```powershell
+.\TractorBeam-Relay-Windows-x86_64.exe --config .\relay.toml
+```
 
-Relay applies packet and byte limits per connection, validates sender identity,
-Room membership, selected profile, UDP tuple, target membership, and monotonic
-frame window before forwarding. Duplicate and too-old frames are discarded.
+配置文件可以放在其他目录，只需将实际路径传给 `--config`。
 
-Gameplay delivery is isolated per frame. Target membership or availability
-changes, duplicate or stale frames, traffic-limit rejection, and target egress
-backpressure or dispatch failure drop only the current frame and update Relay
-metrics; they do not close the sender's TCP control session. Source-side
-authentication, identity, profile, and validated-path violations remain fatal.
-Relay does not retry an accepted frame or send a per-frame negative
-acknowledgement: retrying would consume the frame's monotonic identity and could
-amplify congestion, while gameplay recovery remains the Client's responsibility.
 
-Startup/bootstrap transitions, disconnect/resume outcomes, expiry, and anomalies
-are structured logs. Continuous workload, latency, queue pressure, and active
-state belong to metrics and are not repeated as periodic INFO logs. Never log
-Session Credentials, connection ids, resume/path credentials, SteamID64 values,
-display names, or peer addresses.
+## 高级：使用 systemd 运行
 
-Relay Protocol v3 also forwards capability-gated Room Path Quality Probe Frames.
-They use the selected TCP or validated UDP data path and remain separate from
-Isaac Data Frames. Relay validates source, Room, target, capability, path, and a
-small per-connection probe budget; Bridge Clients own echo timing and the
-user-visible RTT/jitter/loss calculation.
+如需在 Linux 上长期运行独立可执行文件，可以创建
+`/etc/systemd/system/tractor-beam-relay.service`：
 
-## Compatibility
+```ini
+[Unit]
+Description=Tractor Beam Relay
+After=network-online.target
+Wants=network-online.target
 
-The Relay implements only Relay Protocol v3 (`TBR3`); there is no legacy
-listener, fallback, runtime module, or API namespace. Old Clients and Join Codes
-are rejected by the hard-cut release. Bootstrap incompatibility is returned
-with a stable schema/protocol/capability reason before admission.
+[Service]
+Type=simple
+User=tractor-beam
+WorkingDirectory=/opt/tractor-beam-relay
+ExecStart=/opt/tractor-beam-relay/TractorBeam-Relay-Linux-x86_64 --config /opt/tractor-beam-relay/relay.toml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+根据实际环境创建或替换服务用户和路径，然后启用服务：
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now tractor-beam-relay
+sudo systemctl status tractor-beam-relay
+sudo journalctl -u tractor-beam-relay -f
+```
+
+## 高级：采集可观测性数据
+
+在配置中添加以下内容，即可将 Relay 指标和 Trace 发送到 OTLP/gRPC 接收端：
+
+```toml
+[telemetry]
+otlp_endpoint = "http://127.0.0.1:4317"
+service_instance_id = "relay-example-01"
+```
+
+日志采集器读取容器或 systemd 标准输出时，可以设置 `LOG_FORMAT=json`。
+信号名称和采集细节参阅 [Relay 可观测性](relay-observability.md)。

@@ -1,39 +1,23 @@
-# Relay observability
+# Relay 可观测性
 
-The Relay Server can export OpenTelemetry metrics and traces through standard
-OTLP/gRPC. Export is Relay-only: Bridge Clients neither run an OTel exporter nor
-propagate trace context. Client Room Path Quality remains a local player-facing
-measurement.
+[English](relay-observability.en.md)
 
-The receiver may be a local OpenTelemetry Collector, Vector, a SigNoz
-collector, or another OTLP-compatible component. Tractor Beam does not depend
-on that deployment topology or on a particular observability backend.
+Relay Server 可以通过标准 OTLP/gRPC 导出 OpenTelemetry 指标和 Trace，只有 Relay
+会执行导出。
 
-## Local log format
+接收端可以是本地 OpenTelemetry Collector、Vector、SigNoz Collector 或其他兼容
+OTLP 的组件。Tractor Beam 不依赖特定部署拓扑或可观测性后端。
 
-Relay logs always go to standard output and remain independent of OTLP export.
-Set `LOG_FORMAT=json` for newline-delimited JSON intended for journald, Docker,
-or another structured log collector. Existing `tracing` event fields are
-top-level JSON properties, while timestamp, level, target, message, and current
-span context use the standard `tracing-subscriber` JSON representation. JSON
-output never contains ANSI escape sequences.
+## 本地日志格式
 
-`LOG_FORMAT` supports exactly `text` and `json`. It defaults to `text` when
-unset so direct local runs remain readable. An unsupported value fails startup
-before the Relay binds its sockets. `RUST_LOG` controls filtering and defaults
-to `info` when absent or invalid.
+Relay 日志始终写入标准输出，并与 OTLP 导出相互独立。设置 `LOG_FORMAT=json` 可输出
+适合 journald、Docker 或其他结构化日志采集器读取的逐行 JSON。
 
-For a native systemd deployment, run the Relay binary directly with
-`Environment=LOG_FORMAT=json` and let journald capture stdout. A Collector
-Contrib `journald` receiver can conditionally apply a `json_parser` to
-`body.MESSAGE`; non-JSON systemd messages and older Relay output should pass
-through unchanged. This is simpler than wrapping the Relay in a shell pipeline,
-which changes journald process metadata and adds buffering.
+`LOG_FORMAT` 只支持 `text` 和 `json`。未设置时默认为 `text`，便于直接运行时阅读。`RUST_LOG` 控制过滤；缺失或无效时默认使用 `info`。
 
-## Configuration
+## 配置
 
-Telemetry is disabled unless the `[telemetry]` section is present. Environment
-variables cannot enable it by themselves.
+只有配置中存在 `[telemetry]` 时才会启用 Telemetry；环境变量无法单独启用它。
 
 ```toml
 [telemetry]
@@ -41,136 +25,80 @@ otlp_endpoint = "http://127.0.0.1:4317"
 service_instance_id = "relay-guangzhou-1"
 ```
 
-- `otlp_endpoint` is the OTLP/gRPC receiver endpoint. Version 1 does not
-  implement OTLP/HTTP.
-- `service_instance_id` must be stable and unique among simultaneously running
-  Relay instances.
+- `otlp_endpoint` 是 OTLP/gRPC 接收端地址；当前不支持 OTLP/HTTP。
+- `service_instance_id` 在同时运行的 Relay 实例之间必须稳定且唯一。
 
-Establishment traces are emitted at connection/admission rate. Gameplay and
-probe forwarding never create spans, so there is no data-plane sampling knob.
-The configuration parser rejects obsolete or unknown telemetry fields; remove
-`data_trace_sample_ratio` before deploying this binary over an older config.
+每个信号都包含以下标准 Resource Attribute：
 
-Invalid explicit configuration or provider construction fails startup. Once
-started, an unavailable or slow receiver is lossy and non-fatal: it cannot
-block forwarding. Shutdown attempts to flush metrics and traces for at most two
-seconds. A crash, kill, or power loss can lose the tail; no disk queue exists.
-
-Every signal has these standard resource attributes:
-
-| Attribute | Value |
+| 属性 | 值 |
 |---|---|
 | `service.name` | `tractor-beam-relay` |
-| `service.version` | Relay build version |
-| `service.instance.id` | configured stable instance ID |
+| `service.version` | Relay 构建版本 |
+| `service.instance.id` | 配置的稳定实例 ID |
 
-## Metrics
+## 指标
 
-All attributes are bounded enums. Metrics never contain Session Credential,
-SessionKey, Room ID, connection ID, SteamID64, display name, IP address, socket
-tuple, resume credential, path token, or packet payload.
-
-| Name | Type | Unit | Meaning | Attributes |
+| 名称 | 类型 | 单位 | 含义 | Attribute |
 |---|---|---:|---|---|
-| `tractor_beam.relay.room.active` | Gauge | `{room}` | active rooms | none |
-| `tractor_beam.relay.peer.active` | Gauge | `{peer}` | active peers | `network.transport`, `peer.presence` |
-| `tractor_beam.relay.connection.operation` | Counter | `{connection}` | accepted, blocked, and closed TCP connections | `outcome` |
-| `tractor_beam.relay.connection.active` | UpDownCounter | `{connection}` | currently active accepted TCP connections | none |
-| `tractor_beam.relay.control.operation` | Counter | `{operation}` | control outcomes | `operation`, `outcome` |
-| `tractor_beam.relay.control.operation.duration` | Histogram | `s` | control handling latency | `operation` |
-| `tractor_beam.relay.session.establishment.duration` | Histogram | `s` | Join/Resume establishment time and outcome | `operation`, `network.transport`, `outcome` |
-| `tractor_beam.relay.data.frame` | Counter | `{frame}` | admitted/rejected/forwarded frames | `network.transport`, `direction`, `frame.type`, `outcome` |
-| `tractor_beam.relay.data.io` | Counter | `By` | bytes admitted/forwarded | same as data frames |
-| `tractor_beam.relay.data.dispatch.duration` | Histogram | `s` | route plus egress dispatch latency | `network.transport`, `frame.type` |
-| `tractor_beam.relay.tcp.egress.queue.max_utilization` | Gauge | `1` | highest current per-peer TCP queue utilization | none |
-| `tractor_beam.relay.tcp.egress.queue.full` | Counter | `{frame}` | frames refused by a full TCP egress queue | `frame.type` |
+| `tractor_beam.relay.room.active` | Gauge | `{room}` | 活动房间 | 无 |
+| `tractor_beam.relay.peer.active` | Gauge | `{peer}` | 活动 Peer | `network.transport`, `peer.presence` |
+| `tractor_beam.relay.connection.operation` | Counter | `{connection}` | 接受、阻止和关闭的 TCP 连接 | `outcome` |
+| `tractor_beam.relay.connection.active` | UpDownCounter | `{connection}` | 当前活动的已接受 TCP 连接 | 无 |
+| `tractor_beam.relay.control.operation` | Counter | `{operation}` | 控制操作结果 | `operation`, `outcome` |
+| `tractor_beam.relay.control.operation.duration` | Histogram | `s` | 控制处理延迟 | `operation` |
+| `tractor_beam.relay.session.establishment.duration` | Histogram | `s` | Join/Resume 建连时间与结果 | `operation`, `network.transport`, `outcome` |
+| `tractor_beam.relay.data.frame` | Counter | `{frame}` | 接受、拒绝和转发的帧 | `network.transport`, `direction`, `frame.type`, `outcome` |
+| `tractor_beam.relay.data.io` | Counter | `By` | 接受和转发的字节数 | 与 Data Frame 相同 |
+| `tractor_beam.relay.data.dispatch.duration` | Histogram | `s` | 路由和出口发送延迟 | `network.transport`, `frame.type` |
+| `tractor_beam.relay.tcp.egress.queue.max_utilization` | Gauge | `1` | 当前每 Peer TCP 队列的最高利用率 | 无 |
+| `tractor_beam.relay.tcp.egress.queue.full` | Counter | `{frame}` | 因 TCP 出口队列已满而拒绝的帧 | `frame.type` |
 
-All duration histograms use explicit second boundaries:
-`0.00025`, `0.0005`, `0.001`, `0.0025`, `0.005`, `0.01`, `0.025`, `0.05`,
-`0.1`, `0.25`, `0.5`, `1`, and `2.5`.
+所有时长 Histogram 使用以下秒级显式边界：
+`0.00025`、`0.0005`、`0.001`、`0.0025`、`0.005`、`0.01`、`0.025`、`0.05`、
+`0.1`、`0.25`、`0.5`、`1` 和 `2.5`。
 
-Bounded values are:
+有界值如下：
 
-- `network.transport`: `tcp`, `udp`
-- `peer.presence`: `connected`, `reconnecting`
-- `direction`: `inbound`, `outbound`
-- `frame.type`: `game`, `probe`
-- queue-full `frame.type`: `control`, `game`, `probe`
-- data `outcome`: `accepted`, `forwarded`, `duplicate`, `rate_limited`, `rejected`
-- connection `outcome`: `accepted`, `blocked`, `closed`
-- establishment `operation`: `join`, `resume`, `unknown`
-- establishment `outcome`: `accepted`, `rejected`, `failed`, `disconnected`, `timeout`
-- control `operation`: `bootstrap`, `join_begin`, `join_proof`, `resume`,
-  `udp_path_request`, `ping`, `pong`, `stop`, `udp_path_hello`, `detach`,
+- `network.transport`：`tcp`、`udp`
+- `peer.presence`：`connected`、`reconnecting`
+- `direction`：`inbound`、`outbound`
+- `frame.type`：`game`、`probe`
+- 队列已满时的 `frame.type`：`control`、`game`、`probe`
+- 数据 `outcome`：`accepted`、`forwarded`、`duplicate`、`rate_limited`、`rejected`
+- 连接 `outcome`：`accepted`、`blocked`、`closed`
+- 建连 `operation`：`join`、`resume`、`unknown`
+- 建连 `outcome`：`accepted`、`rejected`、`failed`、`disconnected`、`timeout`
+- 控制 `operation`：`bootstrap`、`join_begin`、`join_proof`、`resume`、
+  `udp_path_request`、`ping`、`pong`、`stop`、`udp_path_hello`、`detach`、
   `session_expire`
-- control `outcome`: `attempted`, `accepted`, `rejected`
+- 控制 `outcome`：`attempted`、`accepted`、`rejected`
 
-The 30-second task only records gauges; it emits no periodic log. The Relay
-exports no OTLP logs.
+## Trace
 
-## Traces
+Span 名称是固定值：
 
-Span names are static:
-
-| Span | Boundary | Important bounded/correlation fields |
+| Span | 边界 | 重要的有界或关联字段 |
 |---|---|---|
-| `relay.session.establish` | one TCP accept through successful/rejected Join or Resume and required UDP path validation | process-local attempt ID, `session.operation`, `network.transport`, `outcome`, `error.type` |
-| `relay.bootstrap` | compatibility bootstrap child | `outcome`, `error.type` |
-| `relay.join.begin` | Join challenge child | `outcome`, `error.type` |
-| `relay.join.proof` | Join proof child | `outcome`, `error.type` |
-| `relay.resume` | Resume child | `outcome`, `error.type` |
-| `relay.udp.validate` | required UDP path-validation child | `outcome`, `error.type` |
+| `relay.session.establish` | 从一次 TCP Accept 到 Join/Resume 成功或拒绝，以及必需的 UDP 路径验证 | 进程本地 Attempt ID、`session.operation`、`network.transport`、`outcome`、`error.type` |
+| `relay.bootstrap` | 兼容性 Bootstrap 子 Span | `outcome`、`error.type` |
+| `relay.join.begin` | Join Challenge 子 Span | `outcome`、`error.type` |
+| `relay.join.proof` | Join Proof 子 Span | `outcome`、`error.type` |
+| `relay.resume` | Resume 子 Span | `outcome`、`error.type` |
+| `relay.udp.validate` | 必需的 UDP 路径验证子 Span | `outcome`、`error.type` |
 
-The establishment root ends on success, rejection, failure, disconnect, or a
-15-second trace-only deadline. That deadline never disconnects or rejects a
-Client. Routine ping/presence/Stop controls, gameplay, and probe forwarding
-create no spans. Span names never contain runtime values. Traces never contain
-credentials, Room or wire connection IDs, Steam IDs, display names, addresses,
-tokens, or payloads. Client trace context is neither accepted nor propagated.
+建连 Root Span 会在成功、拒绝、失败、断开或 15 秒 Trace 专用 Deadline 时结束。
 
-Local tracing events are deliberately excluded from the OTel trace layer. This
-keeps useful operator logs local and prevents their address or peer fields from
-becoming exported span events.
+## 容量与服务器选购
 
-## Capacity and server-purchase guide
+不要根据房间数、Peer 数或单次指标峰值直接升级服务器。只有 Relay 指标与主机指标
+持续指向同一瓶颈时，才需要调整规格。
 
-Use sustained trends, not one spike:
+| 现象 | 优先检查或升级 |
+|---|---|
+| TCP 和 UDP 发送延迟同时上升，且 CPU 持续饱和 | CPU |
+| 吞吐接近网卡或服务商限制，丢包增加，但 CPU 正常 | 带宽和网络线路 |
+| RSS 或内存压力随 Peer 数持续增长 | 内存 |
+| 只有房间、Peer 或流量增长，没有资源压力 | 暂不升级 |
 
-- Rising `data.frame{outcome="rate_limited"}` with otherwise healthy queue and
-  host resources usually means a peer is exceeding configured admission limits;
-  adding servers does not fix that peer behavior.
-- A sustained TCP queue maximum above `0.8` is a warning, not an automatic
-  scaling command. Corroborate it with queue-full events or rising dispatch
-  latency and host pressure.
-- Rising dispatch latency on both TCP and UDP with host CPU saturation suggests
-  Relay compute pressure. Rising TCP-only latency and queue utilization points
-  first to TCP egress/backpressure.
-- Compare inbound accepted frames/bytes with outbound forwarded frames/bytes.
-  A sustained widening gap plus rejected outcomes identifies Relay-side loss;
-  do not infer available bandwidth from these counters.
-- Scale or resize only when pressure is sustained and at least one Relay signal
-  and one deployment resource signal agree. Room/peer counts alone are demand,
-  not proof of resource exhaustion.
-
-The Collector must add host evidence that the Relay cannot infer: CPU
-utilization/throttling, RSS and memory pressure, scheduler run queue or steal
-time, interface throughput, packet drops/errors, and provider bandwidth or
-traffic quota. Evaluate comparable peak windows (for example 15-minute and
-24-hour views), not a single scrape.
-
-Use the correlated bottleneck to guide a purchase:
-
-| Sustained evidence | Likely bottleneck | Purchase direction |
-|---|---|---|
-| dispatch latency rises on TCP and UDP, queue-full rises, CPU/run queue saturated | compute/scheduling | more or faster CPU before adding bandwidth |
-| TCP/UDP bytes approach interface/provider limit, drops/errors rise, CPU healthy | network | higher guaranteed bandwidth/traffic quota or a better network route |
-| RSS/memory pressure rises with active rooms/peers, CPU/network healthy | memory/concurrency | more RAM after confirming retention is expected |
-| rooms/peers or traffic rise with no pressure signal | demand only | no resize conclusion |
-
-Do not derive a vendor SKU, bandwidth claim, or safe peer ceiling from one
-Relay metric. Preserve the observed sustained workload and headroom when
-comparing candidate servers, then load-test the candidate with the same mix.
-
-These signals describe Relay behavior. They do not determine an ideal Client
-Input Delay, estimate available bandwidth, or replace Client end-to-end Room
-Path Quality shown to players.
+`rate_limited` 通常表示 Peer 超出配置限制，增加服务器资源不能解决。服务器位置和
+线路最终应通过 Client 的实际房间路径质量验证，Relay 指标不能替代玩家体验。

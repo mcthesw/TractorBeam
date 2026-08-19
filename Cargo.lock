@@ -4347,7 +4347,7 @@ dependencies = [
 
 [[package]]
 name = "tractor-beam-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "atomic-write-file",
  "backon",
@@ -4383,7 +4383,7 @@ dependencies = [
 
 [[package]]
 name = "tractor-beam-direct-protocol"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "bytes",
  "hex",
@@ -4394,7 +4394,7 @@ dependencies = [
 
 [[package]]
 name = "tractor-beam-gui"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "arboard",
  "chrono",
@@ -4412,7 +4412,7 @@ dependencies = [
 
 [[package]]
 name = "tractor-beam-hook-ipc"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "hex",
  "postcard",
@@ -4422,7 +4422,7 @@ dependencies = [
 
 [[package]]
 name = "tractor-beam-isaac-injector"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "clap",
  "sysinfo",
@@ -4433,7 +4433,7 @@ dependencies = [
 
 [[package]]
 name = "tractor-beam-native-hook"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "tractor-beam-hook-ipc",
  "windows-sys 0.61.2",
@@ -4441,7 +4441,7 @@ dependencies = [
 
 [[package]]
 name = "tractor-beam-relay"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "argh",
  "bs58",
@@ -4467,7 +4467,7 @@ dependencies = [
 
 [[package]]
 name = "tractor-beam-relay-protocol"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "bytes",
  "hex",

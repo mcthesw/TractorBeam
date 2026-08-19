@@ -1,7 +1,7 @@
 services:
   relay:
-    # Published Relay Server image. Formal release assets replace :latest with
-    # the matching release tag for reproducible deployments.
+    # Use :latest for automatic updates, or replace it with a release tag such
+    # as :v0.5.1 to pin a specific version.
     image: ghcr.io/mcthesw/tractor-beam-relay:latest
     restart: unless-stopped
     ports:

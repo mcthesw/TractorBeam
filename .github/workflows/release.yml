@@ -86,9 +86,7 @@ jobs:
       - name: Package Client Bundle
         shell: pwsh
         run: |
-          $version = "${{ needs.setup.outputs.version }}"
-          $bundle = "TractorBeamClient-$version"
-          $bundleDir = Join-Path "dist" $bundle
+          $bundleDir = "dist/TractorBeamClient"
           New-Item -ItemType Directory -Force $bundleDir | Out-Null
           Copy-Item "target/x86_64-pc-windows-msvc/release/tractor-beam.exe" $bundleDir
           Copy-Item "target/i686-pc-windows-msvc/release/tractor-beam-isaac-injector.exe" $bundleDir
@@ -104,12 +102,12 @@ jobs:
           if (Compare-Object $expected $actual) {
             throw "Client Bundle root files differ from the required four-file layout: $($actual -join ', ')"
           }
-          Compress-Archive -Path "$bundleDir/*" -DestinationPath "dist/tractor-beam-client-bundle-windows-x86_64.zip"
+          Compress-Archive -Path "$bundleDir/*" -DestinationPath "dist/TractorBeam-Client-Windows-x86_64.zip"
 
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: release-client-windows-x86_64
-          path: dist/tractor-beam-client-bundle-windows-x86_64.zip
+          path: dist/TractorBeam-Client-Windows-x86_64.zip
           if-no-files-found: error
           retention-days: 7
 
@@ -136,13 +134,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp target/release/tractor-beam-relay dist/tractor-beam-relay-linux-x86_64
-          chmod 0755 dist/tractor-beam-relay-linux-x86_64
+          cp target/release/tractor-beam-relay dist/TractorBeam-Relay-Linux-x86_64
+          chmod 0755 dist/TractorBeam-Relay-Linux-x86_64
 
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: release-relay-linux-x86_64
-          path: dist/tractor-beam-relay-linux-x86_64
+          path: dist/TractorBeam-Relay-Linux-x86_64
           if-no-files-found: error
           retention-days: 7
 
@@ -171,12 +169,12 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item "target/x86_64-pc-windows-msvc/release/tractor-beam-relay.exe" "dist/tractor-beam-relay-windows-x86_64.exe"
+          Copy-Item "target/x86_64-pc-windows-msvc/release/tractor-beam-relay.exe" "dist/TractorBeam-Relay-Windows-x86_64.exe"
 
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: release-relay-windows-x86_64
-          path: dist/tractor-beam-relay-windows-x86_64.exe
+          path: dist/TractorBeam-Relay-Windows-x86_64.exe
           if-no-files-found: error
           retention-days: 7
 
@@ -215,7 +213,6 @@ jobs:
             type=raw,value=${{ needs.setup.outputs.version }}
 
       - name: Build and push image
-        id: build
         uses: docker/build-push-action@v7.2.0
         with:
           context: .
@@ -226,26 +223,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      - name: Stage image metadata
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          cat > dist/relay-image.json <<JSON
-          {
-            "image": "${{ needs.setup.outputs.image }}",
-            "tag": "${{ needs.setup.outputs.tag }}",
-            "version": "${{ needs.setup.outputs.version }}",
-            "digest": "${{ steps.build.outputs.digest }}"
-          }
-          JSON
-
-      - uses: actions/upload-artifact@v7.0.1
-        with:
-          name: release-relay-image
-          path: dist/relay-image.json
-          if-no-files-found: error
-          retention-days: 7
-
   assemble:
     name: Assemble release
     needs: [setup, client-windows, relay-linux, relay-windows, relay-image]
@@ -255,10 +232,6 @@ jobs:
       actions: read
       contents: write
     steps:
-      - uses: actions/checkout@v7.0.0
-        with:
-          ref: ${{ needs.setup.outputs.ref }}
-
       - uses: actions/download-artifact@v8.0.1
         with:
           path: staging
@@ -266,51 +239,12 @@ jobs:
           merge-multiple: true
 
       - name: Assemble release assets
-        env:
-          TAG: ${{ needs.setup.outputs.tag }}
-          VERSION: ${{ needs.setup.outputs.version }}
-          IMAGE: ${{ needs.setup.outputs.image }}
-          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           mkdir -p release-assets
-          cp staging/tractor-beam-client-bundle-windows-x86_64.zip release-assets/
-          cp staging/tractor-beam-relay-linux-x86_64 release-assets/
-          cp staging/tractor-beam-relay-windows-x86_64.exe release-assets/
-          sed "s|ghcr.io/mcthesw/tractor-beam-relay:latest|${IMAGE}:${TAG}|g" \
-            deploy/docker-compose.relay.yml > release-assets/docker-compose.relay.yml
-          cp staging/relay-image.json release-assets/
-          (
-            cd release-assets
-            : > SHA256SUMS
-            while IFS= read -r -d '' file; do
-              sha256sum "${file#./}" >> SHA256SUMS
-            done < <(find . -maxdepth 1 -type f ! -name 'SHA256SUMS' ! -name 'manifest.json' -print0 | sort -z)
-            rm -f assets.jsonl
-            while IFS= read -r -d '' file; do
-              name="${file#./}"
-              size="$(wc -c < "${name}" | tr -d ' ')"
-              sha="$(sha256sum "${name}" | cut -d ' ' -f1)"
-              url="https://github.com/${REPO}/releases/download/${TAG}/${name}"
-              jq -n \
-                --arg name "${name}" \
-                --arg size "${size}" \
-                --arg sha256 "${sha}" \
-                --arg url "${url}" \
-                '{name: $name, size: ($size | tonumber), sha256: $sha256, url: $url}' >> assets.jsonl
-            done < <(find . -maxdepth 1 -type f ! -name 'manifest.json' -print0 | sort -z)
-            relay_digest="$(jq -r '.digest' relay-image.json)"
-            jq -s \
-              --arg tag "${TAG}" \
-              --arg version "${VERSION}" \
-              --arg repository "${REPO}" \
-              --arg commit "$(git rev-parse HEAD)" \
-              --arg image "${IMAGE}:${TAG}" \
-              --arg digest "${relay_digest}" \
-              '{tag: $tag, version: $version, repository: $repository, commit: $commit, relay_image: {image: $image, digest: $digest}, assets: .}' \
-              assets.jsonl > manifest.json
-            rm assets.jsonl
-          )
+          cp staging/TractorBeam-Client-Windows-x86_64.zip release-assets/
+          cp staging/TractorBeam-Relay-Linux-x86_64 release-assets/
+          cp staging/TractorBeam-Relay-Windows-x86_64.exe release-assets/
           ls -la release-assets
 
       - name: Verify release exists
@@ -347,28 +281,20 @@ jobs:
           gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" --dir verify
           ls -la verify
 
-      - name: Verify manifest and checksums
+      - name: Verify release assets
         working-directory: verify
         run: |
           set -euo pipefail
-          test -f manifest.json
-          test -f SHA256SUMS
-          sha256sum -c SHA256SUMS
           for name in \
-            tractor-beam-client-bundle-windows-x86_64.zip \
-            tractor-beam-relay-linux-x86_64 \
-            tractor-beam-relay-windows-x86_64.exe \
-            docker-compose.relay.yml \
-            relay-image.json \
-            SHA256SUMS; do
+            TractorBeam-Client-Windows-x86_64.zip \
+            TractorBeam-Relay-Linux-x86_64 \
+            TractorBeam-Relay-Windows-x86_64.exe; do
             test -f "${name}" || { echo "missing asset: ${name}" >&2; exit 1; }
-            jq -e --arg name "${name}" '.assets[] | select(.name == $name)' manifest.json >/dev/null
           done
-          jq -e '.relay_image.image and .relay_image.digest' manifest.json >/dev/null
           diff -u \
             <(printf '%s\n' \
               config.toml \
               tractor-beam-isaac-injector.exe \
               tractor-beam.exe \
               tractor_beam_native_hook.dll | sort) \
-            <(unzip -Z1 tractor-beam-client-bundle-windows-x86_64.zip | sort)
+            <(unzip -Z1 TractorBeam-Client-Windows-x86_64.zip | sort)

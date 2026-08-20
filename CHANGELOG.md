@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.2](https://github.com/mcthesw/TractorBeam/compare/v0.5.1...v0.5.2) (2026-08-20)
+
+
+### Documentation
+
+* complete navigation and normalize Chinese spacing ([fe24e37](https://github.com/mcthesw/TractorBeam/commit/fe24e3731de2081b338ad6ed19ca32b8475364bf))
+* simplify bilingual user and operator guides ([fdd4dcf](https://github.com/mcthesw/TractorBeam/commit/fdd4dcf8a9fd07ef99e1b51c5e85f14abd0222bb))
+
 ## [0.5.1](https://github.com/mcthesw/TractorBeam/compare/v0.5.0...v0.5.1) (2026-08-19)
 
 

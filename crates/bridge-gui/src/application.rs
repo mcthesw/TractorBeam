@@ -13,9 +13,10 @@ use std::{
 use tractor_beam_core::{
     BridgeClient, ClientConfigSelection, ClientError, ExternalRelayConfig, InputDelayError,
     InputDelayReport, LanAdapter, LanJoinCode, LanPeerPathState, LanPeerState, LanProbeResult,
-    LanRoomHandle, LightPingTarget, LoadedClientConfig, RelayEndpoint, RuntimeState, SessionConfig,
-    SessionStatus, default_lan_adapters, enumerate_lan_adapters, lan_candidate_addresses,
-    load_client_config, save_client_config_selection,
+    LanRoomHandle, LightPingTarget, LoadedClientConfig, RelayCatalogChange, RelayEndpoint,
+    RuntimeState, SessionConfig, SessionStatus, bundle_config_path, default_lan_adapters,
+    enumerate_lan_adapters, lan_candidate_addresses, load_client_config,
+    save_client_config_selection, save_client_relay_catalog_to,
 };
 
 use crate::logging::ClientLogFiles;
@@ -58,6 +59,7 @@ pub(crate) enum ApplicationOperation {
     ExportingDiagnosticsBundle,
     ReadingClipboard,
     ConfiguringRoom,
+    SavingRelayCatalog,
     ShuttingDown,
 }
 
@@ -121,6 +123,7 @@ pub(crate) enum ApplicationEvent {
     LanRoomCreated(Result<String, String>),
     LanRoomJoined(Result<(), String>),
     SelectionSaveFailed(String),
+    RelayCatalogSaved(Result<LoadedClientConfig, ()>),
     CommandRejected,
     ShutdownComplete,
 }
@@ -145,6 +148,7 @@ enum ApplicationCommand {
     ExportDiagnosticsBundle,
     ClearLogs,
     ReadClipboard,
+    SaveRelayCatalog(RelayCatalogChange),
     EnumerateLanAdapters,
     CreateLanRoom {
         steam_id64: u64,
@@ -183,12 +187,13 @@ pub(crate) struct ApplicationHandle {
 impl ApplicationHandle {
     #[must_use]
     pub(crate) fn spawn(wake: impl Fn() + Send + Sync + 'static) -> Self {
-        Self::spawn_with(wake, Box::new(production_bootstrap))
+        Self::spawn_with(wake, Box::new(production_bootstrap), bundle_config_path())
     }
 
     fn spawn_with(
         wake: impl Fn() + Send + Sync + 'static,
         bootstrap_factory: BootstrapFactory,
+        config_path: Option<PathBuf>,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
         let (event_tx, event_rx) = mpsc::channel();
@@ -212,6 +217,7 @@ impl ApplicationHandle {
                     worker_selection,
                     worker_control,
                     bootstrap_factory,
+                    config_path,
                 );
             });
         if let Err(error) = spawn_result {
@@ -362,6 +368,10 @@ impl ApplicationHandle {
         *lock(&self.pending_selection) = Some(selection);
     }
 
+    pub(crate) fn save_relay_catalog(&self, change: RelayCatalogChange) -> bool {
+        self.submit(ApplicationCommand::SaveRelayCatalog(change))
+    }
+
     fn submit(&self, command: ApplicationCommand) -> bool {
         let queued = QueuedCommand {
             command_generation: lock(&self.snapshot.value).command_generation,
@@ -381,6 +391,7 @@ fn run_application(
     pending_selection: Arc<Mutex<Option<ClientConfigSelection>>>,
     control: Arc<AtomicU8>,
     mut bootstrap_factory: BootstrapFactory,
+    config_path: Option<PathBuf>,
 ) {
     let mut client = bootstrap(&snapshot, &mut bootstrap_factory);
     let mut lan_room: Option<LanRoomHandle> = None;
@@ -477,6 +488,7 @@ fn run_application(
                     &mut lan_room,
                     &snapshot,
                     &event_tx,
+                    config_path.as_deref(),
                 );
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}

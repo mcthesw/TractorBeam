@@ -134,6 +134,57 @@ relay.server:
 relay.manual:
   zh_CN: "手动填写"
   en_US: "Manual relay"
+relay.none:
+  zh_CN: "尚未保存 Relay"
+  en_US: "No Saved Relay"
+relay.one_time:
+  zh_CN: "一次性 Relay"
+  en_US: "One-time Relay"
+relay.add:
+  zh_CN: "添加 Relay"
+  en_US: "Add Relay"
+relay.edit:
+  zh_CN: "编辑 Relay"
+  en_US: "Edit Relay"
+relay.add_title:
+  zh_CN: "添加 Saved Relay"
+  en_US: "Add Saved Relay"
+relay.edit_title:
+  zh_CN: "编辑 Saved Relay"
+  en_US: "Edit Saved Relay"
+relay.name:
+  zh_CN: "名称"
+  en_US: "Name"
+relay.transports:
+  zh_CN: "支持的传输"
+  en_US: "Supported transports"
+relay.default_transport:
+  zh_CN: "默认传输"
+  en_US: "Default transport"
+relay.save:
+  zh_CN: "保存"
+  en_US: "Save"
+relay.cancel:
+  zh_CN: "取消"
+  en_US: "Cancel"
+relay.delete:
+  zh_CN: "删除"
+  en_US: "Delete"
+relay.error_name_required:
+  zh_CN: "请填写名称"
+  en_US: "Name is required."
+relay.error_host_required:
+  zh_CN: "请填写 Relay 地址"
+  en_US: "Relay host is required."
+relay.error_transport_required:
+  zh_CN: "至少选择 TCP 或 UDP"
+  en_US: "Select at least TCP or UDP."
+relay.error_default_transport:
+  zh_CN: "默认传输必须已勾选"
+  en_US: "The default transport must be selected."
+relay.save_failed:
+  zh_CN: "无法保存 Relay，请查看日志了解详情"
+  en_US: "Could not save the Relay. Check the logs for details."
 relay.port:
   zh_CN: "端口"
   en_US: "Port"

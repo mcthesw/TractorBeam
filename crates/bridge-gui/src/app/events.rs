@@ -200,6 +200,25 @@ impl BridgeApp {
                 tracing::warn!(error = %error, "Could not save GUI selection");
                 self.status_message = Some(StatusMessage::SelectionSaveFailed);
             }
+            ApplicationEvent::RelayCatalogSaved(result) => match result {
+                Ok(loaded_config) => {
+                    self.relay_presets = loaded_config.config.relays;
+                    self.selected_relay = loaded_config.config.selected_relay;
+                    if self.selected_relay.is_some() {
+                        self.apply_selected_relay_defaults();
+                    } else {
+                        self.relay_host.clear();
+                        self.relay_port = 25_910;
+                    }
+                    self.relay_dialog = None;
+                    self.status_message = None;
+                }
+                Err(()) => {
+                    if let Some(dialog) = &mut self.relay_dialog {
+                        dialog.error = Some(t!("relay.save_failed").into_owned());
+                    }
+                }
+            },
             ApplicationEvent::CommandRejected => self.show_busy_status(),
             ApplicationEvent::ShutdownComplete => {}
         }

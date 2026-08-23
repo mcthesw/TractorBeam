@@ -21,10 +21,32 @@ fn should_show_lan_create_dialog(dialog_open: bool, route: RouteChoice) -> bool 
     dialog_open && route == RouteChoice::LanDirect
 }
 
+fn matching_legacy_saved_relay(relays: &[RelayPreset], code: &RelayJoinCode) -> Option<String> {
+    let relay_id = code.relay_id.as_deref()?;
+    let endpoint = RelayEndpoint::new(&code.relay_host, code.relay_port);
+    relays
+        .iter()
+        .find(|relay| relay.id == relay_id && relay.endpoint == endpoint)
+        .map(|relay| relay.id.clone())
+}
+
+fn encode_relay_join_code(
+    endpoint: RelayEndpoint,
+    session_credential: SessionCredential,
+) -> Result<String, tractor_beam_core::JoinCodeError> {
+    JoinCode::ExternalRelay(RelayJoinCode {
+        relay_id: None,
+        relay_host: endpoint.host,
+        relay_port: endpoint.port,
+        session_credential,
+    })
+    .encode()
+}
+
 impl BridgeApp {
     pub(super) fn selected_relay_preset(&self) -> Option<&RelayPreset> {
-        self.selected_relay
-            .and_then(|index| self.relay_presets.get(index))
+        let selected = self.selected_relay.as_deref()?;
+        self.relay_presets.iter().find(|relay| relay.id == selected)
     }
 
     pub(super) fn apply_selected_relay_defaults(&mut self) {
@@ -42,14 +64,10 @@ impl BridgeApp {
     }
 
     pub(super) fn copy_join_code(&self) -> Result<String, tractor_beam_core::JoinCodeError> {
-        let relay_id = self.selected_relay_preset().map(|relay| relay.id.clone());
-        JoinCode::ExternalRelay(RelayJoinCode {
-            relay_id,
-            relay_host: self.relay_host.trim().to_owned(),
-            relay_port: self.relay_port,
-            session_credential: self.session_credential,
-        })
-        .encode()
+        encode_relay_join_code(
+            RelayEndpoint::new(self.relay_host.trim(), self.relay_port),
+            self.session_credential,
+        )
     }
 
     pub(super) fn import_join_code(&mut self) -> bool {
@@ -77,24 +95,13 @@ impl BridgeApp {
                 self.pending_lan_invitation = None;
                 self.lan_probe_results.clear();
                 self.selected_lan_probe = None;
-                if let Some(ref relay_id) = code.relay_id {
-                    if let Some(index) = self
-                        .relay_presets
-                        .iter()
-                        .position(|relay| &relay.id == relay_id)
-                    {
-                        self.selected_relay = Some(index);
-                        self.apply_selected_relay_defaults();
-                    } else {
-                        self.selected_relay = None;
-                        self.relay_host = code.relay_host.clone();
-                        self.relay_port = code.relay_port;
-                    }
-                } else {
-                    self.selected_relay = None;
-                    self.relay_host = code.relay_host.clone();
-                    self.relay_port = code.relay_port;
+                let endpoint = RelayEndpoint::new(&code.relay_host, code.relay_port);
+                self.selected_relay = matching_legacy_saved_relay(&self.relay_presets, &code);
+                if let Some(relay) = self.selected_relay_preset() {
+                    self.transport = relay.preferred_transport(self.transport);
                 }
+                self.relay_host = endpoint.host;
+                self.relay_port = endpoint.port;
                 self.session_credential = code.session_credential;
                 self.status_message = None;
                 self.persist_selection();
@@ -400,5 +407,66 @@ mod tests {
             adapter_address_summary(&adapter),
             "192.0.2.10 · 2001:db8::10"
         );
+    }
+
+    #[test]
+    fn generated_relay_join_code_does_not_expose_the_local_record_id() {
+        let credential = SessionCredential::from_bytes([7; 16]);
+        let encoded =
+            encode_relay_join_code(RelayEndpoint::new("relay.example.test", 25_910), credential)
+                .unwrap();
+
+        let JoinCode::ExternalRelay(decoded) = JoinCode::decode(&encoded).unwrap() else {
+            panic!("expected Relay Join Code");
+        };
+        assert_eq!(decoded.relay_id, None);
+        assert_eq!(decoded.relay_host, "relay.example.test");
+        assert_eq!(decoded.relay_port, 25_910);
+        assert_eq!(decoded.session_credential, credential);
+    }
+
+    #[test]
+    fn legacy_relay_id_is_only_a_hint_when_the_endpoint_also_matches() {
+        let relays = vec![RelayPreset {
+            id: "saved".to_owned(),
+            name: "Saved Relay".to_owned(),
+            endpoint: RelayEndpoint::new("saved.example.test", 25_910),
+            supports_udp: true,
+            supports_tcp: true,
+            default_transport: Some(TransportChoice::Tcp),
+        }];
+        let mut code = RelayJoinCode {
+            relay_id: Some("saved".to_owned()),
+            relay_host: "saved.example.test".to_owned(),
+            relay_port: 25_910,
+            session_credential: SessionCredential::from_bytes([8; 16]),
+        };
+
+        assert_eq!(
+            matching_legacy_saved_relay(&relays, &code).as_deref(),
+            Some("saved")
+        );
+        code.relay_host = "code.example.test".to_owned();
+        assert_eq!(matching_legacy_saved_relay(&relays, &code), None);
+    }
+
+    #[test]
+    fn new_relay_join_code_remains_one_time_even_when_the_endpoint_is_saved() {
+        let relays = vec![RelayPreset {
+            id: "saved".to_owned(),
+            name: "Saved Relay".to_owned(),
+            endpoint: RelayEndpoint::new("saved.example.test", 25_910),
+            supports_udp: true,
+            supports_tcp: true,
+            default_transport: Some(TransportChoice::Tcp),
+        }];
+        let code = RelayJoinCode {
+            relay_id: None,
+            relay_host: "saved.example.test".to_owned(),
+            relay_port: 25_910,
+            session_credential: SessionCredential::from_bytes([9; 16]),
+        };
+
+        assert_eq!(matching_legacy_saved_relay(&relays, &code), None);
     }
 }

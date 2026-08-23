@@ -39,6 +39,30 @@ fn room_activity_covers_relay_and_lan_rooms() {
 }
 
 #[test]
+fn relay_catalog_changes_require_idle_without_any_room() {
+    assert!(commands::relay_catalog_change_allowed(
+        SessionStatus::Idle,
+        false,
+        false
+    ));
+    assert!(!commands::relay_catalog_change_allowed(
+        SessionStatus::Running,
+        false,
+        false
+    ));
+    assert!(!commands::relay_catalog_change_allowed(
+        SessionStatus::Idle,
+        true,
+        false
+    ));
+    assert!(!commands::relay_catalog_change_allowed(
+        SessionStatus::Idle,
+        false,
+        true
+    ));
+}
+
+#[test]
 fn shutdown_control_takes_priority_over_leave_room() {
     let control = AtomicU8::new(CONTROL_NONE);
     control.fetch_max(CONTROL_LEAVE_ROOM, Ordering::Release);
@@ -109,6 +133,7 @@ fn failed_bootstrap_stays_open_and_can_retry() {
             let loaded = LoadedClientConfig::default();
             Ok((BridgeClient::with_config(loaded.clone()), loaded))
         }),
+        None,
     );
 
     wait_for_snapshot(&application, |snapshot| {

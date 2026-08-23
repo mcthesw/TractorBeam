@@ -12,7 +12,7 @@ use rust_i18n::t;
 use tractor_beam_core::{
     ClientConfigSelection, ConnectionProfile, ExternalRelayConfig, InputDelayError, JoinCode,
     LanAdapter, LanDirectConfig, LanJoinCode, LanProbeResult, LightPingTarget, RelayEndpoint,
-    RelayJoinCode, RelayPreset, RuntimeState, SessionConfig, SessionCredential,
+    RelayJoinCode, RelayPreset, RelayProfileInput, RuntimeState, SessionConfig, SessionCredential,
     SessionHealthConfig, SessionMode, SessionRouteConfig, SessionStatus, SteamIdentity,
     TransportChoice, default_lan_adapters,
 };
@@ -123,13 +123,73 @@ enum PendingRoomAction {
 
 #[derive(Clone)]
 struct RelaySettingsSnapshot {
-    selected_relay: Option<usize>,
+    selected_relay: Option<String>,
     relay_host: String,
     relay_port: u16,
     transport: TransportChoice,
     selected_account: Option<usize>,
     manual_steam_id: String,
     manual_display_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RelayDialogMode {
+    Add,
+    Edit { id: String },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RelayDialogState {
+    mode: RelayDialogMode,
+    name: String,
+    host: String,
+    port: u16,
+    supports_tcp: bool,
+    supports_udp: bool,
+    default_transport: TransportChoice,
+    error: Option<String>,
+}
+
+impl RelayDialogState {
+    fn add() -> Self {
+        Self {
+            mode: RelayDialogMode::Add,
+            name: String::new(),
+            host: String::new(),
+            port: 25_910,
+            supports_tcp: true,
+            supports_udp: true,
+            default_transport: TransportChoice::Tcp,
+            error: None,
+        }
+    }
+
+    fn edit(relay: &RelayPreset) -> Self {
+        Self {
+            mode: RelayDialogMode::Edit {
+                id: relay.id.clone(),
+            },
+            name: relay.name.clone(),
+            host: relay.endpoint.host.clone(),
+            port: relay.endpoint.port,
+            supports_tcp: relay.supports_tcp,
+            supports_udp: relay.supports_udp,
+            default_transport: relay
+                .default_transport
+                .unwrap_or_else(|| relay.preferred_transport(TransportChoice::Tcp)),
+            error: None,
+        }
+    }
+
+    fn relay_input(&self) -> RelayProfileInput {
+        RelayProfileInput {
+            name: self.name.trim().to_owned(),
+            endpoint: RelayEndpoint::new(self.host.trim(), self.port),
+            supports_udp: self.supports_udp,
+            supports_tcp: self.supports_tcp,
+            default_transport: self.default_transport,
+        }
+    }
 }
 
 pub struct BridgeApp {
@@ -141,7 +201,7 @@ pub struct BridgeApp {
     page: Page,
     relay_presets: Vec<RelayPreset>,
     route: RouteChoice,
-    selected_relay: Option<usize>,
+    selected_relay: Option<String>,
     relay_host: String,
     relay_port: u16,
     transport: TransportChoice,
@@ -151,6 +211,7 @@ pub struct BridgeApp {
     manual_steam_id: String,
     manual_display_name: String,
     relay_settings_original: Option<RelaySettingsSnapshot>,
+    relay_dialog: Option<RelayDialogState>,
     status_message: Option<StatusMessage>,
     input_delay_value: String,
     input_delay_message: Option<String>,
@@ -197,6 +258,7 @@ impl BridgeApp {
             manual_steam_id: String::new(),
             manual_display_name: String::new(),
             relay_settings_original: None,
+            relay_dialog: None,
             status_message: None,
             input_delay_value: String::new(),
             input_delay_message: None,
@@ -224,7 +286,7 @@ impl BridgeApp {
             return;
         };
         self.relay_presets = loaded_config.config.relays.clone();
-        self.selected_relay = loaded_config.config.selected_relay_index();
+        self.selected_relay = loaded_config.config.selected_relay.clone();
         self.transport = loaded_config.config.default_transport;
         self.mode = loaded_config.config.default_mode;
         self.session_health = loaded_config.config.session_health;
@@ -336,7 +398,7 @@ impl BridgeApp {
             return;
         }
         self.relay_settings_original = Some(RelaySettingsSnapshot {
-            selected_relay: self.selected_relay,
+            selected_relay: self.selected_relay.clone(),
             relay_host: self.relay_host.clone(),
             relay_port: self.relay_port,
             transport: self.transport,
@@ -396,7 +458,7 @@ impl BridgeApp {
 
     fn config_selection(&self) -> ClientConfigSelection {
         ClientConfigSelection {
-            selected_relay: self.selected_relay_preset().map(|relay| relay.id.clone()),
+            selected_relay: self.selected_relay.clone(),
             selected_steam_id64: {
                 let (id, _) = self.current_identity();
                 if id.is_empty() { None } else { Some(id) }
@@ -588,6 +650,7 @@ impl eframe::App for BridgeApp {
         self.join_code_dialog(ui.ctx());
         self.room_switch_dialog(ui.ctx());
         self.lan_create_dialog(ui.ctx());
+        self.relay_dialog(ui.ctx());
     }
 }
 

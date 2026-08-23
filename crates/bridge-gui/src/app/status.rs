@@ -124,6 +124,7 @@ impl BridgeApp {
                 | ApplicationOperation::OpeningLogs
                 | ApplicationOperation::ExportingDiagnosticsBundle
                 | ApplicationOperation::ReadingClipboard
+                | ApplicationOperation::SavingRelayCatalog
                 | ApplicationOperation::ConfiguringRoom => t!("status.working"),
             };
         }

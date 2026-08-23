@@ -6,6 +6,7 @@ pub(super) fn handle_command(
     lan_room: &mut Option<LanRoomHandle>,
     snapshot: &Arc<SnapshotStore>,
     event_tx: &mpsc::Sender<ApplicationEvent>,
+    config_path: Option<&std::path::Path>,
 ) {
     match command {
         ApplicationCommand::RetryBootstrap => {}
@@ -199,6 +200,44 @@ pub(super) fn handle_command(
                 ApplicationEvent::ClipboardReadFinished(result),
             );
         }
+        ApplicationCommand::SaveRelayCatalog(change) => {
+            if !relay_catalog_change_allowed(
+                client.state().status,
+                client.relay_room_active(),
+                lan_room.is_some(),
+            ) {
+                send_application_event(event_tx, snapshot, ApplicationEvent::CommandRejected);
+                return;
+            }
+            set_operation(
+                snapshot,
+                client,
+                Some(ApplicationOperation::SavingRelayCatalog),
+            );
+            let result = config_path.map_or_else(
+                || {
+                    tracing::warn!("Could not save Relay catalog: Bundle config path unavailable");
+                    Err(())
+                },
+                |path| {
+                    save_client_relay_catalog_to(path, &change).map_err(|error| {
+                        tracing::warn!(error = %error, "Could not save Relay catalog");
+                    })
+                },
+            );
+            if let Ok(loaded_config) = &result {
+                client.replace_loaded_config(loaded_config.clone());
+                update_snapshot(snapshot, |snapshot| {
+                    snapshot.loaded_config = Some(loaded_config.clone());
+                });
+            }
+            set_operation(snapshot, client, None);
+            send_application_event(
+                event_tx,
+                snapshot,
+                ApplicationEvent::RelayCatalogSaved(result),
+            );
+        }
         ApplicationCommand::EnumerateLanAdapters => {
             set_operation(
                 snapshot,
@@ -303,6 +342,14 @@ pub(super) fn handle_command(
             send_application_event(event_tx, snapshot, ApplicationEvent::LanRoomJoined(result));
         }
     }
+}
+
+pub(super) fn relay_catalog_change_allowed(
+    status: SessionStatus,
+    relay_room_active: bool,
+    lan_room_active: bool,
+) -> bool {
+    status == SessionStatus::Idle && !relay_room_active && !lan_room_active
 }
 
 #[cfg(windows)]

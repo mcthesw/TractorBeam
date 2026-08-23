@@ -18,9 +18,10 @@ pub(super) fn server_handshake(
     let mut decoder = FrameDecoder::new();
     let negotiated = 'handshake: loop {
         if Instant::now() >= deadline {
-            return Err(ServerHandshakeError::Unauthenticated(protocol_io(
-                "local IPC handshake timed out",
-            )));
+            return Err(ServerHandshakeError::retryable(
+                "waiting_for_hook_handshake",
+                io::Error::new(io::ErrorKind::TimedOut, "local IPC handshake timed out"),
+            ));
         }
         match read_messages::<HookToClient>(stream, &mut decoder) {
             Ok(messages) => match messages.as_slice() {
@@ -45,6 +46,12 @@ pub(super) fn server_handshake(
                 }
             },
             Err(error) if is_transient(&error) => thread::sleep(IO_POLL_INTERVAL),
+            Err(error) if is_disconnect(&error) => {
+                return Err(ServerHandshakeError::retryable(
+                    "waiting_for_hook_handshake",
+                    error,
+                ));
+            }
             Err(error) => return Err(ServerHandshakeError::Unauthenticated(error)),
         }
     };
@@ -52,12 +59,16 @@ pub(super) fn server_handshake(
         stream,
         &ClientToHook::Handshake(Handshake::new(PeerRole::BridgeClient, session_id)),
     )
-    .map_err(ServerHandshakeError::Terminal)?;
+    .map_err(|error| ServerHandshakeError::retryable("sending_client_handshake", error))?;
     loop {
         if Instant::now() >= deadline {
-            return Err(ServerHandshakeError::Terminal(protocol_io(
-                "local IPC ready acknowledgement timed out",
-            )));
+            return Err(ServerHandshakeError::retryable(
+                "waiting_for_endpoint_ready",
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "local IPC ready acknowledgement timed out",
+                ),
+            ));
         }
         match read_messages::<HookToClient>(stream, &mut decoder) {
             Ok(messages) => {
@@ -72,14 +83,32 @@ pub(super) fn server_handshake(
                 }
             }
             Err(error) if is_transient(&error) => thread::sleep(IO_POLL_INTERVAL),
-            Err(error) => return Err(ServerHandshakeError::Terminal(error)),
+            Err(error) if is_protocol_error(&error) => {
+                return Err(ServerHandshakeError::Terminal(error));
+            }
+            Err(error) => {
+                return Err(ServerHandshakeError::retryable(
+                    "waiting_for_endpoint_ready",
+                    error,
+                ));
+            }
         }
     }
 }
 
 pub(super) enum ServerHandshakeError {
     Unauthenticated(io::Error),
+    Retryable {
+        stage: &'static str,
+        error: io::Error,
+    },
     Terminal(io::Error),
+}
+
+impl ServerHandshakeError {
+    fn retryable(stage: &'static str, error: io::Error) -> Self {
+        Self::Retryable { stage, error }
+    }
 }
 
 pub(super) enum ConnectionEnd {

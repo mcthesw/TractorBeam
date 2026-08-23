@@ -111,6 +111,10 @@ impl BridgeClient {
         &self.loaded_config
     }
 
+    pub fn replace_loaded_config(&mut self, loaded_config: LoadedClientConfig) {
+        self.loaded_config = loaded_config;
+    }
+
     pub fn poll_events(&mut self) -> bool {
         let mut processed = false;
         let mut should_clear = false;

@@ -1,7 +1,9 @@
 use std::{
+    error::Error,
+    fmt::Display,
     fs, io,
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::Mutex,
 };
 
 use tracing_appender::non_blocking::WorkerGuard;
@@ -10,13 +12,33 @@ use tractor_beam_core::{
     ClientLogSink, ClientSessionLogContext, LogLevel, bundle_config_path, emit_client_log_event,
 };
 
-static PROCESS_LOG_GUARD: OnceLock<Result<WorkerGuard, String>> = OnceLock::new();
+static PROCESS_LOG_GUARD: Mutex<Option<WorkerGuard>> = Mutex::new(None);
+
+#[derive(Debug)]
+pub(crate) struct ClientLogInitError(io::Error);
+
+impl Display for ClientLogInitError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.0, formatter)
+    }
+}
+
+impl Error for ClientLogInitError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+impl From<io::Error> for ClientLogInitError {
+    fn from(error: io::Error) -> Self {
+        Self(error)
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct ClientLogFiles {
     root: PathBuf,
     client_dir: PathBuf,
-    warnings: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -62,31 +84,34 @@ impl io::Write for LocalDailyAppender {
 }
 
 impl ClientLogFiles {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new() -> Result<Self, ClientLogInitError> {
         let root = bundle_log_root();
         let client_dir = root.join("client");
-        let mut warnings = Vec::new();
-        if let Err(error) = fs::create_dir_all(&client_dir) {
-            warnings.push(format!(
-                "Could not create Client log directory {}: {error}",
-                client_dir.display()
-            ));
-        }
-        if let Some(error) = init_process_tracing(&client_dir) {
-            warnings.push(error);
-        }
-        Self {
-            root,
-            client_dir,
-            warnings,
-        }
+        fs::create_dir_all(&client_dir)
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "Could not create Client log directory {}: {error}",
+                        client_dir.display()
+                    ),
+                )
+            })
+            .map_err(ClientLogInitError::from)?;
+        init_process_tracing(&client_dir).map_err(|error| {
+            ClientLogInitError::from(io::Error::new(
+                error.kind(),
+                format!("Could not initialize Client logging: {error}"),
+            ))
+        })?;
+        Ok(Self { root, client_dir })
     }
 
     pub(crate) fn open_default_directory() -> io::Result<PathBuf> {
-        let log_files = Self::new();
-        fs::create_dir_all(&log_files.root)?;
-        open::that_detached(&log_files.root)?;
-        Ok(log_files.root)
+        let root = bundle_log_root();
+        fs::create_dir_all(&root)?;
+        open::that_detached(&root)?;
+        Ok(root)
     }
 }
 
@@ -96,7 +121,7 @@ impl ClientLogSink for ClientLogFiles {
     }
 
     fn warnings(&self) -> Vec<String> {
-        self.warnings.clone()
+        Vec::new()
     }
 
     fn log_files(&self) -> Vec<PathBuf> {
@@ -108,25 +133,25 @@ impl ClientLogSink for ClientLogFiles {
     }
 }
 
-fn init_process_tracing(directory: &Path) -> Option<String> {
-    PROCESS_LOG_GUARD
-        .get_or_init(|| {
-            let appender = LocalDailyAppender::new(directory).map_err(|error| error.to_string())?;
-            let (writer, guard) = tracing_appender::non_blocking(appender);
-            let layer = fmt::layer()
-                .with_ansi(false)
-                .with_target(false)
-                .with_writer(writer);
-            let filter =
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-            let subscriber = tracing_subscriber::registry().with(filter).with(layer);
-            tracing::subscriber::set_global_default(subscriber)
-                .map_err(|error| error.to_string())?;
-            Ok(guard)
-        })
-        .as_ref()
-        .err()
-        .cloned()
+fn init_process_tracing(directory: &Path) -> io::Result<()> {
+    let mut process_log_guard = PROCESS_LOG_GUARD
+        .lock()
+        .map_err(|_| io::Error::other("Client log guard is poisoned"))?;
+    if process_log_guard.is_some() {
+        return Ok(());
+    }
+
+    let appender = LocalDailyAppender::new(directory)?;
+    let (writer, guard) = tracing_appender::non_blocking(appender);
+    let layer = fmt::layer()
+        .with_ansi(false)
+        .with_target(false)
+        .with_writer(writer);
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let subscriber = tracing_subscriber::registry().with(filter).with(layer);
+    tracing::subscriber::set_global_default(subscriber).map_err(io::Error::other)?;
+    *process_log_guard = Some(guard);
+    Ok(())
 }
 
 fn local_date() -> String {

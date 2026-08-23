@@ -19,7 +19,10 @@ use tractor_beam_core::{
     save_client_config_selection, save_client_relay_catalog_to,
 };
 
-use crate::logging::ClientLogFiles;
+use crate::{
+    logging::{ClientLogFiles, ClientLogInitError},
+    update::{self, AvailableUpdate, UpdateCheck},
+};
 
 mod commands;
 
@@ -34,6 +37,12 @@ const CONTROL_SHUTDOWN: u8 = 2;
 type WakeCallback = Arc<dyn Fn() + Send + Sync>;
 type BootstrapFactory = Box<dyn FnMut() -> io::Result<(BridgeClient, LoadedClientConfig)> + Send>;
 
+struct ApplicationServices {
+    bootstrap_factory: BootstrapFactory,
+    config_path: Option<PathBuf>,
+    update_check: Option<UpdateCheck>,
+}
+
 struct SnapshotStore {
     value: Mutex<ApplicationSnapshot>,
     wake: WakeCallback,
@@ -45,6 +54,11 @@ pub(crate) enum BootstrapState {
     Initializing,
     Ready,
     Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BootstrapFailure {
+    LoggingUnavailable,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,6 +80,7 @@ pub(crate) enum ApplicationOperation {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ApplicationSnapshot {
     pub(crate) bootstrap: BootstrapState,
+    pub(crate) bootstrap_failure: Option<BootstrapFailure>,
     pub(crate) bootstrap_error: Option<String>,
     pub(crate) operation: Option<ApplicationOperation>,
     pub(crate) runtime: RuntimeState,
@@ -124,6 +139,7 @@ pub(crate) enum ApplicationEvent {
     LanRoomJoined(Result<(), String>),
     SelectionSaveFailed(String),
     RelayCatalogSaved(Result<LoadedClientConfig, ()>),
+    UpdateAvailable(AvailableUpdate),
     CommandRejected,
     ShutdownComplete,
 }
@@ -187,13 +203,21 @@ pub(crate) struct ApplicationHandle {
 impl ApplicationHandle {
     #[must_use]
     pub(crate) fn spawn(wake: impl Fn() + Send + Sync + 'static) -> Self {
-        Self::spawn_with(wake, Box::new(production_bootstrap), bundle_config_path())
+        let current_version = tractor_beam_core::build_info::current().version.to_owned();
+        let update_check = Box::new(move || update::check_for_update(&current_version));
+        Self::spawn_with(
+            wake,
+            Box::new(production_bootstrap),
+            bundle_config_path(),
+            Some(update_check),
+        )
     }
 
     fn spawn_with(
         wake: impl Fn() + Send + Sync + 'static,
         bootstrap_factory: BootstrapFactory,
         config_path: Option<PathBuf>,
+        update_check: Option<UpdateCheck>,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
         let (event_tx, event_rx) = mpsc::channel();
@@ -207,6 +231,11 @@ impl ApplicationHandle {
         let worker_snapshot = Arc::clone(&snapshot);
         let worker_selection = Arc::clone(&pending_selection);
         let worker_control = Arc::clone(&control);
+        let services = ApplicationServices {
+            bootstrap_factory,
+            config_path,
+            update_check,
+        };
         let spawn_result = thread::Builder::new()
             .name("tractor-beam-application".to_owned())
             .spawn(move || {
@@ -216,8 +245,7 @@ impl ApplicationHandle {
                     worker_snapshot,
                     worker_selection,
                     worker_control,
-                    bootstrap_factory,
-                    config_path,
+                    services,
                 );
             });
         if let Err(error) = spawn_result {
@@ -390,10 +418,17 @@ fn run_application(
     snapshot: Arc<SnapshotStore>,
     pending_selection: Arc<Mutex<Option<ClientConfigSelection>>>,
     control: Arc<AtomicU8>,
-    mut bootstrap_factory: BootstrapFactory,
-    config_path: Option<PathBuf>,
+    services: ApplicationServices,
 ) {
+    let ApplicationServices {
+        mut bootstrap_factory,
+        config_path,
+        mut update_check,
+    } = services;
     let mut client = bootstrap(&snapshot, &mut bootstrap_factory);
+    if client.is_some() {
+        spawn_update_check(update_check.take(), &event_tx, &snapshot);
+    }
     let mut lan_room: Option<LanRoomHandle> = None;
 
     loop {
@@ -453,6 +488,9 @@ fn run_application(
             }) => {
                 if client.is_none() {
                     client = bootstrap(&snapshot, &mut bootstrap_factory);
+                    if client.is_some() {
+                        spawn_update_check(update_check.take(), &event_tx, &snapshot);
+                    }
                 }
             }
             Ok(
@@ -502,6 +540,22 @@ fn run_application(
     }
 }
 
+fn spawn_update_check(
+    update_check: Option<UpdateCheck>,
+    event_tx: &mpsc::Sender<ApplicationEvent>,
+    snapshot: &Arc<SnapshotStore>,
+) {
+    let event_tx = event_tx.clone();
+    let snapshot = Arc::clone(snapshot);
+    update::spawn_check(update_check, move |update| {
+        send_application_event(
+            &event_tx,
+            &snapshot,
+            ApplicationEvent::UpdateAvailable(update),
+        );
+    });
+}
+
 fn publish_lan_room(
     snapshot: &Arc<SnapshotStore>,
     client: &mut BridgeClient,
@@ -535,6 +589,7 @@ fn bootstrap(
     update_snapshot(snapshot, |snapshot| {
         snapshot.command_generation = snapshot.command_generation.saturating_add(1);
         snapshot.bootstrap = BootstrapState::Initializing;
+        snapshot.bootstrap_failure = None;
         snapshot.bootstrap_error = None;
         snapshot.operation = None;
     });
@@ -551,9 +606,14 @@ fn bootstrap(
         }
         Err(error) => {
             tracing::error!(error = %error, "Application bootstrap failed");
+            let bootstrap_failure = error
+                .get_ref()
+                .is_some_and(|source| source.is::<ClientLogInitError>())
+                .then_some(BootstrapFailure::LoggingUnavailable);
             update_snapshot(snapshot, |snapshot| {
                 snapshot.command_generation = snapshot.command_generation.saturating_add(1);
                 snapshot.bootstrap = BootstrapState::Failed;
+                snapshot.bootstrap_failure = bootstrap_failure;
                 snapshot.bootstrap_error = Some(error.to_string());
                 snapshot.loaded_config = None;
                 snapshot.runtime = RuntimeState::default();
@@ -565,7 +625,7 @@ fn bootstrap(
 
 fn production_bootstrap() -> io::Result<(BridgeClient, LoadedClientConfig)> {
     let loaded_config = load_client_config();
-    let log_sink = Box::new(ClientLogFiles::new());
+    let log_sink = Box::new(ClientLogFiles::new().map_err(io::Error::other)?);
     let client = BridgeClient::with_config_and_log_sink(loaded_config.clone(), log_sink);
     Ok((client, loaded_config))
 }

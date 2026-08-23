@@ -23,9 +23,16 @@ eframe = { version = "0.35.0", default-features = false, features = [
 ] }
 rust-i18n = "4.1.0"
 open = { version = "5.3.5", features = ["shellexecute-on-windows"] }
+semver = "1.0.28"
+serde = { version = "1.0.228", features = ["derive"] }
 tracing = "0.1.44"
 tracing-appender = "0.2.4"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+ureq = { version = "3.4.0", default-features = false, features = [
+    "json",
+    "rustls",
+    "win-system-proxy",
+] }
 
 [target."cfg(windows)".dependencies]
 rfd = { version = "0.17.2", default-features = false }

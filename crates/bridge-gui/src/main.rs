@@ -6,6 +6,7 @@ mod app;
 mod application;
 mod i18n;
 mod logging;
+mod update;
 
 use eframe::egui;
 

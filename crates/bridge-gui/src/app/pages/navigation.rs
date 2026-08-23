@@ -42,6 +42,13 @@ impl BridgeApp {
                         );
                     });
                 self.set_language(selected_language);
+                if let Some(update) = &self.available_update {
+                    ui.separator();
+                    ui.hyperlink_to(
+                        format!("{} {}", t!("update.available"), update.version),
+                        &update.url,
+                    );
+                }
             });
         });
     }

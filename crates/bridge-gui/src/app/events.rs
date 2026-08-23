@@ -219,6 +219,9 @@ impl BridgeApp {
                     }
                 }
             },
+            ApplicationEvent::UpdateAvailable(update) => {
+                self.available_update = Some(update);
+            }
             ApplicationEvent::CommandRejected => self.show_busy_status(),
             ApplicationEvent::ShutdownComplete => {}
         }

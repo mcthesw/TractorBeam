@@ -20,9 +20,10 @@ use tractor_beam_core::{
 use crate::{
     application::{
         ApplicationEvent, ApplicationHandle, ApplicationOperation, ApplicationSnapshot,
-        BootstrapState,
+        BootstrapFailure, BootstrapState,
     },
     i18n::{Language, set_language},
+    update::AvailableUpdate,
 };
 
 use status::StatusMessage;
@@ -227,6 +228,7 @@ pub struct BridgeApp {
     lan_probe_results: Vec<LanProbeResult>,
     selected_lan_probe: Option<usize>,
     last_diagnostics_bundle: Option<std::path::PathBuf>,
+    available_update: Option<AvailableUpdate>,
     session_health: SessionHealthConfig,
 }
 
@@ -274,6 +276,7 @@ impl BridgeApp {
             lan_probe_results: Vec::new(),
             selected_lan_probe: None,
             last_diagnostics_bundle: None,
+            available_update: None,
             session_health: SessionHealthConfig::default(),
         }
     }
@@ -590,14 +593,20 @@ impl BridgeApp {
                 true
             }
             BootstrapState::Failed => {
+                let logging_unavailable = self.application_snapshot.bootstrap_failure
+                    == Some(BootstrapFailure::LoggingUnavailable);
                 ui.vertical_centered(|ui| {
                     ui.add_space(48.0);
                     ui.heading(t!("status.initialization_failed"));
-                    ui.label(t!("status.initialization_retry_hint"));
+                    if logging_unavailable {
+                        ui.label(t!("logs.initialization_failed_hint"));
+                    } else {
+                        ui.label(t!("status.initialization_retry_hint"));
+                    }
                     if ui.button(t!("retry")).clicked() && !self.application.retry_bootstrap() {
                         self.show_busy_status();
                     }
-                    if ui.button(t!("logs.open_directory")).clicked() {
+                    if !logging_unavailable && ui.button(t!("logs.open_directory")).clicked() {
                         self.open_log_directory();
                     }
                 });

@@ -134,6 +134,7 @@ fn failed_bootstrap_stays_open_and_can_retry() {
             Ok((BridgeClient::with_config(loaded.clone()), loaded))
         }),
         None,
+        None,
     );
 
     wait_for_snapshot(&application, |snapshot| {
@@ -148,6 +149,93 @@ fn failed_bootstrap_stays_open_and_can_retry() {
     wait_for_snapshot(&application, |snapshot| snapshot.shutdown_complete);
 }
 
+#[test]
+fn available_update_is_published_after_bootstrap() {
+    let update = AvailableUpdate {
+        version: "0.6.0".to_owned(),
+        url: "https://github.com/mcthesw/TractorBeam/releases/tag/v0.6.0".to_owned(),
+    };
+    let expected = update.clone();
+    let application = ApplicationHandle::spawn_with(
+        || {},
+        Box::new(|| {
+            let loaded = LoadedClientConfig::default();
+            Ok((BridgeClient::with_config(loaded.clone()), loaded))
+        }),
+        None,
+        Some(Box::new(move || Ok(Some(update)))),
+    );
+
+    wait_for_snapshot(&application, |snapshot| {
+        snapshot.bootstrap == BootstrapState::Ready
+    });
+    let published = wait_for_event(&application, |event| match event {
+        ApplicationEvent::UpdateAvailable(update) => Some(update),
+        _ => None,
+    });
+    assert_eq!(published, expected);
+
+    application.request_shutdown();
+    wait_for_snapshot(&application, |snapshot| snapshot.shutdown_complete);
+}
+
+#[test]
+fn update_check_is_skipped_when_bootstrap_fails() {
+    let (update_started_tx, update_started_rx) = std::sync::mpsc::channel();
+    let application = ApplicationHandle::spawn_with(
+        || {},
+        Box::new(|| {
+            Err(io::Error::other(ClientLogInitError::from(
+                io::Error::other("Client logging failed"),
+            )))
+        }),
+        None,
+        Some(Box::new(move || {
+            update_started_tx.send(()).unwrap();
+            Ok(None)
+        })),
+    );
+
+    wait_for_snapshot(&application, |snapshot| {
+        snapshot.bootstrap == BootstrapState::Failed
+    });
+    assert_eq!(
+        application.snapshot().bootstrap_failure,
+        Some(BootstrapFailure::LoggingUnavailable)
+    );
+    assert!(update_started_rx.try_recv().is_err());
+
+    application.request_shutdown();
+    wait_for_snapshot(&application, |snapshot| snapshot.shutdown_complete);
+}
+
+#[test]
+fn update_check_does_not_block_application_shutdown() {
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let application = ApplicationHandle::spawn_with(
+        || {},
+        Box::new(|| {
+            let loaded = LoadedClientConfig::default();
+            Ok((BridgeClient::with_config(loaded.clone()), loaded))
+        }),
+        None,
+        Some(Box::new(move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            Ok(None)
+        })),
+    );
+
+    wait_for_snapshot(&application, |snapshot| {
+        snapshot.bootstrap == BootstrapState::Ready
+    });
+    started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    application.request_shutdown();
+    wait_for_snapshot(&application, |snapshot| snapshot.shutdown_complete);
+    release_tx.send(()).unwrap();
+}
+
 fn wait_for_snapshot(
     application: &ApplicationHandle,
     predicate: impl Fn(&ApplicationSnapshot) -> bool,
@@ -160,4 +248,20 @@ fn wait_for_snapshot(
         thread::sleep(Duration::from_millis(10));
     }
     panic!("application snapshot did not reach expected state");
+}
+
+fn wait_for_event<T>(
+    application: &ApplicationHandle,
+    mut select: impl FnMut(ApplicationEvent) -> Option<T>,
+) -> T {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        for event in application.drain_events() {
+            if let Some(value) = select(event) {
+                return value;
+            }
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("application event did not arrive");
 }

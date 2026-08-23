@@ -185,6 +185,9 @@ relay.error_default_transport:
 relay.save_failed:
   zh_CN: "无法保存 Relay，请查看日志了解详情"
   en_US: "Could not save the Relay. Check the logs for details."
+update.available:
+  zh_CN: "查看新版本"
+  en_US: "View release"
 relay.port:
   zh_CN: "端口"
   en_US: "Port"
@@ -311,6 +314,9 @@ config.selection_save_failed:
 logs.open_failed:
   zh_CN: "无法打开日志文件夹"
   en_US: "Could not open the log folder"
+logs.initialization_failed_hint:
+  zh_CN: "无法初始化日志。请确认 Client Bundle 所在目录可写，然后重试"
+  en_US: "Could not initialize logging. Make sure the Client Bundle directory is writable, then retry."
 diagnostics.export:
   zh_CN: "导出诊断包"
   en_US: "Diagnostics Bundle"

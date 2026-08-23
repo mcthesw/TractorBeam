@@ -47,6 +47,37 @@ pub(super) fn connect_fake_hook_with_startup(
     }
 }
 
+pub(super) fn interrupt_handshake_after_client_reply(session: &HookIpcSession) {
+    let mut stream = connect_with_retry(session.endpoint);
+    stream.set_nodelay(true).unwrap();
+    stream.set_nonblocking(true).unwrap();
+    write_hook_message(
+        &mut stream,
+        &HookToClient::Handshake(Handshake::new(PeerRole::NativeHook, session.session_id)),
+    )
+    .unwrap();
+    let mut decoder = FrameDecoder::new();
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    loop {
+        assert!(Instant::now() < deadline, "client handshake timed out");
+        if let Some(message) = read_client_messages(&mut stream, &mut decoder)
+            .unwrap()
+            .into_iter()
+            .next()
+        {
+            match message {
+                ClientToHook::Handshake(handshake) => {
+                    handshake
+                        .validate(PeerRole::BridgeClient, session.session_id)
+                        .unwrap();
+                    return;
+                }
+                _ => panic!("expected client handshake"),
+            }
+        }
+    }
+}
+
 pub(super) fn connect_with_retry(endpoint: SocketAddr) -> TcpStream {
     let deadline = Instant::now() + TEST_TIMEOUT;
     loop {

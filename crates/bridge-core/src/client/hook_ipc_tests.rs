@@ -177,6 +177,91 @@ async fn same_session_disconnect_reconnects_with_fresh_handshake() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupted_reconnect_handshake_retries_within_budget() {
+    let session = HookIpcSession::test();
+    let (_control_tx, control_rx) = control_channel();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
+    let cancellation = CancellationToken::new();
+    let (mut from_hook, _to_hook, worker) =
+        start(session.clone(), control_rx, event_tx, cancellation.clone()).unwrap();
+    let worker = tokio::spawn(worker);
+    let fake = thread::spawn(move || {
+        let mut first = connect_fake_hook(&session);
+        write_hook_message(&mut first, &HookToClient::Game(packet(1, 1, b"first"))).unwrap();
+        drop(first);
+
+        interrupt_handshake_after_client_reply(&session);
+
+        let mut recovered = connect_fake_hook(&session);
+        write_hook_message(
+            &mut recovered,
+            &HookToClient::Game(packet(2, 2, b"recovered")),
+        )
+        .unwrap();
+        wait_for_shutdown(&mut recovered);
+    });
+
+    assert_eq!(
+        time::timeout(TEST_TIMEOUT, from_hook.recv())
+            .await
+            .unwrap()
+            .unwrap(),
+        packet(1, 1, b"first")
+    );
+    assert_eq!(
+        time::timeout(TEST_TIMEOUT, from_hook.recv())
+            .await
+            .unwrap()
+            .unwrap(),
+        packet(2, 2, b"recovered")
+    );
+
+    let mut saw_reconnecting = false;
+    let mut saw_interrupted_handshake = false;
+    let reconnected = time::timeout(TEST_TIMEOUT, async {
+        loop {
+            match event_rx.recv().await {
+                Some(RuntimeEvent::HookIpc(state))
+                    if state.connection == HookIpcConnectionState::Reconnecting =>
+                {
+                    saw_reconnecting = true;
+                }
+                Some(RuntimeEvent::Log(_, message))
+                    if message.contains("local IPC handshake interrupted; retrying") =>
+                {
+                    saw_interrupted_handshake = true;
+                }
+                Some(RuntimeEvent::HookIpc(state))
+                    if state.connection == HookIpcConnectionState::Connected
+                        && state.reconnects == 1 =>
+                {
+                    return;
+                }
+                Some(RuntimeEvent::HookIpc(state))
+                    if state.connection == HookIpcConnectionState::Failed =>
+                {
+                    panic!("interrupted reconnect handshake became terminal");
+                }
+                Some(_) => {}
+                None => panic!("local IPC event stream closed before reconnect"),
+            }
+        }
+    })
+    .await;
+    assert!(reconnected.is_ok());
+    assert!(saw_reconnecting);
+    assert!(saw_interrupted_handshake);
+
+    cancellation.cancel();
+    time::timeout(TEST_TIMEOUT, worker)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    fake.join().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn input_delay_control_is_not_starved_by_game_burst() {
     let session = HookIpcSession::test();
     let (control_tx, control_rx) = control_channel();

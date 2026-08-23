@@ -321,6 +321,7 @@ fn run_listener(listener: Arc<TcpListener>, context: ListenerContext) -> io::Res
     let mut connected_once = false;
     let mut reconnects = 0_u32;
     let mut last_rejection = None::<String>;
+    let mut last_transport_error = None::<String>;
     let mut rejected_connections = 0_u32;
     loop {
         if cancellation.is_cancelled() {
@@ -338,9 +339,14 @@ fn run_listener(listener: Arc<TcpListener>, context: ListenerContext) -> io::Res
             } else {
                 "Native Hook local IPC connection timed out"
             };
-            let message = last_rejection.as_ref().map_or_else(
-                || stage.to_owned(),
-                |error| format!("{stage}; last rejected connection: {error}"),
+            let message = last_transport_error.as_ref().map_or_else(
+                || {
+                    last_rejection.as_ref().map_or_else(
+                        || stage.to_owned(),
+                        |error| format!("{stage}; last rejected connection: {error}"),
+                    )
+                },
+                |error| format!("{stage}; last transport error: {error}"),
             );
             publish_failure(&event_tx, &message);
             reject_pending_controls(&control_rx);
@@ -371,6 +377,27 @@ fn run_listener(listener: Arc<TcpListener>, context: ListenerContext) -> io::Res
                                         "Rejected unauthenticated local IPC connection: count={rejected_connections} error={error}"
                                     ),
                                 ),
+                            );
+                        }
+                        continue;
+                    }
+                    Err(ServerHandshakeError::Retryable { stage, error }) => {
+                        let detail = format!("stage={stage} error={error}");
+                        last_transport_error = Some(detail.clone());
+                        send_event(
+                            &event_tx,
+                            log_event(
+                                LogLevel::Warn,
+                                format!(
+                                    "Native Hook local IPC handshake interrupted; retrying {detail}"
+                                ),
+                            ),
+                        );
+                        if connected_once {
+                            publish_reconnecting(
+                                &event_tx,
+                                reconnects,
+                                client_dropped.load(Ordering::Relaxed),
                             );
                         }
                         continue;
@@ -434,17 +461,14 @@ fn run_listener(listener: Arc<TcpListener>, context: ListenerContext) -> io::Res
                     }
                     Ok(ConnectionEnd::Disconnected) => {
                         disconnected_at = Instant::now();
+                        last_transport_error =
+                            Some("stage=connected error=connection closed".into());
                         drain_data(&to_hook_rx, &client_dropped);
                         reject_pending_controls(&control_rx);
-                        publish_status(
+                        publish_reconnecting(
                             &event_tx,
-                            HookIpcState {
-                                connection: HookIpcConnectionState::Reconnecting,
-                                reconnects,
-                                client_data_dropped: client_dropped.load(Ordering::Relaxed),
-                                updated_at: unix_seconds(),
-                                ..HookIpcState::default()
-                            },
+                            reconnects,
+                            client_dropped.load(Ordering::Relaxed),
                         );
                     }
                     Err(error) if is_protocol_error(&error) => {
@@ -452,10 +476,24 @@ fn run_listener(listener: Arc<TcpListener>, context: ListenerContext) -> io::Res
                         reject_pending_controls(&control_rx);
                         return Err(error);
                     }
-                    Err(_) => {
+                    Err(error) => {
                         disconnected_at = Instant::now();
+                        let detail = format!("stage=connected error={error}");
+                        last_transport_error = Some(detail.clone());
                         drain_data(&to_hook_rx, &client_dropped);
                         reject_pending_controls(&control_rx);
+                        publish_reconnecting(
+                            &event_tx,
+                            reconnects,
+                            client_dropped.load(Ordering::Relaxed),
+                        );
+                        send_event(
+                            &event_tx,
+                            log_event(
+                                LogLevel::Warn,
+                                format!("Native Hook local IPC interrupted; retrying {detail}"),
+                            ),
+                        );
                     }
                 }
             }
@@ -466,6 +504,19 @@ fn run_listener(listener: Arc<TcpListener>, context: ListenerContext) -> io::Res
             Err(error) => return Err(error),
         }
     }
+}
+
+fn publish_reconnecting(event_tx: &RuntimeEventSender, reconnects: u32, client_dropped: u64) {
+    publish_status(
+        event_tx,
+        HookIpcState {
+            connection: HookIpcConnectionState::Reconnecting,
+            reconnects,
+            client_data_dropped: client_dropped,
+            updated_at: unix_seconds(),
+            ..HookIpcState::default()
+        },
+    );
 }
 
 mod connection;

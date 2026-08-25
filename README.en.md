@@ -8,9 +8,16 @@ A desktop Client and Relay Server for improving online play in
 When official online play or a virtual LAN is not smooth enough, Tractor Beam
 can move game data through a Relay while preserving normal Steam features.
 
-The project is still in development. The Client supports Windows + Steam only.
-The Relay can be built on Windows, Linux, and macOS; formal Releases provide
-Windows and Linux executables.
+## Project status
+
+The Windows + Steam baseline is usable and designed for players. Maintainer
+time is limited, but we will do our best to fix well-defined bugs and
+compatibility issues and review focused pull requests as time allows.
+Community contributions remain welcome; see the
+[contribution guide](CONTRIBUTING.md).
+
+The Client supports Windows + Steam only. The Relay can be built on Windows,
+Linux, and macOS; formal Releases provide Windows and Linux executables.
 
 ## Use the Client
 
@@ -57,6 +64,7 @@ cargo test --workspace
 - [docs/lan.en.md](docs/lan.en.md): LAN and virtual-LAN direct sessions.
 - [docs/security.en.md](docs/security.en.md): security boundaries.
 - [roadmap.en.md](roadmap.en.md): staged roadmap.
+- [CONTRIBUTING.md](CONTRIBUTING.md): contribution guidance.
 
 ## License
 

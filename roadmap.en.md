@@ -2,85 +2,51 @@
 
 [中文](roadmap.md)
 
-The roadmap keeps the first milestone narrow: deliver the confirmed Windows
-player tool before expanding platform, packaging, transport, and security scope.
+The Windows + Steam baseline and player-facing test goals are complete. Future
+work will prioritize keeping the current experience stable, while focused
+improvements and longer-term directions remain open to community involvement.
 
-## Phase 1: Windows Rust baseline
+## Completed baseline
 
-Goal: keep the Windows Bridge path on the Rust baseline and Rust Native Hook.
+- [x] Ship a Windows Client Bundle containing the Bridge GUI, Bridge Client,
+  Native Hook, and Injector.
+- [x] Support Steam + *The Binding of Isaac: Repentance+* with Official Mode,
+  Fallback Mode, and Pure Mode.
+- [x] Support external Relay and LAN Direct routes with selectable TCP/UDP
+  Relay Transport.
+- [x] Provide a self-deployable Relay Server with basic abuse limits, logs,
+  metrics, traces, and operations documentation.
+- [x] Provide Diagnostics Bundles, log redaction, player-facing errors, and
+  recovery guidance for common failures.
+- [x] Publish GitHub Release assets, maintain the Release Please flow, and
+  verify that the Client Bundle runs on a clean Windows device.
 
-- [x] Support only Windows + Steam + *The Binding of Isaac: Repentance+*.
-- [x] Use runtime crates `bridge-core`, `bridge-gui`, `bridge-relay`,
-  `native-hook`, and `isaac-injector`, plus the focused shared-contract crates
-  `hook-ipc` and `relay-protocol`.
-- [x] Build the Rust Native Hook DLL for the i686 Isaac process.
-- [x] Build the Rust Injector helper.
-- [x] Build the Rust Relay Server with Room admission, Peer forwarding, UDP/TCP
-  listeners, timeouts, rate limits, and IP/CIDR blocklists.
-- [x] Build the Rust Bridge Client runtime with the asynchronous local Hook
-  bridge, selectable Relay transport, Room setup, Steam launch, injection
-  orchestration, state, and error handling.
-- [x] Build the egui Bridge GUI with Relay address, transport choice, Room,
-  SteamID64, mode, start/stop, status, counters, and diagnostics export.
-- [x] Implement Official Mode, Fallback Mode, and Pure Mode.
-- [x] Define the first Relay protocol envelope, versions, capabilities, and
-  error codes.
-- [x] Use a simple versioned envelope for Phase 1 control messages.
-- [x] Produce a basic Diagnostics Bundle.
-- [x] Document recovery from launch, injection, Relay, and Hook failures.
-- [x] Add focused local Bridge flow tests beyond protocol, Relay state, and
-  diagnostics unit tests.
-- [x] Add Relay Server runtime counters and metrics.
+## Current priorities
 
-Deferred from Phase 1:
+- Fix reproducible critical bugs, security issues, and compatibility
+  regressions.
+- Keep the Windows + Steam baseline, Relay self-deployment, and existing
+  protocol paths maintainable.
+- Improve player documentation, diagnostic evidence, and small, focused user
+  experience issues.
+- Review well-bounded, well-validated community contributions as time allows.
 
-- Linux support.
-- Non-Steam support.
-- Installer packaging.
-- Directory Service.
-- Optional bounded UDP duplication/deduplication or FEC profiles.
+Read the [contribution guide](CONTRIBUTING.md) before contributing.
 
-## Phase 2: Testing
+## Future directions
 
-Goal: make the Windows baseline reliable across real player machines.
+- A Directory Service, signed Relay metadata, revocation, and trust
+  publication.
+- Minimum and maximum Client/Relay protocol version policies.
+- A long-term public Relay Server policy.
+- Bounded UDP duplicate-send/deduplication, hop-by-hop FEC, and measurement of
+  their bandwidth, tail-latency, and Relay CPU costs.
+- Linux/Proton, non-Steam support, and installer packaging.
+- Dynamic Input Delay and additional connection-quality visualization.
 
-- [x] Prepare test instructions and a feedback template.
-- [x] Deploy a public test Relay Server.
-- [x] Document Relay Server self-deployment.
-- [x] Improve Windows Steam and Isaac path detection.
-- [x] Improve launch, injection, recovery, and user-facing errors.
-- [x] Add Relay Server logs, basic abuse limits, and an operations guide.
-- [x] Define diagnostics review and log-redaction rules.
-- [x] Collect compatibility notes for common sessions with mods.
-- [x] Add local Relay Server IP/CIDR blocklists for test operations.
-- [x] Verify the Rust Native Hook and i686 Injector on tester machines without
-  prototype binaries.
-- [x] Verify that the Client Bundle can be copied to a clean machine and run
-  from the Bridge GUI.
+These directions are not current priorities. Interested contributors are
+welcome to discuss scope and validation in an Issue. Large changes to
+protocols, Relay data paths, the Native Hook, or the Injector should also start
+with an Issue that aligns the scope before implementation.
 
-## Phase 3: Public release
-
-Goal: make the project safe and understandable for ordinary players.
-
-- [x] Publish GitHub Release assets.
-- [x] Add the Release Please flow.
-- [ ] Build a Directory Service with signed Relay Server metadata.
-- [ ] Add minimum and maximum Client/Relay protocol version policies.
-- [x] Write user documentation, FAQ, Windows security notice, and checksum
-  guidance.
-- [ ] Define a public Relay Server policy.
-- [ ] Support Relay revocation and trust metadata through the Directory Service.
-
-## Phase 4: UDP delivery experiments and hardening
-
-Goal: explore bounded UDP delivery improvements without disturbing the baseline
-TCP control and TCP/UDP data paths.
-
-- [x] Add proof-of-work or comparable anti-abuse gating.
-- [ ] Research bounded UDP duplicate-send/deduplication profiles.
-- [ ] Research hop-by-hop UDP FEC around complete Relay Data Frames.
-- [ ] Measure added bandwidth, recovery rate, tail latency, and Relay CPU before
-  exposing either option to users.
-- [ ] Research native Linux or Proton support.
-
-Payload encryption is not on the current roadmap.
+Payload encryption remains out of scope.

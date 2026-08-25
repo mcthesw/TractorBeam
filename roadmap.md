@@ -2,71 +2,35 @@
 
 [English](roadmap.en.md)
 
-路线图将首个里程碑保持在较小范围：先交付已确认可行的 Windows 玩家工具，再扩展平台、打包、传输和安全范围。
+Windows + Steam 基线和面向玩家的测试目标已经完成。后续工作将优先保持现有体验稳定，同时欢迎社区参与范围清晰的改进和未来方向。
 
-## 阶段 1：Windows Rust 基线
+## 已完成的基线
 
-目标：保持 Windows Bridge 路径使用 Rust 基线和 Rust Native Hook。
+- [x] 提供 Windows Client Bundle，包括 Bridge GUI、Bridge Client、Native Hook 和 Injector。
+- [x] 支持 Steam + *以撒的结合：忏悔+*，并实现 Official Mode、Fallback Mode 和 Pure Mode。
+- [x] 支持外部 Relay 和局域网直连，以及可选择的 TCP/UDP Relay Transport。
+- [x] 提供可自部署的 Relay Server、基础滥用限制、日志、指标、Trace 和运维文档。
+- [x] 提供 Diagnostics Bundle、日志脱敏、玩家错误提示和常见故障恢复路径。
+- [x] 提供 GitHub Release 资产、Release Please 流程和可在干净 Windows 设备运行的 Client Bundle。
 
-- [x] 仅支持 Windows + Steam + *The Binding of Isaac: Repentance+*。
-- [x] 使用运行时 Crate `bridge-core`、`bridge-gui`、`bridge-relay`、 `native-hook` 和 `isaac-injector`，以及职责收窄的共享契约 Crate `hook-ipc` 和 `relay-protocol`。
-- [x] 为 i686 Isaac 进程构建 Rust Native Hook DLL。
-- [x] 构建 Rust Injector 辅助程序。
-- [x] 构建支持房间加入、Peer 转发、UDP/TCP 监听、超时、速率限制和 IP/CIDR 阻止列表的 Rust Relay Server。
-- [x] 构建 Rust Bridge Client Runtime，包括异步本地 Hook Bridge、可选 Relay Transport、房间设置、Steam 启动、注入编排、状态和错误处理。
-- [x] 构建 egui Bridge GUI，包括 Relay 地址、传输选择、房间、SteamID64、模式、启停、状态、计数器和诊断导出。
-- [x] 实现 Official Mode、Fallback Mode 和 Pure Mode。
-- [x] 定义首版 Relay 协议 Envelope、版本、能力和错误码。
-- [x] 阶段 1 控制消息使用简单的版本化 Envelope。
-- [x] 生成基础 Diagnostics Bundle。
-- [x] 记录启动、注入、Relay 和 Hook 错误的恢复方式。
-- [x] 在协议、Relay 状态和诊断单元测试之外增加有针对性的本地 Bridge 流程测试。
-- [x] 增加 Relay Server 运行时计数器和指标。
+## 当前重点
 
-阶段 1 暂缓：
+- 修复可复现的严重 Bug、安全问题和兼容性回归。
+- 保持 Windows + Steam 基线、Relay 自部署和现有协议路径可维护。
+- 改进玩家文档、诊断证据和范围清晰的小型体验问题。
+- 在时间允许时审阅边界明确、验证充分的社区贡献。
 
-- Linux 支持。
-- 非 Steam 支持。
-- 安装程序打包。
-- Directory Service。
-- 可选的有界 UDP 重复发送/去重或 FEC Profile。
+贡献前请阅读[贡献指南](CONTRIBUTING.md)。
 
-## 阶段 2：测试
+## 未来方向
 
-目标：让 Windows 基线在真实玩家设备上可靠运行。
+- Directory Service、签名 Relay 元数据、撤销和信任发布。
+- Client/Relay 协议最低与最高版本策略。
+- 长期公共 Relay Server 策略。
+- 有界 UDP 重复发送/去重、逐跳 FEC 及其带宽、尾延迟和 Relay CPU 测量。
+- Linux/Proton、非 Steam 支持和安装程序打包。
+- 动态 Input Delay 和更多联机质量可视化。
 
-- [x] 准备测试说明和反馈模板。
-- [x] 部署公共测试 Relay Server。
-- [x] 记录 Relay Server 自部署方式。
-- [x] 改进 Windows Steam 和 Isaac 路径检测。
-- [x] 改进启动、注入、故障恢复和面向用户的错误信息。
-- [x] 增加 Relay Server 日志、基础滥用限制和运维手册。
-- [x] 定义诊断审阅流程和日志脱敏规则。
-- [x] 收集常见 Mod 会话的兼容性说明。
-- [x] 增加用于测试运维的 Relay Server 本地 IP/CIDR 阻止列表。
-- [x] 在测试者设备上验证 Rust Native Hook 和 i686 Injector，不依赖原型二进制。
-- [x] 验证 Client Bundle 可以复制到干净设备并从 Bridge GUI 运行。
+这些方向目前不是优先事项，欢迎有兴趣的贡献者先通过 Issue 讨论范围和验证方式。涉及协议、Relay 数据路径、Native Hook 或 Injector 的大型工作，也应先通过 Issue 对齐范围再开始实现。
 
-## 阶段 3：公开发布
-
-目标：让项目对普通玩家安全且易于理解。
-
-- [x] 发布 GitHub Release 资产。
-- [x] 增加 Release Please 发布流程。
-- [ ] 构建带签名 Relay Server 元数据的 Directory Service。
-- [ ] 增加 Client/Relay 协议最低和最高版本策略。
-- [x] 编写用户文档、FAQ、Windows 安全提示和校验和说明。
-- [ ] 定义公共 Relay Server 策略。
-- [ ] 支持通过 Directory Service 撤销 Relay 和发布信任元数据。
-
-## 阶段 4：UDP 投递实验与加固
-
-目标：在不干扰 TCP 控制和 TCP/UDP 数据路径基线的前提下，探索有界 UDP 投递改进。
-
-- [x] 增加工作量证明或同等的抗滥用门槛。
-- [ ] 研究有界 UDP 重复发送/去重 Profile。
-- [ ] 研究围绕完整 Relay Data Frame 的逐跳 UDP FEC。
-- [ ] 在面向用户开放前测量额外带宽、恢复率、尾延迟和 Relay CPU。
-- [ ] 研究 Linux 原生或 Proton 支持。
-
-载荷加密不在当前路线图中。
+载荷加密仍不在当前范围内。

@@ -6,7 +6,11 @@
 
 官方联机或虚拟局域网不够流畅时，Tractor Beam 可以将游戏数据改为通过 Relay 传输，同时保留 Steam 版本的正常功能。
 
-项目仍在开发中。Client 只支持 Windows + Steam；Relay 可以在 Windows、Linux 和 macOS 上构建，正式 Release 提供 Windows 和 Linux 可执行文件。
+## 项目状态
+
+Windows + Steam 基线已基本可用，并以玩家友好为目标。维护者目前可投入的时间有限，但会尽力修复明确的 Bug 和兼容性问题，并在时间允许时审阅范围清晰的 PR。社区贡献依然欢迎，参见[贡献指南](CONTRIBUTING.md)。
+
+Client 只支持 Windows + Steam；Relay 可以在 Windows、Linux 和 macOS 上构建，正式 Release 提供 Windows 和 Linux 可执行文件。
 
 ## 使用 Client
 
@@ -45,6 +49,7 @@ cargo test --workspace
 - [docs/lan.md](docs/lan.md)：局域网与虚拟局域网直连。
 - [docs/security.md](docs/security.md)：安全边界。
 - [roadmap.md](roadmap.md)：阶段规划。
+- [CONTRIBUTING.md](CONTRIBUTING.md)：贡献指南。
 
 ## 许可证
 

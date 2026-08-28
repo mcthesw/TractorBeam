@@ -19,7 +19,7 @@ Client GUI、Bridge Core 网络栈和 Injector Helper 都编译为宿主平台�
 
 Client 启动原生 Injector Helper。Helper 打开 `isaac-ng.exe`，写入 Native Hook 路径，并通过 `CreateRemoteThread` 调用 `LoadLibraryW`。Client 通过进程模块检查和 Hook Ready IPC 确认加载。
 
-### Linux + Proton
+### Linux（Proton）
 
 Proton 在 pressure-vessel 容器中运行 Windows 进程，宿主侧 Injector Helper 无法可靠使用 Win32 Remote Thread 路径。Client 在启动 Steam 前向游戏目录部署临时 `winmm.dll` 代理和 Proton 内置 WinMM 副本，并仅为 `isaac-ng.exe` 设置 `native,builtin` Wine DLL Override。代理加载 Native Hook，并将完整 WinMM API 转发给 Proton 内置实现。
 

@@ -11,6 +11,20 @@ Tractor Beam 刻意分离四个网络边界：
 3. Relay Protocol v3（`TBR3`）是 Client 与 Relay 的边界。Relay 负责接入、内存房间成员关系、路径验证、转发、限制、重复数据抑制和 120 秒恢复宽限期。
 4. Direct Protocol v2（`TBD2`）是在现有局域网或虚拟局域网上连接 Bridge Client 的边界。直连 Peer Path 独立负责路径验证和传输帧标识，不依赖 Relay。
 
+## 平台进程与注入路径
+
+Client GUI、Bridge Core 网络栈和 Injector Helper 都编译为宿主平台原生程序。Native Hook 始终是由 `isaac-ng.exe` 加载的 32 位 Windows DLL。Hook 就绪后，两种平台都通过相同的 Local IPC 与 Bridge Core 通信，Relay 和局域网数据链路不区分注入方式。
+
+### Windows
+
+Client 启动原生 Injector Helper。Helper 打开 `isaac-ng.exe`，写入 Native Hook 路径，并通过 `CreateRemoteThread` 调用 `LoadLibraryW`。Client 通过进程模块检查和 Hook Ready IPC 确认加载。
+
+### Linux + Proton
+
+Proton 在 pressure-vessel 容器中运行 Windows 进程，宿主侧 Injector Helper 无法可靠使用 Win32 Remote Thread 路径。Client 在启动 Steam 前向游戏目录部署临时 `winmm.dll` 代理和 Proton 内置 WinMM 副本，并仅为 `isaac-ng.exe` 设置 `native,builtin` Wine DLL Override。代理加载 Native Hook，并将完整 WinMM API 转发给 Proton 内置实现。
+
+Client 通过 `/proc/<pid>/maps` 和同一 Hook Ready IPC 确认加载。停止游戏或 Client 下次启动时，它会恢复原 DLL Override 并删除临时文件；检测到非 Tractor Beam 管理的同名文件时会拒绝覆盖。
+
 ## Relay Protocol v3
 
 每个会话都有一条可靠的 TCP 控制连接。接入前通过有界 JSON Bootstrap 选择协议版本和能力；缺少必需能力时返回结构化兼容性拒绝。Bootstrap 后，按方向区分且大小受限的 JSON 控制帧承载 Join、Resume、成员状态、路径验证、Stop 和 Ping 消息。

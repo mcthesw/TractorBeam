@@ -16,20 +16,28 @@ compatibility issues and review focused pull requests as time allows.
 Community contributions remain welcome; see the
 [contribution guide](CONTRIBUTING.md).
 
-The Client supports Windows + Steam only. The Relay can be built on Windows,
-Linux, and macOS; formal Releases provide Windows and Linux executables.
+The Client supports Windows + Steam and Linux + Proton (*Repentance+*). The
+Relay can be built on Windows, Linux, and macOS; formal Releases provide
+Windows and Linux executables.
 
 ## Use the Client
 
-1. Download `TractorBeam-Client-Windows-x86_64.zip` from the
+1. Download the Client Bundle for your platform from the
    [latest release](https://github.com/mcthesw/TractorBeam/releases/latest) and
    extract the complete archive.
-2. Keep all four extracted files in the same directory and run
-   `tractor-beam.exe`.
+2. Keep the extracted files in the same directory. On Windows run
+   `tractor-beam.exe`; on Linux run `tractor-beam`.
 3. Select the Steam account and connection route. The host copies the Join
    Code, and the other players import it.
 4. Select **Launch Game**. If something goes wrong, export a Diagnostics Bundle
    from the Client.
+
+Linux requires the Windows *Repentance+* build running through Proton. The
+Client writes a temporary `winmm.dll` proxy next to the game executable and
+temporarily enables a Wine DLL override scoped to `isaac-ng.exe`. It restores
+the prior override and removes the proxy when the session ends or the Client
+next starts. Tractor Beam does not replace game-provided DLLs or read or modify
+Steam Cloud saves.
 
 The formal Client Bundle contains no preset Relays. If you do not plan to run a
 Relay yourself, use the separately provided public-test bundle. Public test

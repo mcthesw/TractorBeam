@@ -14,6 +14,7 @@ pub enum InjectionStep {
     CreateRemoteThread,
     WaitForRemoteThread,
     ReadRemoteThreadExit,
+    DeploySidecar,
 }
 
 impl fmt::Display for InjectionStep {
@@ -29,6 +30,7 @@ impl fmt::Display for InjectionStep {
             Self::CreateRemoteThread => "create remote thread",
             Self::WaitForRemoteThread => "wait for remote thread",
             Self::ReadRemoteThreadExit => "read remote thread exit",
+            Self::DeploySidecar => "deploy Proton sidecar",
         };
         formatter.write_str(step)
     }

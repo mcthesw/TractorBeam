@@ -22,7 +22,10 @@ mod windows_elevation;
 pub const NATIVE_HOOK_DLL: &str = "tractor_beam_native_hook.dll";
 
 /// Rust Injector helper executable name expected in the Client Bundle.
+#[cfg(windows)]
 pub const NATIVE_INJECTOR_EXE: &str = "tractor-beam-isaac-injector.exe";
+#[cfg(not(windows))]
+pub const NATIVE_INJECTOR_EXE: &str = "tractor-beam-isaac-injector";
 const INJECTOR_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const ACTIVE_GUARD: &[u8] = b"tractor-beam-injection-active-v1";
 static NEXT_GUARD_ID: AtomicU64 = AtomicU64::new(1);
@@ -296,6 +299,18 @@ fn bundle_search_dirs() -> Vec<PathBuf> {
             directory
                 .join("target")
                 .join("i686-pc-windows-msvc")
+                .join("release"),
+        );
+        directories.push(
+            directory
+                .join("target")
+                .join("i686-pc-windows-gnullvm")
+                .join("debug"),
+        );
+        directories.push(
+            directory
+                .join("target")
+                .join("i686-pc-windows-gnullvm")
                 .join("release"),
         );
     }

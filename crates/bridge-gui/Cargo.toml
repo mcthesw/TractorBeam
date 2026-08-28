@@ -20,6 +20,8 @@ eframe = { version = "0.35.0", default-features = false, features = [
     "default_fonts",
     "glow",
     "inspection",
+    "wayland",
+    "x11",
 ] }
 rust-i18n = "4.1.0"
 open = { version = "5.3.5", features = ["shellexecute-on-windows"] }
@@ -34,8 +36,11 @@ ureq = { version = "3.4.0", default-features = false, features = [
     "win-system-proxy",
 ] }
 
-[target."cfg(windows)".dependencies]
+[target.'cfg(windows)'.dependencies]
 rfd = { version = "0.17.2", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rfd = { version = "0.17.2", default-features = false, features = ["gtk3"] }
 
 [dev-dependencies]
 serde_yaml_ng = "0.10.0"

@@ -10,12 +10,12 @@ pub(super) struct HookConfigWrite {
     pub(super) path: PathBuf,
 }
 
-pub(super) fn write_hook_config(
+pub(super) fn write_hook_config_for_hook(
     config: &SessionConfig,
-    paths: &tractor_beam_isaac_injector::NativeHookPaths,
+    hook: &Path,
     ipc: &HookIpcSession,
 ) -> io::Result<HookConfigWrite> {
-    let path = hook_config_path(&paths.hook)?;
+    let path = hook_config_path(hook)?;
     let directory = path.parent().ok_or_else(|| {
         io::Error::other("Native Hook launch parameter path has no parent directory")
     })?;

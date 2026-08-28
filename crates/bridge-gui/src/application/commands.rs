@@ -352,7 +352,6 @@ pub(super) fn relay_catalog_change_allowed(
     status == SessionStatus::Idle && !relay_room_active && !lan_room_active
 }
 
-#[cfg(windows)]
 fn choose_diagnostics_bundle_path() -> Option<PathBuf> {
     let filename = format!(
         "tractor-beam-diagnostics-{}.zip",
@@ -363,11 +362,6 @@ fn choose_diagnostics_bundle_path() -> Option<PathBuf> {
         .set_file_name(filename)
         .add_filter("ZIP archive", &["zip"])
         .save_file()
-}
-
-#[cfg(not(windows))]
-fn choose_diagnostics_bundle_path() -> Option<PathBuf> {
-    None
 }
 
 fn read_clipboard_text() -> Result<String, String> {

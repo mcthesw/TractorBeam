@@ -51,14 +51,37 @@ fn all_daily_log_files(directory: &Path) -> Vec<PathBuf> {
 
 #[must_use]
 pub fn isaac_online_logs_directory() -> PathBuf {
-    UserDirs::new()
-        .map(|dirs| {
+    let mut candidates = Vec::new();
+    if let Some(dirs) = UserDirs::new() {
+        candidates.push(
             dirs.document_dir()
                 .unwrap_or_else(|| dirs.home_dir())
                 .join("My Games")
                 .join("Binding of Isaac Repentance+")
-                .join("online_logs")
-        })
+                .join("online_logs"),
+        );
+    }
+    for steam in crate::steam::steam_install_candidates() {
+        candidates.push(
+            steam
+                .join("steamapps")
+                .join("compatdata")
+                .join(crate::steam::ISAAC_APP_ID.to_string())
+                .join("pfx")
+                .join("drive_c")
+                .join("users")
+                .join("steamuser")
+                .join("Documents")
+                .join("My Games")
+                .join("Binding of Isaac Repentance+")
+                .join("online_logs"),
+        );
+    }
+    candidates
+        .iter()
+        .find(|path| path.is_dir())
+        .cloned()
+        .or_else(|| candidates.into_iter().next())
         .unwrap_or_else(|| std::env::temp_dir().join("tractor-beam-online-logs"))
 }
 

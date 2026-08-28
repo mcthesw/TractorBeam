@@ -63,6 +63,7 @@ static ORIGINAL_SEND: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 static ORIGINAL_AVAILABLE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 static ORIGINAL_READ: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 static ORIGINAL_SESSION_STATE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
+static STEAM_NETWORKING_VTABLE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 static STEAM_NETWORKING_HOOKED: AtomicBool = AtomicBool::new(false);
 static STEAM_NETWORKING_HOOKING: AtomicBool = AtomicBool::new(false);
 static SESSION_STATE_CALLS: AtomicU32 = AtomicU32::new(0);
@@ -136,26 +137,59 @@ unsafe extern "C" fn hook_run_callbacks() {
     if let Some(original) = original_fn::<SteamRunCallbacksFn>(&ORIGINAL_RUN_CALLBACKS) {
         unsafe { original() };
     }
-    if !STEAM_NETWORKING_HOOKED.load(Ordering::SeqCst)
-        && should_retry_steam_networking(callback_call)
-    {
-        let steam_module = unsafe { GetModuleHandleW(wide_null("steam_api.dll").as_ptr()) };
-        unsafe {
-            install_existing_steam_networking_interface(steam_module);
+    if should_retry_steam_networking(callback_call) {
+        if STEAM_NETWORKING_HOOKED.load(Ordering::SeqCst) {
+            unsafe {
+                verify_registered_steam_networking_vtable();
+            }
+        } else {
+            let steam_module = unsafe { GetModuleHandleW(wide_null("steam_api.dll").as_ptr()) };
+            unsafe {
+                install_existing_steam_networking_interface(steam_module);
+            }
         }
     }
 }
 
 unsafe fn install_steam_networking_hooks(interface: *mut c_void) {
-    if interface.is_null() || STEAM_NETWORKING_HOOKED.load(Ordering::SeqCst) {
+    if interface.is_null() {
         return;
     }
+    let vtable = unsafe { *(interface.cast::<*mut *mut c_void>()) };
+    STEAM_NETWORKING_VTABLE.store(vtable.cast(), Ordering::SeqCst);
+    unsafe {
+        install_steam_networking_vtable(vtable);
+    }
+}
+
+unsafe fn verify_registered_steam_networking_vtable() {
+    let vtable = STEAM_NETWORKING_VTABLE.load(Ordering::SeqCst);
+    if !vtable.is_null() {
+        unsafe {
+            install_steam_networking_vtable(vtable.cast());
+        }
+    }
+}
+
+unsafe fn install_steam_networking_vtable(vtable: *mut *mut c_void) {
     if STEAM_NETWORKING_HOOKING.swap(true, Ordering::SeqCst) {
         return;
     }
 
-    bridge::log_info("steam_networking006_hooking");
-    let vtable = unsafe { *(interface.cast::<*mut *mut c_void>()) };
+    if vtable.is_null() {
+        STEAM_NETWORKING_HOOKING.store(false, Ordering::SeqCst);
+        return;
+    }
+    if unsafe { steam_networking_vtable_is_hooked(vtable) } {
+        STEAM_NETWORKING_HOOKING.store(false, Ordering::SeqCst);
+        return;
+    }
+
+    let first_install = !STEAM_NETWORKING_HOOKED.load(Ordering::SeqCst);
+    bridge::log_info(format!(
+        "steam_networking006_hooking rehook={}",
+        !first_install
+    ));
     let installed = unsafe {
         patch_vtable_slot(
             vtable,
@@ -179,18 +213,32 @@ unsafe fn install_steam_networking_hooks(interface: *mut c_void) {
             &ORIGINAL_SESSION_STATE,
         )
     };
+    STEAM_NETWORKING_HOOKING.store(false, Ordering::SeqCst);
     if !installed {
         bridge::report_hook_failure(HookStartupFailure::SteamNetworkingHooks);
         return;
     }
+
     STEAM_NETWORKING_HOOKED.store(true, Ordering::SeqCst);
-    let steam_id64 = unsafe { active_steam_id64() };
-    bridge::report_hook_ready(steam_id64);
-    bridge::log_info(format!(
-        "steam_identity_ready available={}",
-        steam_id64.is_some()
-    ));
-    bridge::log_info("steam_networking006_hooked");
+    if first_install {
+        let steam_id64 = unsafe { active_steam_id64() };
+        bridge::report_hook_ready(steam_id64);
+        bridge::log_info(format!(
+            "steam_identity_ready available={}",
+            steam_id64.is_some()
+        ));
+        bridge::log_info("steam_networking006_hooked");
+    } else {
+        bridge::log_warn("steam_networking006_rehooked");
+    }
+}
+
+unsafe fn steam_networking_vtable_is_hooked(vtable: *mut *mut c_void) -> bool {
+    !vtable.is_null()
+        && unsafe { *vtable.add(0) == hook_send_p2p_packet as *mut c_void }
+        && unsafe { *vtable.add(1) == hook_is_p2p_packet_available as *mut c_void }
+        && unsafe { *vtable.add(2) == hook_read_p2p_packet as *mut c_void }
+        && unsafe { *vtable.add(6) == hook_get_p2p_session_state as *mut c_void }
 }
 
 unsafe fn active_steam_id64() -> Option<u64> {
@@ -257,7 +305,13 @@ unsafe fn patch_vtable_slot(
     replacement: *mut c_void,
     original: &'static AtomicPtr<c_void>,
 ) -> bool {
+    if vtable.is_null() {
+        return false;
+    }
     let slot = unsafe { vtable.add(index) };
+    if unsafe { *slot == replacement } {
+        return true;
+    }
     let mut old_protect = 0;
     if unsafe {
         VirtualProtect(
@@ -273,11 +327,25 @@ unsafe fn patch_vtable_slot(
     }
 
     let current = unsafe { *slot };
-    let _ = original.compare_exchange(ptr::null_mut(), current, Ordering::SeqCst, Ordering::SeqCst);
+    if current.is_null() {
+        bridge::log_error(format!("steam_vtable_original_missing index={index}"));
+        restore_vtable_protection(slot, old_protect);
+        return false;
+    }
+    if current == replacement {
+        restore_vtable_protection(slot, old_protect);
+        return true;
+    }
+    original.store(current, Ordering::SeqCst);
     unsafe {
         *slot = replacement;
     }
 
+    restore_vtable_protection(slot, old_protect);
+    true
+}
+
+fn restore_vtable_protection(slot: *mut *mut c_void, old_protect: u32) {
     let mut unused = 0;
     unsafe {
         VirtualProtect(
@@ -288,7 +356,6 @@ unsafe fn patch_vtable_slot(
         );
         FlushInstructionCache(GetCurrentProcess(), slot.cast(), size_of::<*mut c_void>());
     }
-    true
 }
 
 unsafe extern "thiscall" fn hook_send_p2p_packet(
@@ -433,5 +500,56 @@ mod tests {
         assert!(!should_retry_steam_networking(59));
         assert!(should_retry_steam_networking(60));
         assert!(should_retry_steam_networking(120));
+    }
+
+    unsafe extern "C" fn test_original_one() {}
+    unsafe extern "C" fn test_original_two() {}
+    unsafe extern "C" fn test_replacement() {}
+
+    static TEST_ORIGINAL: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
+
+    #[test]
+    fn vtable_patch_refreshes_original_after_external_restore() {
+        TEST_ORIGINAL.store(ptr::null_mut(), Ordering::SeqCst);
+        let original_one = test_original_one as *mut c_void;
+        let original_two = test_original_two as *mut c_void;
+        let replacement = test_replacement as *mut c_void;
+        let mut vtable = [original_one];
+
+        assert!(unsafe { patch_vtable_slot(vtable.as_mut_ptr(), 0, replacement, &TEST_ORIGINAL) });
+        assert_eq!(vtable[0], replacement);
+        assert_eq!(TEST_ORIGINAL.load(Ordering::SeqCst), original_one);
+
+        assert!(unsafe { patch_vtable_slot(vtable.as_mut_ptr(), 0, replacement, &TEST_ORIGINAL) });
+        assert_eq!(TEST_ORIGINAL.load(Ordering::SeqCst), original_one);
+
+        vtable[0] = original_two;
+        assert!(unsafe { patch_vtable_slot(vtable.as_mut_ptr(), 0, replacement, &TEST_ORIGINAL) });
+        assert_eq!(vtable[0], replacement);
+        assert_eq!(TEST_ORIGINAL.load(Ordering::SeqCst), original_two);
+    }
+
+    #[test]
+    fn registered_vtable_is_repaired_without_creating_another_interface() {
+        let original = test_original_one as *mut c_void;
+        let mut vtable = [original; 7];
+        STEAM_NETWORKING_VTABLE.store(vtable.as_mut_ptr().cast(), Ordering::SeqCst);
+        STEAM_NETWORKING_HOOKED.store(true, Ordering::SeqCst);
+        STEAM_NETWORKING_HOOKING.store(false, Ordering::SeqCst);
+
+        unsafe {
+            verify_registered_steam_networking_vtable();
+        }
+        assert!(unsafe { steam_networking_vtable_is_hooked(vtable.as_mut_ptr()) });
+
+        vtable[0] = original;
+        unsafe {
+            verify_registered_steam_networking_vtable();
+        }
+        assert!(unsafe { steam_networking_vtable_is_hooked(vtable.as_mut_ptr()) });
+
+        STEAM_NETWORKING_VTABLE.store(ptr::null_mut(), Ordering::SeqCst);
+        STEAM_NETWORKING_HOOKED.store(false, Ordering::SeqCst);
+        STEAM_NETWORKING_HOOKING.store(false, Ordering::SeqCst);
     }
 }

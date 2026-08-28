@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.5.2](https://github.com/mcthesw/TractorBeam/compare/v0.5.1...v0.5.2) (2026-08-28)
+
+
+### Features
+
+* **client:** persist saved relay profiles ([881a438](https://github.com/mcthesw/TractorBeam/commit/881a438e131a941845b0ff1540c77077ed7d5a23))
+* **client:** support Linux Proton launch lifecycle ([eabb74f](https://github.com/mcthesw/TractorBeam/commit/eabb74fa14dc9a24de48831fecd3ed5b75b2f79d))
+* **gui:** check for available releases ([c056a7d](https://github.com/mcthesw/TractorBeam/commit/c056a7ded872f843cdc31835b1e27065e607857b))
+* **gui:** manage saved relay profiles ([b0c1c0a](https://github.com/mcthesw/TractorBeam/commit/b0c1c0a5c49bae14333fee4c60483075b0df148d))
+* **hook:** add Proton WinMM proxy exports ([52a22ce](https://github.com/mcthesw/TractorBeam/commit/52a22ce61c1ce920ea9b3287d2ecfcd0f5ed3aca))
+* **injector:** add reversible Proton sidecar deployment ([742bb5f](https://github.com/mcthesw/TractorBeam/commit/742bb5f6a5283bd806eb8dcf855461a27271ca1d))
+
+
+### Bug Fixes
+
+* **ipc:** retry interrupted native hook handshakes ([712f31b](https://github.com/mcthesw/TractorBeam/commit/712f31b452e1488e4c598a05f2a3c082d89124d2))
+
+
+### Documentation
+
+* complete navigation and normalize Chinese spacing ([fe24e37](https://github.com/mcthesw/TractorBeam/commit/fe24e3731de2081b338ad6ed19ca32b8475364bf))
+* define project status and contribution guidance ([1cb5d9a](https://github.com/mcthesw/TractorBeam/commit/1cb5d9a15a37951d4548c078497b35be6e864e2c))
+* document platform injection paths ([ee4135b](https://github.com/mcthesw/TractorBeam/commit/ee4135b30f2b325e9cd7c7af585a745ee474dc2d))
+* simplify bilingual user and operator guides ([fdd4dcf](https://github.com/mcthesw/TractorBeam/commit/fdd4dcf8a9fd07ef99e1b51c5e85f14abd0222bb))
+* simplify platform support wording ([1e2ec33](https://github.com/mcthesw/TractorBeam/commit/1e2ec3389bd8ecc7ad5c1909e2f53a3b9ae1af40))
+
 ## [0.5.1](https://github.com/mcthesw/TractorBeam/compare/v0.5.0...v0.5.1) (2026-08-19)
 
 

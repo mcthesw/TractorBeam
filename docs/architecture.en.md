@@ -21,6 +21,36 @@ Tractor Beam keeps four network boundaries deliberately separate:
    for an existing LAN or virtual LAN. Direct Peer Paths own path validation
    and transport frame identity without depending on a Relay.
 
+## Platform processes and injection paths
+
+The Client GUI, Bridge Core network stack, and Injector Helper are built as
+native programs for the host platform. Native Hook is always a 32-bit Windows
+DLL loaded by `isaac-ng.exe`. After the Hook is ready, both platforms use the
+same Local IPC connection to Bridge Core; Relay and LAN data paths do not depend
+on the injection method.
+
+### Windows
+
+The Client starts the native Injector Helper. The helper opens `isaac-ng.exe`,
+writes the Native Hook path, and calls `LoadLibraryW` through
+`CreateRemoteThread`. The Client confirms loading through process module
+inspection and the Hook Ready IPC message.
+
+### Linux + Proton
+
+Proton runs the Windows process inside its pressure-vessel container, where the
+host Injector Helper cannot reliably use the Win32 remote-thread path. Before
+launching Steam, the Client deploys a temporary `winmm.dll` proxy and a copy of
+Proton's builtin WinMM next to the game executable, then applies a
+`native,builtin` Wine DLL override scoped to `isaac-ng.exe`. The proxy loads
+Native Hook and forwards the complete WinMM API to Proton's builtin
+implementation.
+
+The Client confirms loading through `/proc/<pid>/maps` and the same Hook Ready
+IPC message. When gameplay stops or the Client next starts, it restores the
+previous DLL override and removes the temporary files. It refuses to overwrite
+same-named files not managed by Tractor Beam.
+
 ## Relay Protocol v3
 
 Every session has one reliable TCP control connection. A bounded JSON bootstrap

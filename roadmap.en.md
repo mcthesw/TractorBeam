@@ -12,6 +12,8 @@ improvements and longer-term directions remain open to community involvement.
   Native Hook, and Injector.
 - [x] Support Steam + *The Binding of Isaac: Repentance+* with Official Mode,
   Fallback Mode, and Pure Mode.
+- [x] Support the Linux + Proton Client path for Windows *Repentance+* by
+  loading the Native Hook through a game-directory `winmm.dll` sidecar.
 - [x] Support external Relay and LAN Direct routes with selectable TCP/UDP
   Relay Transport.
 - [x] Provide a self-deployable Relay Server with basic abuse limits, logs,
@@ -41,7 +43,7 @@ Read the [contribution guide](CONTRIBUTING.md) before contributing.
 - A long-term public Relay Server policy.
 - Bounded UDP duplicate-send/deduplication, hop-by-hop FEC, and measurement of
   their bandwidth, tail-latency, and Relay CPU costs.
-- Linux/Proton, non-Steam support, and installer packaging.
+- Non-Steam support and installer packaging.
 - Dynamic Input Delay and additional connection-quality visualization.
 
 These directions are not current priorities. Interested contributors are

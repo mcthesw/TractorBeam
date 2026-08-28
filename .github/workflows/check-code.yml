@@ -17,6 +17,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   TRACTOR_BEAM_GIT_HASH: ${{ github.sha }}
+  LLVM_MINGW_VERSION: "20250319"
+  LLVM_MINGW_SHA256: "ab2a1489416fa82b3e85e88cb877053ee8a591993408caf076737d8de5ae72ca"
 
 jobs:
   rust:
@@ -32,6 +34,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: rustfmt, clippy
+          targets: i686-pc-windows-gnullvm
       - uses: Swatinem/rust-cache@v2.9.1
 
       - name: Install Linux GUI dependencies
@@ -51,6 +54,17 @@ jobs:
             libxkbcommon-x11-dev \
             pkg-config
 
+      - name: Install llvm-mingw
+        run: |
+          set -euo pipefail
+          archive="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-20.04-x86_64.tar.xz"
+          curl --fail --location --retry 3 \
+            "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VERSION}/${archive}" \
+            --output "${RUNNER_TEMP}/${archive}"
+          echo "${LLVM_MINGW_SHA256}  ${RUNNER_TEMP}/${archive}" | sha256sum --check
+          tar -xJf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}"
+          echo "${RUNNER_TEMP}/${archive%.tar.xz}/bin" >>"${GITHUB_PATH}"
+
       - name: Check formatting
         run: cargo fmt --all --check
 
@@ -62,6 +76,15 @@ jobs:
 
       - name: Test
         run: cargo test --locked --workspace --all-targets --all-features
+
+      - name: Build Bridge GUI
+        run: cargo build --locked --release -p tractor-beam-gui
+
+      - name: Build Native Hook for Linux Client
+        run: cargo build --locked --release -p tractor-beam-native-hook --target i686-pc-windows-gnullvm
+
+      - name: Verify Linux Native Hook proxy
+        run: python3 scripts/verify_winmm_proxy.py target/i686-pc-windows-gnullvm/release/tractor_beam_native_hook.dll
 
       - name: Build Relay Server
         run: cargo build --locked --release -p tractor-beam-relay

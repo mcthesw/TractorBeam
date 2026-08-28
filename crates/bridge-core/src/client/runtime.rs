@@ -27,6 +27,8 @@ pub struct BridgeClient {
     readiness_probe: Option<probe::ProbeHandle>,
     hook_receive_probe: Option<probe::ProbeHandle>,
     light_ping_probe: Option<probe::LightPingHandle>,
+    #[cfg(target_os = "linux")]
+    proton_sidecar: Option<tractor_beam_isaac_injector::ProtonWinmmSidecar>,
 }
 
 impl BridgeClient {
@@ -58,7 +60,11 @@ impl BridgeClient {
             readiness_probe: None,
             hook_receive_probe: None,
             light_ping_probe: None,
+            #[cfg(target_os = "linux")]
+            proton_sidecar: None,
         };
+        #[cfg(target_os = "linux")]
+        client.recover_stale_proton_sidecar();
         client.refresh_steam_accounts();
         client.log(
             LogLevel::Info,
@@ -503,11 +509,14 @@ impl BridgeClient {
                     return Err(io::Error::new(error.kind(), message).into());
                 }
             };
-            let write = match hook_config::write_hook_config(config, &native_hook_paths, &ipc) {
+            let write = match self.prepare_native_hook_runtime(config, &native_hook_paths, &ipc) {
                 Ok(write) => write,
                 Err(error) => {
                     let message = format!("Native Hook launch parameter write failed: {error}");
                     self.record_hook_startup_failure(Some(&native_hook_paths), message.clone());
+                    self.cleanup_hook_launch_parameters(
+                        "Native Hook launch parameter write failed",
+                    );
                     self.active_log_context = None;
                     return Err(io::Error::new(error.kind(), message).into());
                 }
@@ -713,6 +722,72 @@ impl BridgeClient {
             *existing = report;
         } else {
             self.state.light_ping_reports.push(report);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn recover_stale_proton_sidecar(&mut self) {
+        let Some(isaac_dir) = crate::steam::isaac_windows_install_dir() else {
+            return;
+        };
+        match tractor_beam_isaac_injector::recover_stale_proton_winmm_sidecar(&isaac_dir) {
+            Ok(true) => self.log(
+                LogLevel::Info,
+                format!(
+                    "Recovered stale Proton Native Hook sidecar at {}",
+                    isaac_dir.display()
+                ),
+            ),
+            Ok(false) => {}
+            Err(error) => self.log(
+                LogLevel::Warn,
+                format!(
+                    "Could not recover stale Proton Native Hook sidecar at {}: {error}",
+                    isaac_dir.display()
+                ),
+            ),
+        }
+    }
+
+    fn prepare_native_hook_runtime(
+        &mut self,
+        config: &SessionConfig,
+        paths: &tractor_beam_isaac_injector::NativeHookPaths,
+        ipc: &hook_ipc::HookIpcSession,
+    ) -> io::Result<hook_config::HookConfigWrite> {
+        #[cfg(target_os = "linux")]
+        {
+            let isaac_dir = crate::steam::isaac_windows_install_dir().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "Isaac Proton install was not found (isaac-ng.exe is required)",
+                )
+            })?;
+            let sidecar =
+                tractor_beam_isaac_injector::deploy_proton_winmm_sidecar(&paths.hook, &isaac_dir)
+                    .map_err(|error| io::Error::other(error.to_string()))?;
+            self.log(
+                LogLevel::Info,
+                format!(
+                    "Proton Native Hook sidecar deployed at {}",
+                    sidecar.dll.display()
+                ),
+            );
+            self.proton_sidecar = Some(sidecar);
+            hook_config::write_hook_config_for_hook(
+                config,
+                &self
+                    .proton_sidecar
+                    .as_ref()
+                    .expect("Proton sidecar was just deployed")
+                    .dll,
+                ipc,
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = self;
+            hook_config::write_hook_config_for_hook(config, &paths.hook, ipc)
         }
     }
 }

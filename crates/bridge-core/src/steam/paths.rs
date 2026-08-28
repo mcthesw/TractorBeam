@@ -29,7 +29,15 @@ pub fn launch_isaac() -> io::Result<()> {
     open::that_detached(isaac_launch_uri())
 }
 
-/// Returns likely `loginusers.vdf` paths on Windows.
+/// Returns the first Isaac install that contains the Windows `isaac-ng.exe`.
+#[must_use]
+pub fn isaac_windows_install_dir() -> Option<PathBuf> {
+    isaac_install_candidates()
+        .into_iter()
+        .find(|path| path.join("isaac-ng.exe").is_file())
+}
+
+/// Returns likely `loginusers.vdf` paths.
 #[must_use]
 pub fn loginusers_candidates() -> Vec<PathBuf> {
     steam_install_candidates()
@@ -130,7 +138,15 @@ fn current_user_steam_dir() -> Option<PathBuf> {
 
 #[cfg(not(windows))]
 fn current_user_steam_dir() -> Option<PathBuf> {
-    None
+    let home = env::var_os("HOME").map(PathBuf::from)?;
+    [
+        home.join(".steam").join("steam"),
+        home.join(".steam").join("root"),
+        home.join(".steam").join("debian-installation"),
+        home.join(".local").join("share").join("Steam"),
+    ]
+    .into_iter()
+    .find(|path| path.join("config").join("loginusers.vdf").is_file())
 }
 
 #[cfg(test)]

@@ -196,6 +196,8 @@ impl BridgeClient {
     }
 
     pub(super) fn cleanup_hook_launch_parameters(&mut self, reason: &str) {
+        #[cfg(target_os = "linux")]
+        self.remove_proton_sidecar(reason);
         if cleanup_finished(&self.state.hook_launch_parameters_cleanup) {
             return;
         }
@@ -219,6 +221,32 @@ impl BridgeClient {
         };
         self.log(level, format!("Native Hook launch parameters {cleanup}"));
         self.state.hook_launch_parameters_cleanup = Some(cleanup);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn remove_proton_sidecar(&mut self, reason: &str) {
+        let Some(sidecar) = self.proton_sidecar.clone() else {
+            return;
+        };
+        match tractor_beam_isaac_injector::remove_proton_winmm_sidecar(&sidecar) {
+            Ok(()) => {
+                self.proton_sidecar = None;
+                self.log(
+                    LogLevel::Info,
+                    format!(
+                        "Proton Native Hook sidecar removed path={} reason={reason}",
+                        sidecar.dll.display()
+                    ),
+                );
+            }
+            Err(error) => self.log(
+                LogLevel::Warn,
+                format!(
+                    "Proton Native Hook sidecar remove_failed path={} reason={reason} error={error}",
+                    sidecar.dll.display()
+                ),
+            ),
+        }
     }
 
     pub(super) fn refresh_smoothness(&mut self) {
@@ -338,6 +366,10 @@ impl BridgeClient {
     pub(super) fn remove_hook_launch_parameters_silent(&self) {
         if let Some(path) = &self.state.hook_launch_parameters_path_written {
             let _ = fs::remove_file(path);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(sidecar) = &self.proton_sidecar {
+            let _ = tractor_beam_isaac_injector::remove_proton_winmm_sidecar(sidecar);
         }
     }
 }

@@ -36,7 +36,7 @@ writes the Native Hook path, and calls `LoadLibraryW` through
 `CreateRemoteThread`. The Client confirms loading through process module
 inspection and the Hook Ready IPC message.
 
-### Linux + Proton
+### Linux (Proton)
 
 Proton runs the Windows process inside its pressure-vessel container, where the
 host Injector Helper cannot reliably use the Win32 remote-thread path. Before

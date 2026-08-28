@@ -8,9 +8,9 @@
 
 ## 项目状态
 
-Windows + Steam 基线已基本可用，并以玩家友好为目标。维护者目前可投入的时间有限，但会尽力修复明确的 Bug 和兼容性问题，并在时间允许时审阅范围清晰的 PR。社区贡献依然欢迎，参见[贡献指南](CONTRIBUTING.md)。
+维护者目前可投入的时间有限，但会尽力修复明确的 Bug 和兼容性问题，并在时间允许时审阅范围清晰的 PR。社区贡献依然欢迎，参见[贡献指南](CONTRIBUTING.md)。
 
-Client 支持 Windows + Steam，以及 Linux + Proton（*忏悔+*）。Relay 可以在 Windows、Linux 和 macOS 上构建，正式 Release 提供 Windows 和 Linux 可执行文件。
+客户端支持 Windows 和 Linux（Proton），游戏版本为 *忏悔+*。Relay 支持 Windows、Linux 和 macOS，正式 Release 提供 Windows 和 Linux 可执行文件。
 
 ## 使用 Client
 
@@ -19,9 +19,9 @@ Client 支持 Windows + Steam，以及 Linux + Proton（*忏悔+*）。Relay 可
 3. 选择 Steam 账号和联机方式。房主复制联机码，其他玩家导入联机码。
 4. 点击“启动游戏”。遇到问题时，从 Client 导出 Diagnostics Bundle。
 
-Linux 需要通过 Proton 运行 Windows 版 *忏悔+*。Client 会在游戏安装目录写入临时 `winmm.dll` 代理，并仅为 `isaac-ng.exe` 临时启用 Wine DLL 覆盖；会话结束或 Client 下次启动时会恢复原配置并删除代理。Tractor Beam 不会替换游戏自带 DLL，也不会读取或修改 Steam Cloud 存档。
+Linux 客户端通过 Proton 运行 Windows 版 *忏悔+*。客户端会在游戏安装目录写入临时 `winmm.dll` 代理，并仅为 `isaac-ng.exe` 临时启用 Wine DLL 覆盖；会话结束或客户端下次启动时会恢复原配置并删除代理。
 
-正式 Client Bundle 不包含预设 Relay。如果不准备自行部署 Relay，请使用单独提供的公测包。公共测试 Relay 由项目维护者自费提供，不保证可用性或服务质量。
+正式 Client Bundle 需要自行配置 Relay；也可使用单独提供的公测包。公共测试 Relay 由项目维护者自费提供，仅供测试。
 
 - [局域网直连说明](docs/lan.md)
 - [Relay 自部署说明](docs/relay.md)

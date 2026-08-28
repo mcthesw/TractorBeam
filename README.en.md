@@ -10,15 +10,14 @@ can move game data through a Relay while preserving normal Steam features.
 
 ## Project status
 
-The Windows + Steam baseline is usable and designed for players. Maintainer
-time is limited, but we will do our best to fix well-defined bugs and
-compatibility issues and review focused pull requests as time allows.
+Maintainer time is limited, but we will do our best to fix well-defined bugs
+and compatibility issues and review focused pull requests as time allows.
 Community contributions remain welcome; see the
 [contribution guide](CONTRIBUTING.md).
 
-The Client supports Windows + Steam and Linux + Proton (*Repentance+*). The
-Relay can be built on Windows, Linux, and macOS; formal Releases provide
-Windows and Linux executables.
+The Client supports Windows and Linux (Proton). The supported game version is
+*Repentance+*. The Relay supports Windows, Linux, and macOS; formal Releases
+provide Windows and Linux executables.
 
 ## Use the Client
 
@@ -32,17 +31,14 @@ Windows and Linux executables.
 4. Select **Launch Game**. If something goes wrong, export a Diagnostics Bundle
    from the Client.
 
-Linux requires the Windows *Repentance+* build running through Proton. The
-Client writes a temporary `winmm.dll` proxy next to the game executable and
-temporarily enables a Wine DLL override scoped to `isaac-ng.exe`. It restores
-the prior override and removes the proxy when the session ends or the Client
-next starts. Tractor Beam does not replace game-provided DLLs or read or modify
-Steam Cloud saves.
+On Linux, the Client runs the Windows *Repentance+* build through Proton. It
+writes a temporary `winmm.dll` proxy next to the game executable and temporarily
+enables a Wine DLL override scoped to `isaac-ng.exe`. It restores the prior
+override and removes the proxy when the session ends or the Client next starts.
 
-The formal Client Bundle contains no preset Relays. If you do not plan to run a
-Relay yourself, use the separately provided public-test bundle. Public test
-Relays are maintained at the project maintainer's own expense, with no uptime
-or service-quality guarantee.
+The formal Client Bundle requires a self-configured Relay. A separate
+public-test bundle is also available; its maintainer-funded public Relays are
+intended for testing.
 
 - [LAN Direct guide](docs/lan.en.md)
 - [Relay self-deployment guide](docs/relay.en.md)

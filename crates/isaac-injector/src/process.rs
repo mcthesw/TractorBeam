@@ -24,7 +24,33 @@ pub fn find_isaac_process() -> Option<IsaacProcess> {
 
 #[must_use]
 pub fn find_isaac_processes() -> Vec<IsaacProcess> {
-    find_processes_by_name(ISAAC_PROCESS_NAME)
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+    let mut processes = system
+        .processes()
+        .values()
+        .filter(|process| process_looks_like_isaac(process))
+        .map(|process| IsaacProcess {
+            pid: process.pid().as_u32(),
+            name: process.name().to_string_lossy().into_owned(),
+            started_at: process.start_time(),
+        })
+        .collect::<Vec<_>>();
+    sort_newest_first(&mut processes);
+    processes
+}
+
+fn process_looks_like_isaac(process: &sysinfo::Process) -> bool {
+    let name = process.name().to_string_lossy();
+    if name.eq_ignore_ascii_case(ISAAC_PROCESS_NAME) {
+        return true;
+    }
+    process.cmd().iter().any(|argument| {
+        argument
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .contains(ISAAC_PROCESS_NAME)
+    })
 }
 
 #[must_use]
@@ -55,23 +81,6 @@ pub fn wait_for_isaac(
     Err(InjectorError::ProcessNotFound)
 }
 
-fn find_processes_by_name(name: &str) -> Vec<IsaacProcess> {
-    let mut system = System::new();
-    system.refresh_processes(ProcessesToUpdate::All, true);
-    let mut processes = system
-        .processes()
-        .values()
-        .filter(|process| process.name().to_string_lossy().eq_ignore_ascii_case(name))
-        .map(|process| IsaacProcess {
-            pid: process.pid().as_u32(),
-            name: process.name().to_string_lossy().into_owned(),
-            started_at: process.start_time(),
-        })
-        .collect::<Vec<_>>();
-    sort_newest_first(&mut processes);
-    processes
-}
-
 fn sort_newest_first(processes: &mut [IsaacProcess]) {
     processes.sort_by_key(|process| std::cmp::Reverse((process.started_at, process.pid)));
 }
@@ -94,6 +103,16 @@ mod tests {
     #[test]
     fn exposes_process_name() {
         assert_eq!(ISAAC_PROCESS_NAME, "isaac-ng.exe");
+    }
+
+    #[test]
+    fn process_name_needle_matches_proton_command_lines() {
+        assert!(
+            "Z:\\home\\user\\.steam\\steamapps\\common\\The Binding of Isaac Rebirth\\isaac-ng.exe"
+                .to_ascii_lowercase()
+                .contains(ISAAC_PROCESS_NAME)
+        );
+        assert!(!"wine64-preloader".eq_ignore_ascii_case(ISAAC_PROCESS_NAME));
     }
 
     #[test]

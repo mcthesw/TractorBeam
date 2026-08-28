@@ -285,7 +285,16 @@ fn is_retryable_module_snapshot_error(error: &std::io::Error) -> bool {
     )
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn inject_platform(pid: u32, hook: &Path, guard: Option<&Path>) -> Result<(), InjectorError> {
+    if !hook.is_file() {
+        return Err(InjectorError::MissingNativeHook);
+    }
+    ensure_injection_allowed(guard)?;
+    crate::linux::verify_proton_sidecar_loaded(pid, hook)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn inject_platform(_pid: u32, _hook: &Path, _guard: Option<&Path>) -> Result<(), InjectorError> {
     Err(InjectorError::UnsupportedPlatform)
 }

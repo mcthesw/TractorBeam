@@ -26,6 +26,14 @@ Linux 客户端通过 Proton 运行 Windows 版 *忏悔+*。客户端会在游�
 - [局域网直连说明](docs/lan.md)
 - [Relay 自部署说明](docs/relay.md)
 
+## 其他项目
+
+这里会列举一些其他人做的有助于以撒联机的工具并说明特点。
+
+- [Isaac LAN](https://github.com/BMingSY/isaac-lan)：支持分房探索、重连、房间规则（充能、友伤、集合等）。
+- [Desync 修复 mod](https://www.bilibili.com/video/BV1hENP65Ehx/)：我没有试过，放这仅供参考。
+- [断线重连 mod](https://www.bilibili.com/video/BV1yHNR65ESD/)：我也没用过，原理似乎是借用下层加入游戏的那套。
+
 ## 构建
 
 需要先安装 Rust 工具链。

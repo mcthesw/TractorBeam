@@ -43,6 +43,20 @@ intended for testing.
 - [LAN Direct guide](docs/lan.en.md)
 - [Relay self-deployment guide](docs/relay.en.md)
 
+## Other projects
+
+Here are some tools by other developers that may help with Isaac multiplayer,
+with a brief description of each.
+
+- [Isaac LAN](https://github.com/BMingSY/isaac-lan): supports exploring separate
+  rooms, reconnecting, and room rules (item charging, friendly fire, gathering
+  players, and more).
+- [Desync fix mod](https://www.bilibili.com/video/BV1hENP65Ehx/) (Chinese video):
+  I haven't tried this; listed for reference only.
+- [Reconnection mod](https://www.bilibili.com/video/BV1yHNR65ESD/) (Chinese video):
+  I haven't tried this either. It appears to reuse the mechanism for joining
+  a game on the next floor.
+
 ## Build
 
 Install the Rust toolchain first.

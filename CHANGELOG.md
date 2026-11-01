@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.3](https://github.com/mcthesw/TractorBeam/compare/v0.5.2...v0.5.3) (2026-11-01)
+
+
+### Documentation
+
+* add related multiplayer projects ([8db91f1](https://github.com/mcthesw/TractorBeam/commit/8db91f13ba515ebcb0f18c9b4f3f4ccc6949d83f))
+
 ## [0.5.2](https://github.com/mcthesw/TractorBeam/compare/v0.5.1...v0.5.2) (2026-08-28)
 
 

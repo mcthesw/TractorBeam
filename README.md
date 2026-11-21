@@ -17,7 +17,9 @@
 1. 从[最新版本](https://github.com/mcthesw/TractorBeam/releases/latest)下载对应平台的 Client Bundle 并完整解压。
 2. 保持解压出的文件位于同一目录：Windows 运行 `tractor-beam.exe`；Linux 运行 `tractor-beam`。
 3. 选择 Steam 账号和联机方式。房主复制联机码，其他玩家导入联机码。
-4. 点击“启动游戏”。遇到问题时，从 Client 导出 Diagnostics Bundle。
+4. 点击“启动游戏”。在游戏的 **Play Online → Options** 中，所有玩家都将 **Crossplay** 设为 **Off**，然后再创建或加入游戏大厅。开启 Crossplay 时仍可能正常联机，但游戏数据不会经过 Tractor Beam。
+
+遇到问题时，从 Client 导出 Diagnostics Bundle。
 
 Linux 客户端通过 Proton 运行 Windows 版 *忏悔+*。客户端会在游戏安装目录写入临时 `winmm.dll` 代理，并仅为 `isaac-ng.exe` 临时启用 Wine DLL 覆盖；会话结束或客户端下次启动时会恢复原配置并删除代理。
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.3](https://github.com/mcthesw/TractorBeam/compare/v0.5.2...v0.5.3) (2026-11-23)
+
+
+### Features
+
+* route crossplay matches between Steam players ([8964798](https://github.com/mcthesw/TractorBeam/commit/8964798473c73a2f19107a1169636958dc75f542))
+
+
+### Documentation
+
+* add related multiplayer projects ([8db91f1](https://github.com/mcthesw/TractorBeam/commit/8db91f13ba515ebcb0f18c9b4f3f4ccc6949d83f))
+* explain crossplay setting for relay traffic ([4035867](https://github.com/mcthesw/TractorBeam/commit/4035867230410d8427190e26684ba4a1e3045f61))
+
 ## [0.5.2](https://github.com/mcthesw/TractorBeam/compare/v0.5.1...v0.5.2) (2026-08-28)
 
 

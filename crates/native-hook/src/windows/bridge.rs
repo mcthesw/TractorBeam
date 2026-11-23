@@ -181,6 +181,16 @@ pub fn send_packet(peer: u64, data: *const u8, len: u32, send_type: i32, channel
     if len as usize > tractor_beam_hook_ipc::MAX_GAME_PAYLOAD_SIZE {
         return false;
     }
+    enqueue(GamePacket {
+        peer,
+        sequence: 0,
+        channel,
+        send_type,
+        payload: unsafe { std::slice::from_raw_parts(data, len as usize) }.to_vec(),
+    })
+}
+
+pub(super) fn enqueue(mut packet: GamePacket) -> bool {
     let Some((data_tx, counters)) = STATE
         .lock()
         .expect("bridge state lock poisoned")
@@ -189,13 +199,7 @@ pub fn send_packet(peer: u64, data: *const u8, len: u32, send_type: i32, channel
     else {
         return false;
     };
-    let packet = GamePacket {
-        peer,
-        sequence: NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
-        channel,
-        send_type,
-        payload: unsafe { std::slice::from_raw_parts(data, len as usize) }.to_vec(),
-    };
+    packet.sequence = NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     match data_tx.try_send(packet) {
         Ok(()) => true,
         Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
@@ -213,7 +217,7 @@ pub fn has_packet(channel: i32, out_size: *mut u32) -> bool {
     let queue = state.queue.lock().expect("bridge queue lock poisoned");
     let Some(packet) = queue
         .iter()
-        .find(|packet| channel_matches(channel, packet.channel))
+        .find(|packet| packet.send_type >= 0 && channel_matches(channel, packet.channel))
     else {
         return false;
     };
@@ -242,7 +246,7 @@ pub fn read_packet(
     let mut queue = state.queue.lock().expect("bridge queue lock poisoned");
     let Some(index) = queue
         .iter()
-        .position(|packet| channel_matches(channel, packet.channel))
+        .position(|packet| packet.send_type >= 0 && channel_matches(channel, packet.channel))
     else {
         return false;
     };
@@ -258,6 +262,29 @@ pub fn read_packet(
         }
     }
     true
+}
+
+/// Peek and receive must select the same EOS packet without consuming Steam data.
+pub(super) fn with_crossplay_packet<T>(
+    channel: Option<u8>,
+    consume: bool,
+    visit: impl FnMut(u64, tractor_beam_hook_ipc::crossplay::Packet<'_>) -> Option<T>,
+) -> Option<T> {
+    let queue = Arc::clone(&STATE.lock().ok()?.as_ref()?.queue);
+    let mut queue = queue.lock().ok()?;
+    let mut visit = visit;
+    let (index, result) = queue.iter().enumerate().find_map(|(index, game)| {
+        let packet = tractor_beam_hook_ipc::crossplay::decode(game)?;
+        if channel.is_some_and(|requested| requested != packet.channel) {
+            return None;
+        }
+        // An unresolved source must not block other peers on this channel.
+        visit(game.peer, packet).map(|result| (index, result))
+    })?;
+    if consume {
+        queue.remove(index);
+    }
+    Some(result)
 }
 
 pub fn log_trace(message: impl Display) {
@@ -366,40 +393,6 @@ fn parse_config(contents: &str) -> io::Result<BridgeConfig> {
     })
 }
 
-#[cfg(test)]
-mod config_tests {
-    use super::*;
-
-    const SESSION: &str = "00112233445566778899aabbccddeeff";
-
-    #[test]
-    fn accepts_explicit_ipv4_loopback_tcp_endpoint() {
-        let config = parse_config(&format!(
-            "mode=replace\nfallback_to_steam=0\nipc_transport=tcp\nipc_endpoint=127.0.0.1:41000\nipc_session={SESSION}\n"
-        ))
-        .unwrap();
-
-        assert_eq!(config.mode, BridgeMode::Replace);
-        assert!(!config.fallback_to_steam);
-        assert_eq!(config.ipc_endpoint, "127.0.0.1:41000".parse().unwrap());
-    }
-
-    #[test]
-    fn rejects_missing_transport_and_non_loopback_endpoints() {
-        let missing_transport = parse_config(&format!(
-            "ipc_endpoint=127.0.0.1:41000\nipc_session={SESSION}\n"
-        ))
-        .unwrap_err();
-        assert!(missing_transport.to_string().contains("IPC transport"));
-
-        let non_loopback = parse_config(&format!(
-            "ipc_transport=tcp\nipc_endpoint=192.0.2.1:41000\nipc_session={SESSION}\n"
-        ))
-        .unwrap_err();
-        assert!(non_loopback.to_string().contains("loopback IPC endpoint"));
-    }
-}
-
 fn default_runtime_path() -> Option<PathBuf> {
     hook_log_directory().map(|directory| directory.join(RUNTIME_FILE))
 }
@@ -480,4 +473,38 @@ fn saturating_increment(counter: &std::sync::atomic::AtomicU64) {
     let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         Some(value.saturating_add(1))
     });
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    const SESSION: &str = "00112233445566778899aabbccddeeff";
+
+    #[test]
+    fn accepts_explicit_ipv4_loopback_tcp_endpoint() {
+        let config = parse_config(&format!(
+            "mode=replace\nfallback_to_steam=0\nipc_transport=tcp\nipc_endpoint=127.0.0.1:41000\nipc_session={SESSION}\n"
+        ))
+        .unwrap();
+
+        assert_eq!(config.mode, BridgeMode::Replace);
+        assert!(!config.fallback_to_steam);
+        assert_eq!(config.ipc_endpoint, "127.0.0.1:41000".parse().unwrap());
+    }
+
+    #[test]
+    fn rejects_missing_transport_and_non_loopback_endpoints() {
+        let missing_transport = parse_config(&format!(
+            "ipc_endpoint=127.0.0.1:41000\nipc_session={SESSION}\n"
+        ))
+        .unwrap_err();
+        assert!(missing_transport.to_string().contains("IPC transport"));
+
+        let non_loopback = parse_config(&format!(
+            "ipc_transport=tcp\nipc_endpoint=192.0.2.1:41000\nipc_session={SESSION}\n"
+        ))
+        .unwrap_err();
+        assert!(non_loopback.to_string().contains("loopback IPC endpoint"));
+    }
 }

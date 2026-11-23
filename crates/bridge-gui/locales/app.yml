@@ -704,6 +704,9 @@ hook.endpoint_ready:
 hook.ready:
   zh_CN: "Hook 已就绪"
   en_US: "Hook ready"
+hook.no_game_connection:
+  zh_CN: "尚未建立双向 TB 游戏连接，请确认双方都已加入同一个 TB 房间。"
+  en_US: "No two-way TB game connection yet. Check that both players have joined the same TB room."
 hook.failed:
   zh_CN: "Hook 启动失败"
   en_US: "Hook startup failed"

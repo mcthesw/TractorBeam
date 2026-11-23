@@ -9,6 +9,7 @@ use windows_sys::Win32::{
 };
 
 mod bridge;
+mod eos;
 mod iat;
 mod input_delay;
 mod ipc_worker;
@@ -60,6 +61,12 @@ unsafe extern "system" fn install_thread(_parameter: *mut c_void) -> u32 {
 
     bridge::initialize();
     unsafe {
+        if bridge::mode() == bridge::BridgeMode::Replace && !eos::install() {
+            bridge::report_hook_failure(
+                tractor_beam_hook_ipc::HookStartupFailure::CrossplayNetworkingHooks,
+            );
+            return 0;
+        }
         steam::install_hooks();
     }
 

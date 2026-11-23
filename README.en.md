@@ -28,9 +28,9 @@ provide Windows and Linux executables.
    `tractor-beam.exe`; on Linux run `tractor-beam`.
 3. Select the Steam account and connection route. The host copies the Join
    Code, and the other players import it.
-4. Select **Launch Game**. Before hosting or joining an in-game lobby, have
-   every player set **Play Online → Options → Crossplay** to **Off**. With
-   Crossplay on, online play may still work, but game traffic bypasses Tractor Beam.
+4. Select **Launch Game**, then create or join a friend lobby in the game.
+
+Starting with `v0.5.3`, Tractor Beam supports **Crossplay** matches between Steam players.
 
 If something goes wrong, export a Diagnostics Bundle from the Client.
 

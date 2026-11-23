@@ -215,7 +215,7 @@ impl ClientIncidentSnapshot {
             ClientIncidentKind::RuntimeRttTimeout
         } else if health.delivery.confirmed_gaps > 0 {
             ClientIncidentKind::DeliveryGap
-        } else if data_plane_stalled(health) {
+        } else if health.data_plane_stalled() {
             ClientIncidentKind::DataPlaneStall
         } else {
             return None;
@@ -229,12 +229,15 @@ impl ClientIncidentSnapshot {
     }
 }
 
-fn data_plane_stalled(health: &SessionHealthSnapshot) -> bool {
-    health.elapsed_seconds >= DATA_PLANE_STALL_MIN_ELAPSED_SECONDS
-        && ((health.hook_in_recv.packets >= DATA_PLANE_STALL_MIN_PACKETS
-            && health.network_recv.packets == 0)
-            || (health.network_recv.packets >= DATA_PLANE_STALL_MIN_PACKETS
-                && health.hook_out_send_duration.count == 0))
+impl SessionHealthSnapshot {
+    #[must_use]
+    pub fn data_plane_stalled(&self) -> bool {
+        self.elapsed_seconds >= DATA_PLANE_STALL_MIN_ELAPSED_SECONDS
+            && ((self.hook_in_recv.packets >= DATA_PLANE_STALL_MIN_PACKETS
+                && self.network_recv.packets == 0)
+                || (self.network_recv.packets >= DATA_PLANE_STALL_MIN_PACKETS
+                    && self.hook_out_send_duration.count == 0))
+    }
 }
 
 fn incident_summary(kind: ClientIncidentKind, health: &SessionHealthSnapshot) -> String {

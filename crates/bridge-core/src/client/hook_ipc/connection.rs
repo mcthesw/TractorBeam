@@ -456,6 +456,9 @@ fn hook_startup_failure_message(failure: HookStartupFailure) -> String {
             "Native Hook could not install the Steam API imports; fully exit Isaac and try again"
                 .to_owned()
         }
+        HookStartupFailure::CrossplayNetworkingHooks => {
+            "Native Hook could not install the Crossplay networking hooks; fully exit Isaac and check your Client Bundle".to_owned()
+        }
         HookStartupFailure::SteamNetworkingHooks => {
             "Native Hook could not install the Steam networking hooks; fully exit Isaac and try again"
                 .to_owned()

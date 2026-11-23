@@ -64,7 +64,7 @@ The versioned player-facing package that ships the Bridge GUI, Bridge Client, Na
 _Avoid_: hook release, GUI release
 
 **Native Hook**:
-The in-process component that redirects Isaac's Steam packet path into Tractor Beam.
+The in-process component that redirects Isaac's gameplay packets into Tractor Beam, whether the Steam game uses Steam networking or EOS P2P for the match.
 _Avoid_: mod, plugin
 
 **Injector**:

@@ -5,6 +5,7 @@ use std::{fmt, str::FromStr};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 mod codec;
+pub mod crossplay;
 pub mod sync_io;
 
 pub use codec::{FrameDecoder, decode, encode};
@@ -200,6 +201,7 @@ impl fmt::Display for ErrorCode {
 pub enum HookStartupFailure {
     SteamApiImports,
     SteamNetworkingHooks,
+    CrossplayNetworkingHooks,
 }
 
 impl HookStartupFailure {
@@ -207,6 +209,7 @@ impl HookStartupFailure {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::SteamApiImports => "steam_api_imports",
+            Self::CrossplayNetworkingHooks => "crossplay_networking_hooks",
             Self::SteamNetworkingHooks => "steam_networking_hooks",
         }
     }

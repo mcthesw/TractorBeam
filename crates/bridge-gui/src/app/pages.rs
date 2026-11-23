@@ -248,6 +248,20 @@ impl BridgeApp {
             ui.colored_label(color, "●");
             ui.label(phase_text);
         });
+        if startup.phase == HookStartupPhase::Ready
+            && self.client_state().missing_game_targets.is_empty()
+            && self
+                .client_state()
+                .latest_session_health
+                .as_ref()
+                .is_some_and(|health| health.data_plane_stalled())
+        {
+            wrapped_colored_label(
+                ui,
+                ui.visuals().warn_fg_color,
+                t!("hook.no_game_connection").as_ref(),
+            );
+        }
         if let Some(message) = &startup.message {
             ui.add_space(4.0);
             let rich = if startup.phase == HookStartupPhase::Failed {

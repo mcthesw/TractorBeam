@@ -17,7 +17,9 @@
 1. 从[最新版本](https://github.com/mcthesw/TractorBeam/releases/latest)下载对应平台的 Client Bundle 并完整解压。
 2. 保持解压出的文件位于同一目录：Windows 运行 `tractor-beam.exe`；Linux 运行 `tractor-beam`。
 3. 选择 Steam 账号和联机方式。房主复制联机码，其他玩家导入联机码。
-4. 点击“启动游戏”。在游戏的 **Play Online → Options** 中，所有玩家都将 **Crossplay** 设为 **Off**，然后再创建或加入游戏大厅。开启 Crossplay 时仍可能正常联机，但游戏数据不会经过 Tractor Beam。
+4. 点击“启动游戏”，然后在游戏内创建或加入好友房。
+
+自 `v0.5.3` 起，Tractor Beam 支持 Steam 玩家在开启 **Crossplay** 的对局中联机。
 
 遇到问题时，从 Client 导出 Diagnostics Bundle。
 
